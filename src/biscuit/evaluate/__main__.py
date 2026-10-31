@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--predictions", type=Path, help="JSON prediction file (directory with --all)")
     parser.add_argument("--output", default="scorecard.json", help="JSON output path or 'json'")
     parser.add_argument("--strict-offsets", action="store_true")
+    parser.add_argument("--audit-db", type=Path, help="SQLite per-PR audit database")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -44,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
                 else args.predictions
             )
             result = run_benchmark(
-                name, fixtures_root=args.fixtures_root, predictions_path=prediction_file
+                name, fixtures_root=args.fixtures_root, predictions_path=prediction_file,
+                audit_db=args.audit_db
             )
             outputs.append(result.to_dict())
     except (ValueError, OSError, KeyError, TypeError) as exc:
