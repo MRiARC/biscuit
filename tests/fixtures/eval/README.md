@@ -50,3 +50,19 @@ source archives, preserve author roles and edits, independently review GT
 rulings, assign real historical commits, pin model/context versions, and
 measure host RAM with Ollama/PostgreSQL running. Never put `ground_truth.json`
 or official PEP final texts into extraction/model context.
+
+## Explicit Stream 3 end-to-end execution (integration gate)
+
+`biscuit evaluate --stream3 --benchmark pep-505` and
+`python -m biscuit.evaluate --stream3 --benchmark pep-505`
+attempt to execute the actual installed Stream 3 `ExtractionPipeline` instead
+of the checked-in synthetic predictions. This is **opt-in** because the Stream 3
+PR is on another branch and local Ollama models may be unavailable.
+
+The commands fail clearly if Stream 3 is not installed. They will not invent
+source-version UUIDs, maintained authority grants, historical anchors,
+semantic vectors, or watchdog approvals. A fail/incomplete scorecard is expected
+until the Stream 1/2/3/4 connectors and independent source evidence are present.
+`--stream3` and `--predictions` cannot be combined. This path should not be
+described as a successful full-stack run until CI has exercised the merged
+components with valid persisted source evidence and real coverage.
