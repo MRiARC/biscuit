@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Lib/test/test_grammar.py",
-      "diff": "-x if cond else y\n+x  if cond  else y"
+      "diff": "diff --git a/Lib/test/test_grammar.py b/Lib/test/test_grammar.py\n--- a/Lib/test/test_grammar.py\n+++ b/Lib/test/test_grammar.py\n@@ -1,1 +1,1 @@\n-x if cond else y\n+x  if cond  else y"
     }
   ],
   "fixture_origin": "SYNTHETIC"
