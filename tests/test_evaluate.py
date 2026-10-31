@@ -506,7 +506,7 @@ def test_all_twenty_patches_have_valid_unified_diff_hunks() -> None:
     for case in cases:
         for file in case["files"]:
             assert file["diff"].startswith(
-                f"diff --git a/{file['path']} b/{file['path']}\\n"
+                f"diff --git a/{file['path']} b/{file['path']}\n"
             )
             _validate_unified_diff(file)
             corrupted = dict(file)
