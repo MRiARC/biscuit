@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,44 @@ def _metric(
     name: str, value: float | None, target: float, count: int, direction: str = "min"
 ) -> MetricScore:
     return MetricScore(name=name, value=value, target=target, sample_size=count, direction=direction)
+
+
+
+def _normalize_proposal_name(name: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", name.lower()))
+
+
+def _align_proposals(
+    recovered: list[dict[str, Any]], truth: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Match model-assigned IDs by unique, exact normalized proposal name/alias."""
+    expected_ids = {p["proposal_id"] for p in truth}
+    name_index: dict[str, set[str]] = {}
+    for proposal in truth:
+        for alias in [proposal.get("name", ""), *proposal.get("aliases", [])]:
+            normalized = _normalize_proposal_name(alias)
+            if normalized:
+                name_index.setdefault(normalized, set()).add(proposal["proposal_id"])
+    aligned: list[dict[str, Any]] = []
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+    for proposal in recovered:
+        old_id = str(proposal["proposal_id"])
+        if old_id in mapping:
+            raise ValueError("Duplicate predicted proposal ID: " + old_id)
+        if old_id in expected_ids:
+            matched = old_id
+        else:
+            candidates = name_index.get(
+                _normalize_proposal_name(str(proposal.get("name", ""))), set()
+            )
+            matched = next(iter(candidates)) if len(candidates) == 1 else f"UNMATCHED:{old_id}"
+        if matched in used:
+            raise ValueError("Multiple predicted alternatives mapped to the same ground truth")
+        mapping[old_id] = matched
+        used.add(matched)
+        aligned.append({**proposal, "proposal_id": matched})
+    return aligned, mapping
 
 
 def run_benchmark(
@@ -117,6 +156,7 @@ def run_benchmark(
         recovered = predictions.get("proposals", [])
         if not isinstance(recovered, list):
             raise ValueError("Predicted proposals must be a list")
+        recovered, proposal_id_map = _align_proposals(recovered, gt_proposals)
         recovered_ids = [p["proposal_id"] for p in recovered]
         if len(recovered_ids) != len(set(recovered_ids)):
             raise ValueError("Duplicate predicted proposal IDs")
@@ -124,7 +164,14 @@ def run_benchmark(
             p["proposal_id"]: p["status"] for p in recovered if "status" in p
         }
         found_anchors = [
-            anchor for p in recovered for anchor in p.get("code_anchors", [])
+            {
+                **anchor,
+                "proposal_id": proposal_id_map.get(
+                    str(anchor.get("proposal_id", "")),
+                    str(anchor.get("proposal_id", "")),
+                ),
+            }
+            for p in recovered for anchor in p.get("code_anchors", [])
         ]
         found_vectors = {
             p["proposal_id"]: (
@@ -178,7 +225,7 @@ def run_benchmark(
         counts = {
             "raw_messages": len(raw),
             "held_out_prs": len(labels),
-            "proposals": recovery,
+            "proposals": {**recovery, "proposal_id_mapping": proposal_id_map},
             "states": state,
             "evidence": evidence,
             "anchors": anchors,
