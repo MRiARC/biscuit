@@ -56,17 +56,20 @@ class Pass2DeliberationSlicing:
         if not proposals:
             return []
 
-        # Index messages by ID for fast lookup
+        # Canonicalize IDs once. Never re-read raw message IDs for lookups:
+        # str(None) is not the generated msg-{idx} key used in the index.
         msg_by_id: dict[str, dict[str, Any]] = {}
+        normalized_messages: list[dict[str, Any]] = []
         for idx, m in enumerate(messages):
-            mid = str(m.get("message_id") or m.get("id") or f"msg-{idx}")
+            original_id = m.get("message_id") or m.get("id")
+            mid = str(original_id) if original_id is not None else f"msg-{idx}"
+            if mid in msg_by_id:
+                raise ValueError(f"Duplicate message ID in deliberation: {mid}")
             m_copy = dict(m)
             m_copy["message_id"] = mid
-            if "content" not in m_copy and "raw_content" in m_copy:
-                m_copy["content"] = m_copy["raw_content"]
-            elif "content" not in m_copy:
-                m_copy["content"] = ""
+            m_copy["content"] = str(m.get("content") or m.get("raw_content") or "")
             msg_by_id[mid] = m_copy
+            normalized_messages.append(m_copy)
 
         # Build adjacency graph if edges provided
         outgoing_edges: dict[str, list[dict[str, Any]]] = {}
@@ -99,8 +102,8 @@ class Pass2DeliberationSlicing:
                 if role in RULING_ROLES and any(kw in content_lower for kw in RULING_KEYWORDS):
                     selected_ids.add(mid)
 
-            if not seed_ids and messages:
-                seed_ids.append(str(messages[0].get("message_id") or messages[0].get("id") or ""))
+            if not seed_ids and normalized_messages:
+                seed_ids.append(normalized_messages[0]["message_id"])
 
             for sid in seed_ids:
                 selected_ids.add(sid)
@@ -129,15 +132,11 @@ class Pass2DeliberationSlicing:
 
             # 3. Collect candidates in chronological order
             ordered_candidates = [
-                msg_by_id[str(m.get("message_id") or m.get("id"))]
-                for m in messages
-                if str(m.get("message_id") or m.get("id")) in selected_ids
+                m for m in normalized_messages if m["message_id"] in selected_ids
             ]
 
             if not ordered_candidates:
-                ordered_candidates = [
-                    msg_by_id[str(m.get("message_id") or m.get("id"))] for m in messages
-                ]
+                ordered_candidates = list(normalized_messages)
 
             # 4. Word-bounding with Anchor Preservation (fixes reviewer issue 6)
             # Must preserve:
