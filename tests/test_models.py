@@ -762,10 +762,8 @@ def test_alternative_ruling_evidence_backlink_negative(test_db_session):
     fk_rows = test_db_session.execute(text("PRAGMA foreign_key_list(decision_alternatives)")).all()
     assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), (
         fk_rows,
-        test_db_session.execute(
-            text("SELECT name, sql FROM sqlite_master WHERE type='table' "
-                 "AND name IN ('decisions', 'decision_alternatives', 'evidence_spans')")
-        ).all(),
+        [(fk.name, fk.use_alter, [(e.parent.name, str(e.column)) for e in fk.elements])
+         for fk in DecisionAlternative.__table__.foreign_key_constraints],
     )
     good = test_db_session.execute(
         text("UPDATE decision_alternatives SET ruling_evidence_id=:eid WHERE id=:aid"),
@@ -806,10 +804,8 @@ def test_decision_ruling_evidence_backlink_negative(test_db_session):
     fk_rows = test_db_session.execute(text("PRAGMA foreign_key_list(decisions)")).all()
     assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), (
         fk_rows,
-        test_db_session.execute(
-            text("SELECT name, sql FROM sqlite_master WHERE type='table' "
-                 "AND name IN ('decisions', 'decision_alternatives', 'evidence_spans')")
-        ).all(),
+        [(fk.name, fk.use_alter, [(e.parent.name, str(e.column)) for e in fk.elements])
+         for fk in Decision.__table__.foreign_key_constraints],
     )
     with pytest.raises(IntegrityError):
         updated = test_db_session.execute(
