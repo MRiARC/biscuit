@@ -384,8 +384,8 @@ def test_anchor_contract_serialization_and_authority_scope() -> None:
 
 
 def test_lineage_storage_records_cover_canonical_ddl(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
     import uuid
+    from datetime import UTC, datetime
 
     from biscuit.grounding import CodeSymbolAnchor, lineage_storage_records
 
@@ -398,7 +398,7 @@ def test_lineage_storage_records_cover_canonical_ddl(tmp_path: Path) -> None:
     git(root, "mv", "old/parser.py", "old/renamed.py")
     commit(root, "rename")
     result = trace_lineage(root, past, "old/parser.py", "tok_get")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     records = lineage_storage_records(anchor, result, recorded_at=now)
     assert records
     required = {

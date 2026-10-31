@@ -192,7 +192,7 @@ def lineage_storage_records(
         raise ValueError("Lineage result is for a different historical revision")
     if result.historical_path != anchor.historical_file_path:
         raise ValueError("Lineage result is for a different historical path")
-    timestamp = recorded_at or datetime.datetime.now(datetime.timezone.utc)
+    timestamp = recorded_at or datetime.datetime.now(datetime.UTC)
     if timestamp.tzinfo is None:
         raise ValueError("recorded_at must have a timezone")
     return tuple({
