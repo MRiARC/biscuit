@@ -6,7 +6,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-
 _AUDIT_COLUMNS = {
     "reason_code": "TEXT NOT NULL DEFAULT 'UNSPECIFIED'",
     "alternative_id": "TEXT",
