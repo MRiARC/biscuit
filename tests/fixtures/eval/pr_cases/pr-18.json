@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Python/ast.c",
-      "diff": "-static int ast_expr(void)\n+static int ast_expression(void)"
+      "diff": "diff --git a/Python/ast.c b/Python/ast.c\n--- a/Python/ast.c\n+++ b/Python/ast.c\n@@ -1,1 +1,1 @@\n-static int ast_expr(void)\n+static int ast_expression(void)"
     }
   ],
   "fixture_origin": "SYNTHETIC"
