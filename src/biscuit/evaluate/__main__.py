@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-simulate", action="store_true", help="Return NOT_MEASURED unless predictions supplied")
     parser.add_argument("--stream3", action="store_true", help="Run installed Stream 3 extraction (NOT mock replay)")
     parser.add_argument("--semantic-embeddings", action="store_true", help="Score predicted rationale with loopback Ollama and precomputed GT vectors")
+    parser.add_argument("--profile-memory", action="store_true", help="Sample host memory during actual Stream 3 extraction only")
     args = parser.parse_args(argv)
 
     if args.stream3 and args.predictions is not None:
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             result = run_benchmark(
                 name, fixtures_root=args.fixtures_root, predictions_path=prediction_file,
                 predictor=predictor, semantic_embedder=embedder,
+                profile_host_memory=args.profile_memory and predictor is not None,
                 audit_db=args.audit_db or Path.home() / ".local/share/biscuit/workspace.sqlite3",
                 recorded_replay=(args.predictions is None and not args.no_simulate
                                  and not args.stream3),
