@@ -66,3 +66,15 @@ until the Stream 1/2/3/4 connectors and independent source evidence are present.
 `--stream3` and `--predictions` cannot be combined. This path should not be
 described as a successful full-stack run until CI has exercised the merged
 components with valid persisted source evidence and real coverage.
+
+## Optional local semantic rationale scorer
+
+`biscuit evaluate --semantic-embeddings --benchmark pep-505` uses a
+**loopback-only** Ollama `nomic-embed-text` client for *predicted* rationale.
+The scorer NEVER sends withheld ground-truth rationale to the running model.
+Ground truth must contain independently prepared, pinned
+`rationale_embedding_model: "nomic-embed-text"` plus `rationale_embedding`
+vectors. If model-matched GT vectors are absent (as in all checked-in
+synthetic fixtures), the semantic metric reports `NOT_MEASURED`, rather than
+falling back silently to lexical hashing or claiming calibrated model accuracy.
+There is no dependency on cloud model APIs or background downloads.
