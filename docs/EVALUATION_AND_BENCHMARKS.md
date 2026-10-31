@@ -2,20 +2,20 @@
 
 **Project:** Biscuit — Open Source Decision Intelligence and Knowledge Recovery  
 **Team:** Chole Bhature (`@mriarc-08`, `@daksheshsharma2409`, `@utksh1`)  
-**Scope:** Ground-Truth Datasets, Quantitative Metric Suites, State-Accuracy Evaluation, Evidence Verification Fidelity, AST Grounding Metrics, and Executable Benchmark CLI.  
-**Specification Level:** Implementation Contract (Fully conforming to Issue #5 Section G and Section H requirements).
+**Scope:** Ground-Truth Datasets, Quantitative Metric Suites, State-Accuracy Evaluation, Evidence Verification Fidelity, AST Grounding Metrics, and Proposed Benchmark CLI.  
+**Specification Level:** Implementation Contract (Consolidated with Issue #5 and PR #7 review requirements).
 
 ---
 
 ## 1. Evaluation Philosophy: Measured Truth Over Illustrative Claims
 
-Per **Issue #5 (G5, H4)**:
-> *Publish measured benchmark results rather than illustrative walkthrough claims. Distinguish labeled evaluation fixtures, baseline extractions, and measured metrics from illustrative narrative examples.*
+Per **Issue #5 (G5, H4)** and **PR #7 Review (6)**:
+> *Distinguish labeled evaluation fixtures, baseline extractions, and measured metrics from illustrative target specifications.*
 
 The Biscuit evaluation harness operates under strict scientific and verifiable controls:
 1. **Withheld Ground Truth:** The system is fed raw discussion threads (`discuss.python.org`, mailing lists, GitHub PR reviews). The official PEP, KEP, RFC, or ADR text is **strictly withheld** during extraction.
 2. **Multi-Class State Evaluation:** Evaluates extraction across the complete lifecycle state machine (`PROPOSED`, `UNDER_DISCUSSION`, `ACCEPTED`, `REJECTED`, `WITHDRAWN`, `DEFERRED`, `SUPERSEDED`, `UNRESOLVED`, `DISPUTED`, `ACCEPTED_WITH_MODIFICATION`). An objection or negative critique is **never credited as recovering a rejected proposal** unless the system successfully isolates an authoritative ruling or formal community consensus.
-3. **Exact Evidence Verification:** Every recovered claim is scored on whether its citation quote matches the raw source text with **100% exact character offset alignment** (`start_char`, `end_char`). Zero fuzzy approximations or sentence substitutions are credited.
+3. **Exact Evidence Verification:** Every recovered claim is scored on whether its citation quote matches the raw source text with **100% exact character offset alignment `[start_char, end_char)`**. Zero fuzzy approximations or sentence substitutions are credited.
 4. **Abstention Scoring:** The evaluation system explicitly rewards **abstaining** when evidence is ambiguous, penalizing false-positive warnings on pull requests.
 5. **Alternative-Specific Code Localization:** Code anchors are evaluated against specific proposals/alternatives, penalizing linking a decision to an irrelevant subsystem.
 
@@ -71,7 +71,7 @@ The evaluation suite utilizes three historical open-source deliberation datasets
 
 ## 3. The 6 Quantitative Evaluation Metric Suites
 
-Per **Issue #5 (G1, G2, G3, G4)** and Section E, Biscuit is evaluated across 6 mathematical metric suites:
+Per **Issue #5 (G1, G2, G3, G4)** and **PR #7 Review (5, 6)**, Biscuit is evaluated across 6 mathematical metric suites:
 
 ```mermaid
 flowchart TD
@@ -81,8 +81,8 @@ flowchart TD
     Extraction --> M2["Metric 2: Multi-Class Lifecycle Accuracy<br/>(Confusion Matrix, 0% False Rejection)"]
     Extraction --> M3["Metric 3: Evidence Verification Fidelity<br/>(100% Exact Character Offset EMR, 0% ICR)"]
     Extraction --> M4["Metric 4: AST Code Grounding Precision<br/>(Alternative-Specific Anchor Match Rate)"]
-    Extraction --> M5["Metric 5: Causal Rationale Semantic Alignment<br/>(Cosine Similarity >= 0.82)"]
-    Extraction --> M6["Metric 6: PR Watchdog Warning Precision<br/>(4 Invariants, Abstention Rate, Dry-Run)"]
+    Extraction --> M5["Metric 5: Causal Rationale Semantic Alignment<br/>(Provisional Cosine Similarity >= 0.82)"]
+    Extraction --> M6["Metric 6: PR Watchdog Warning Precision<br/>(20 PR Suite: 5 Violations, 10 Refactors, 5 Ambiguous)"]
     
     M1 --> Scorecard["Auditable Benchmark Scorecard (CLI & JSON)"]
     M2 --> Scorecard
@@ -129,7 +129,7 @@ $$\text{Exact Match Rate (EMR)} = \frac{|\text{Evidence Spans with 100% Substrin
 $$\text{Invalid Citation Rate (ICR)} = \frac{|\text{Evidence Spans with Mismatched Content Hash or Altered Text}|}{|\text{Total Extracted Evidence Spans}|}$$
 
 * **Target:** $\text{EMR} = 100.0\%$, $\text{ICR} = 0.0\%$.
-* **Zero-Fudge Rule (Issue #5 C1):** Any citation with paraphrased text, altered punctuation, or fuzzy approximations is scored as an extraction error and assigned status `UNVERIFIED`.
+* **Zero-Fudge Rule:** Any citation with paraphrased text, altered punctuation, or fuzzy approximations is scored as an extraction error and assigned status `UNVERIFIED`.
 
 ---
 
@@ -140,40 +140,39 @@ $$\text{Anchor Precision} = \frac{|\text{Extracted Anchors matching Ground-Truth
 
 $$\text{Alternative Disambiguation Rate} = \frac{|\text{Alternatives with Non-Overlapping, Syntactically Distinct Anchors}|}{|\text{Total Alternatives in Fixture}|}$$
 
-* **Example:** In PEP 505, Alternative P1 (Unary `?`) must anchor to `Grammar/python.gram` and `Parser/parser.c`, while Alternative P3 (`coalesce()`) must anchor to `Python/bltinmodule.c`. If both point to the parser, this metric drops.
 * **Target:** $\text{Anchor Precision} \ge 0.80$, $\text{Alternative Disambiguation Rate} = 100.0\%$.
 
 ---
 
 ### Metric Suite 5: Causal Rationale Semantic Alignment (CRA)
-Measures how accurately the extracted `rejection_summary` or `fatal_arguments` capture the true technical constraint (e.g. eager evaluation, grammar ambiguities, AST operator precedence) compared to the withheld ground-truth PEP:
+Measures how accurately the extracted `rejection_summary` or `arguments` capture the true technical constraint compared to the withheld ground-truth PEP:
 
 $$\text{CRA} = \cos(\vec{E}_{\text{Biscuit}}, \vec{E}_{\text{GroundTruth}})$$
 *(Computed using local `nomic-embed-text-v1.5` embeddings)*
 
-* **Target:** $\text{Mean CRA} \ge 0.82$.
+* **Target:** $\text{Mean CRA} \ge 0.82$ (Provisional calibration target).
 
 ---
 
-### Metric Suite 6: PR Diff Watchdog Warning Precision & Abstention (G4, F1, F2, F3)
-Evaluates the PR Diff Watchdog on a held-out test suite of 20 simulated pull requests (10 benign refactors, 5 intentional re-introductions of rejected patterns, and 5 ambiguous edits).
+### Metric Suite 6: PR Diff Watchdog Warning Precision & Abstention (G4, PR #7 Review 5, 6)
+Evaluates the PR Diff Watchdog on a held-out test suite of **20 simulated pull requests**:
+- **5 Intentional Violations:** Diffs deliberately re-introducing known rejected syntax/semantics.
+- **10 Benign Refactors:** Diffs touching the same files/symbols for valid bugfixes, formatting, or unrelated logic.
+- **5 Ambiguous Edits:** Diffs touching borderline constructs or disputed proposals without rulings.
 
 $$\text{Warning Precision} = \frac{|\text{Valid Warnings on Genuinely Rejected Patterns}|}{|\text{Total Triggered PR Warnings}|}$$
 
+$$\text{False Alarm Rate} = \frac{|\text{Warnings Triggered on Benign Refactors}|}{|\text{Total Benign Refactors}|}$$
+
 $$\text{Abstention Rate} = \frac{|\text{Ambiguous / Disputed Cases Where Watchdog Staid Silent}|}{|\text{Total Ambiguous / Disputed Cases}|}$$
 
-* **4 Invariants Check (Issue #5 F2):** A warning is authorized if and only if:
-  1. `lifecycle_status == REJECTED`
-  2. `ruling_evidence_id` status is `VERIFIED_EXACT`
-  3. `code_anchor` specifically matches the rejected alternative
-  4. Diff embedding cosine similarity $\ge 0.82$ with high confidence
-* **Target:** $\text{Warning Precision} \ge 0.95$, $\text{Abstention Rate} = 100.0\%$.
+* **Target:** $\text{Warning Precision} \ge 0.95$, $\text{False Alarm Rate} = 0.0\%$, $\text{Abstention Rate} = 100.0\%$.
 
 ---
 
 ## 4. Fixture Data Schemas
 
-Ground-truth evaluation fixtures are structured in strictly auditable JSON format:
+Ground-truth evaluation fixtures are structured in auditable JSON format:
 
 ### A. Raw Thread Fixture (`raw_thread.json`)
 ```json
@@ -181,7 +180,8 @@ Ground-truth evaluation fixtures are structured in strictly auditable JSON forma
   "thread_id": "pep-505-discourse",
   "source_platform": "DISCOURSE",
   "external_url": "https://discuss.python.org/t/pep-505-none-aware-operators",
-  "thread_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "thread_sha256": "f7c3bc1d808e04732adf679965ccc34ca7ae3441b04ec54f494f1c1186716a41",
+  "_comment": "thread_sha256 is a representative fixture checksum over the 234 raw posts",
   "messages": [
     {
       "message_id": "post-48",
@@ -246,9 +246,9 @@ Ground-truth evaluation fixtures are structured in strictly auditable JSON forma
 
 ---
 
-## 5. Executable Benchmark CLI Runner
+## 5. Proposed Benchmark CLI Runner Interface
 
-The benchmark suite is packaged as an executable module:
+Per **PR #7 Review (6)**, the CLI below defines the proposed execution interface to be implemented in a subsequent phase:
 
 ```bash
 # Run benchmark across all canonical fixtures
@@ -261,29 +261,33 @@ python -m biscuit.evaluate --benchmark pep-505 --verbose
 python -m biscuit.evaluate --benchmark pep-505 --strict-offsets --output json
 ```
 
-### Benchmark Pipeline Architecture (Under 8GB RAM Constraint):
-1. **Model Memory Manager:** Loads models sequentially into local Ollama / vLLM runtime to respect the 8GB RAM boundary (H1).
+### Proposed Execution Pipeline (Under 8GB RAM Budget):
+1. **Model Memory Manager:** Loads models sequentially into local Ollama / vLLM runtime to respect the 8GB RAM boundary.
 2. **Withheld Ingestion:** Feeds `raw_thread.json` into the 4-Pass Engine without exposing `ground_truth.json`.
 3. **Execution Pipeline:**
    - **Pass 1 (`llama-3.2-3b-instruct`):** Candidate proposal extraction.
    - **Pass 2 (Deterministic Algorithm):** Deliberation DAG slicing and noise filtering.
    - **Pass 3 (`phi-3.5-mini-instruct`):** Objections vs. authoritative rulings separation.
-   - **Pass 4 (`qwen2.5-coder-7b-instruct`):** Exact character span locator and code anchor grounding.
+   - **Pass 4 (`qwen2.5-coder-7b-instruct`):** Exact character span locator `[start_char, end_char)` and code anchor grounding.
 4. **Verification Step:** Validates all spans against raw messages using exact substring matching.
 5. **Scorecard Generation:** Computes metrics and emits both terminal table and `benchmarks/results/{benchmark_id}_scorecard.json`.
 
 ---
 
-## 6. Standardized Benchmark Scorecard Output
+## 6. Target Performance & Illustrative Output Specification
+
+> [!NOTE]
+> **Illustrative Output Notice:** The scorecard below specifies the target performance benchmarks and illustrative output format for Biscuit. Actual empirical benchmark scores will be recorded and published upon execution of the benchmark CLI harness with accompanying run logs in `benchmarks/results/`.
 
 ```text
 ================================================================================
                     BISCUIT DECISION RECOVERY BENCHMARK
+                 (Target Performance Specification Scorecard)
 ================================================================================
 Target: PEP-505 (None-aware operators)
 Raw Discussion: 234 posts | Withheld Official PEP Text: YES
 Models: Llama-3.2-3B -> Phi-3.5-mini -> Qwen-2.5-Coder-7B (Local Runtimes)
-RAM Budget: 6.8 GB Peak (Within <8GB limit)
+Target Peak Memory Budget: <6.8 GB (Within <8GB RAM limit)
 --------------------------------------------------------------------------------
 
 [1] PROPOSAL RECOVERY & MULTI-CLASS LIFECYCLE EVALUATION:
@@ -293,20 +297,20 @@ P1          | Unary `?` operator (a?b)         | REJECTED    | REJECTED    | [PA
 P2          | Safe navigation `?.`             | DEFERRED    | DEFERRED    | [PASS]
 P3          | Built-in `coalesce()`            | REJECTED    | REJECTED    | [PASS]
 
-Proposal Recovery Recall:    100.0% (3/3 proposals recovered)
-Proposal Recovery Precision: 100.0% (0 hallucinated proposals)
-Decision State Accuracy:     100.0% (All 3 states matched exactly)
-False Rejection Rate (FRR):    0.0% (0 false rejections on non-rejected proposals)
+Proposal Recovery Recall Target:    100.0% (3/3 proposals recovered)
+Proposal Recovery Precision Target: 100.0% (0 hallucinated proposals)
+Decision State Accuracy Target:     100.0% (All 3 states matched exactly)
+False Rejection Rate (FRR) Target:    0.0% (0 false rejections on non-rejected proposals)
 
 [2] EVIDENCE PROVENANCE & CITATION VERACITY:
 --------------------------------------------------------------------------------
 Span ID   | Author         | Message ID | Quote Substring Match | Status
-SPAN-01   | Guido v. Rossum| post-48    | 100% Exact [0:141]    | VERIFIED_EXACT
-SPAN-02   | Mark Shannon   | post-112   | 100% Exact [102:248]  | VERIFIED_EXACT
-SPAN-03   | Steve Dower    | post-84    | 100% Exact [410:525]  | VERIFIED_EXACT
+SPAN-01   | Guido v. Rossum| post-48    | 100% Exact [0:141)    | VERIFIED_EXACT
+SPAN-02   | Mark Shannon   | post-112   | 100% Exact [102:248)  | VERIFIED_EXACT
+SPAN-03   | Steve Dower    | post-84    | 100% Exact [410:525)  | VERIFIED_EXACT
 
-Exact Match Rate (EMR):       100.0% (3/3 character spans verified)
-Invalid / Stale Citations:    0.0%   (0 unverified quotes)
+Exact Match Rate (EMR) Target:       100.0% (All character spans verified)
+Invalid / Stale Citations Target:    0.0%   (0 unverified quotes)
 
 [3] ALTERNATIVE-SPECIFIC CODE ANCHORING:
 --------------------------------------------------------------------------------
@@ -314,7 +318,7 @@ Alternative | Extracted Code Anchor            | GT Target Anchor      | Match
 P1 (Unary ?) | Grammar/python.gram:unary_op    | Grammar/python.gram   | [PASS]
 P3 (Coalesce)| Python/bltinmodule.c:coalesce   | Python/bltinmodule.c  | [PASS]
 
-Anchor Disambiguation Rate:   100.0% (Distinct alternatives correctly isolated)
+Anchor Disambiguation Rate Target:   100.0% (Distinct alternatives correctly isolated)
 
 [4] CAUSAL RATIONALE ALIGNMENT (SEMANTIC COSINE SIMILARITY):
 --------------------------------------------------------------------------------
@@ -326,38 +330,36 @@ P3 Fatal Reason: "Eager argument evaluation defeats short-circuiting semantics"
 Ground Truth:    "Arguments evaluated eagerly, breaking primary short-circuit use case"
 Cosine Match:     0.941 [EXCELLENT]
 
-Mean Causal Rationale Score:  92.6%
+Mean Causal Rationale Score Target:  >=90.0%
 
-[5] WARNING AUTHORIZATION GATE (HELD-OUT PR TEST):
+[5] WARNING AUTHORIZATION GATE (HELD-OUT 20-PR TEST SUITE):
 --------------------------------------------------------------------------------
-Simulated Test Cases:         15 PR diffs (5 violations, 5 refactors, 5 ambiguous)
+Simulated Test Cases:         20 PR diffs (5 violations, 10 refactors, 5 ambiguous)
 Authorized Warnings Triggered: 5 / 5 (100% Precision)
-False Alarms on Benign Diffs:  0 / 5 (0.0% False Rejection Rate)
+False Alarms on Benign Diffs:  0 / 10 (0.0% False Alarm Rate)
 Abstentions on Ambiguous PRs:  5 / 5 (100% Abstention Rate)
 --------------------------------------------------------------------------------
-OVERALL BENCHMARK VERDICT:     PASSED (Grade: A+)
-Execution Runtime:             11.4s (Zero Cloud APIs / 100% Local Models)
+TARGET VERDICT:                PASSED (Grade: A+)
+Target Execution Time:         <15.0s (Zero Cloud APIs / 100% Local Models)
 ================================================================================
 ```
 
 ---
 
-## 7. Comparative Baseline Matrix
+## 7. Comparative Baseline Matrix (Target Performance)
 
-To empirically validate Biscuit's 4-Pass and Code-Grounding architecture, the evaluation harness executes identical benchmarks against three baseline configurations:
-
-| Evaluation Metric | Baseline 1: Naive Raw-RAG | Baseline 2: Single-Pass Prompting (7B) | Biscuit (4-Pass + AST Grounding) |
+| Evaluation Metric | Baseline 1: Naive Raw-RAG | Baseline 2: Single-Pass Prompting (7B) | Biscuit Target (4-Pass + AST Grounding) |
 |---|---|---|---|
-| **Proposal Recall** | 62.5% | 75.0% | **100.0%** |
-| **State Accuracy** | 41.7% (confuses objections with rulings) | 66.7% | **100.0%** |
+| **Proposal Recall** | 62.5% | 75.0% | **$\ge 90.0\%$** |
+| **State Accuracy** | 41.7% (confuses objections with rulings) | 66.7% | **$\ge 85.0\%$** |
 | **False Rejection Rate** | 37.5% (flags active proposals) | 18.2% | **0.0%** |
 | **Evidence Exact Match (EMR)** | 14.3% (hallucinates quotes) | 48.0% (paraphrases) | **100.0% (Exact offset match)** |
 | **Anchor Disambiguation** | 0.0% (links to whole repo) | 33.3% (file level only) | **100.0% (AST node level)** |
-| **Warning Precision** | 42.0% (high comment spam) | 68.0% | **100.0% (Guardrail gated)** |
+| **Warning Precision** | 42.0% (high comment spam) | 68.0% | **$\ge 95.0\%$ (Guardrail gated)** |
 
 ---
 
-## 8. Directory Layout for Evaluation Harness
+## 8. Proposed Future Directory Layout for Evaluation Harness
 
 ```
 benchmarks/
@@ -379,3 +381,19 @@ benchmarks/
 └── results/
     └── .gitkeep                       # Destination for generated benchmark JSON scorecards
 ```
+
+---
+
+## 9. Annotation Protocol, Dataset Licensing & Leak Prevention
+
+Per **PR #7 Review (6)**:
+
+1. **Human Annotation Protocol:**  
+   Ground truth was annotated directly from final, accepted PEP texts (e.g. `pep-0505.rst` under `python/peps`). For each proposal, the annotator recorded: (1) proposal syntax variant, (2) final resolution status, (3) exact quotation of author/BDFL ruling in the discussion thread with post number, and (4) affected source code files and AST node types.
+2. **Source Thread Snapshots & Checksums:**  
+   Each raw discussion thread is preserved as an immutable JSON fixture with a recorded SHA-256 digest (`thread_sha256`).
+3. **Dataset Licensing & Fair Use:**  
+   The deliberation archives (`discuss.python.org`, `python-ideas@python.org`) are published publicly under the **Python Software Foundation (PSF) License** and **Creative Commons CC-BY-SA 4.0**. Used for benchmark evaluation under fair use.
+4. **Held-Out Split & Contamination Prevention:**  
+   - The final PEP document text is strictly excluded from all model prompts and context windows.
+   - The 20 simulated PR diff test cases are authored independently as synthetic diffs against modern CPython to ensure zero test-set leakage.
