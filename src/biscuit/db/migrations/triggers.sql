@@ -438,6 +438,36 @@ BEGIN
 END;
 $$;
 
+-- Privilege boundary for the SECURITY DEFINER transition entrypoint.
+-- Only a separately authenticated, trusted transition service should be granted
+-- membership in this NOLOGIN group by the deployment administrator. Untrusted
+-- runtime/LLM/ingestion database roles MUST NOT be members.
+-- Role provisioning is intentionally idempotent for reapplying bootstrap SQL.
+DO $transition_roles$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname = 'biscuit_transition_executor'
+    ) THEN
+        CREATE ROLE biscuit_transition_executor NOLOGIN;
+    END IF;
+END;
+$transition_roles$;
+ALTER ROLE biscuit_transition_executor NOLOGIN;
+
+-- PostgreSQL normally grants function EXECUTE to PUBLIC at creation; revoke
+-- that default so SECURITY DEFINER cannot be called by arbitrary DB users.
+REVOKE ALL ON FUNCTION public.transition_alternative_lifecycle(
+    UUID, TEXT, UUID, TEXT, UUID, TEXT, UUID, UUID
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.transition_alternative_lifecycle(
+    UUID, TEXT, UUID, TEXT, UUID, TEXT, UUID, UUID
+) TO biscuit_transition_executor;
+
+-- Never let PUBLIC bypass the audited entrypoint with a direct table UPDATE.
+-- Deployments must also ensure no application/runtime role has a direct grant,
+-- and must never connect application traffic with the schema-owner identity.
+REVOKE UPDATE, DELETE ON TABLE public.decision_alternatives FROM PUBLIC;
+
 -- 11. Canonical HNSW retrieval index (STORAGE_AND_RETRIEVAL.md §4).
 -- Idempotent; safe to re-run on every bootstrap. Postgres-only.
 CREATE INDEX IF NOT EXISTS idx_alternatives_embedding
