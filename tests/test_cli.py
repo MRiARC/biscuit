@@ -317,3 +317,28 @@ def test_typer_evaluate_persists_abstention_audit_by_default(tmp_path, monkeypat
             "SELECT COUNT(*) FROM pr_watchdog_audit_log "
             "WHERE action='ABSTAIN' AND reason_code='AMBIGUOUS_ABSTENTION'"
         ).fetchone()[0] == 5
+
+
+def test_stream3_engine_refuses_prediction_file_in_typer(tmp_path) -> None:
+    from typer.testing import CliRunner
+
+    from biscuit.cli.main import app
+
+    outcome = CliRunner().invoke(
+        app, ["evaluate", "--stream3", "--predictions", str(tmp_path / "fake.json")]
+    )
+    assert outcome.exit_code == 2
+    assert "mutually exclusive" in outcome.output
+
+
+def test_stream3_engine_refuses_prediction_file_in_stdlib() -> None:
+    import subprocess
+    import sys
+
+    outcome = subprocess.run(
+        [sys.executable, "-m", "biscuit.evaluate", "--stream3",
+         "--predictions", "untrusted.json", "--output", "json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert outcome.returncode == 2
+    assert "--stream3 cannot be combined" in outcome.stderr
