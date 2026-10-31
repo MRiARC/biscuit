@@ -178,6 +178,7 @@ def _transition(
             elif status.startswith("M") and new == old_path:
                 operation, old_file, new_file = "MODIFY", old_path, old_path
             elif status.startswith("B") and new == old_path:
+                # Defensive for future Git variants; Git 2.47 emits M100 instead.
                 operation, old_file, new_file = "REWRITE_SPLIT_B", old_path, old_path
         for next_path in set(next_paths):
             candidates |= _matching_paths(
