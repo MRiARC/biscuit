@@ -27,23 +27,90 @@ if typer is not None:
     @app.command()
     def evaluate(
         benchmark: str = typer.Option("pep-505", "--benchmark"),
+        all_benchmarks: bool = typer.Option(False, "--all"),
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
+        fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
+        output_format: str = typer.Option("rich", "--format"),
+        strict_offsets: bool = typer.Option(False, "--strict-offsets"),
+        verbose: bool = typer.Option(False, "--verbose"),
     ) -> None:
-        """Score predictions against withheld fixture labels (no live models needed)."""
-        try:
-            outcome = run_benchmark(
-                benchmark_id=benchmark, predictions_path=predictions, output_path=output
+        """Evaluate offline predictions; do not expose hidden ground truth to predictors."""
+        import json
+
+        from biscuit.evaluate.fixtures import DEFAULT_FIXTURE_ROOT
+
+        root = fixtures_root or DEFAULT_FIXTURE_ROOT
+        if output_format not in {"rich", "json"}:
+            typer.echo("--format must be rich or json", err=True)
+            raise typer.Exit(2)
+        if all_benchmarks:
+            if predictions is not None and not predictions.is_dir():
+                typer.echo("--all requires a prediction directory", err=True)
+                raise typer.Exit(2)
+            names = sorted(
+                folder.name for folder in root.iterdir()
+                if folder.is_dir() and (folder / "raw_thread.json").exists()
             )
-        except (OSError, ValueError, KeyError) as exc:
+        else:
+            names = [benchmark]
+        if not names:
+            typer.echo("No benchmark fixtures found", err=True)
+            raise typer.Exit(2)
+        try:
+            outcomes = [
+                run_benchmark(
+                    benchmark_id=name,
+                    predictions_path=(
+                        predictions / f"{name}.json"
+                        if all_benchmarks and predictions is not None else predictions
+                    ),
+                    fixtures_root=root,
+                )
+                for name in names
+            ]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             typer.echo(f"Evaluation failed: {exc}", err=True)
             raise typer.Exit(1) from exc
-        render_scorecard(outcome)
-        typer.echo(f"Saved: {output}")
-        if outcome.verdict in {"NOT_MEASURED", "INCOMPLETE"}:
-            raise typer.Exit(2)
-        if outcome.verdict == "FAILED":
+        payload = (
+            outcomes[0].to_dict() if len(outcomes) == 1
+            else {
+                "schema_version": 1,
+                "benchmarks": [outcome.to_dict() for outcome in outcomes],
+                "verdict": (
+                    "FAILED" if any(x.verdict == "FAILED" for x in outcomes)
+                    else "INCOMPLETE" if any(x.verdict != "PASSED" for x in outcomes)
+                    else "PASSED"
+                ),
+            }
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if output_format == "json":
+            typer.echo(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+        else:
+            for outcome in outcomes:
+                render_scorecard(outcome)
+                if verbose and "watchdog" in outcome.counts:
+                    for row in outcome.counts["watchdog"]["audit_rows"]:
+                        typer.echo(
+                            f"{row['case_id']}: {row['action']} "
+                            f"(truth={row['ground_truth_class']}, correct={row['correct']})"
+                        )
+            typer.echo(f"Saved: {output}")
+        if strict_offsets and any(
+            metric.name == "Evidence exact match rate" and metric.status != "PASSED"
+            for outcome in outcomes for metric in outcome.metrics
+        ):
+            typer.echo("Strict offsets: unverified or absent evidence", err=True)
             raise typer.Exit(1)
+        if any(outcome.verdict == "FAILED" for outcome in outcomes):
+            raise typer.Exit(1)
+        if any(outcome.verdict != "PASSED" for outcome in outcomes):
+            raise typer.Exit(2)
 
     @app.command()
     def ingest(

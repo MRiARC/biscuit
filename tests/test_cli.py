@@ -146,3 +146,30 @@ def test_discourse_ingest_rejects_incomplete_page(monkeypatch) -> None:
     monkeypatch.setattr(storage, "_read_topic_json", fake_read_json)
     with pytest.raises(ValueError, match="Incomplete"):
         storage._fetch_discourse("https://forum.example.org/t/topic/123")
+
+
+def test_stdlib_benchmark_cli_runs_without_typer(tmp_path) -> None:
+    import subprocess
+    import sys
+
+    command = [
+        sys.executable, "-m", "biscuit.evaluate",
+        "--benchmark", "pep-505", "--output", "json",
+    ]
+    executed = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert executed.returncode == 2
+    payload = json.loads(executed.stdout)
+    assert payload["verdict"] == "NOT_MEASURED"
+    assert payload["dataset_kind"] == "SYNTHETIC_SMOKE_NOT_HISTORICAL"
+
+
+def test_stdlib_cli_strict_offsets_rejects_unmeasured_fixture() -> None:
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "biscuit.evaluate", "--strict-offsets", "--output", "json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "Strict offsets" in result.stderr
