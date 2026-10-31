@@ -36,8 +36,8 @@ from biscuit.switch.types import (
     HITLEventAction,
     HITLRequestStatus,
     SwitchActionType,
-    compute_sha256_hex,
     canonical_json,
+    compute_sha256_hex,
 )
 
 SIGNATURE_HEADER = "X-Switch-Signature"
@@ -275,7 +275,7 @@ class CallbackSecurity:
             grants = list(self._role_grant_resolver(
                 actor_source_platform, actor_platform_id, actor_contributor_id, project
             ))
-        except Exception:
+        except Exception:  # noqa: BLE001 - fail closed on any trusted-resolver error
             return None, "could not verify the actor's project-specific role grants"
         qualified = [
             g for g in grants
