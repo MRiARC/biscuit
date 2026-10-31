@@ -170,12 +170,12 @@ Extracts directed subgraphs around each alternative using `discussion_edges`, pa
 ### Pass 3: Argument & Stance Mining (`Phi-3.5-mini-instruct`)
 Separates individual member objections from consensus rulings:
 * **Objection:** Recorded as an `arguments` row. Does NOT change proposal status to `REJECTED`.
-* **Ruling:** A model-generated ruling label has no authority. A rejection requires a `VERIFIED_EXACT` `RULING` span linked to the same alternative and authored by an identified human authority. Core Maintainer consensus requires two distinct verified maintainer sign-offs. Draft approval is not a ruling.
+* **Ruling:** A model-generated ruling label has no authority. A rejection requires a `VERIFIED_EXACT` `RULING` span linked to the same alternative and authored by an identified human authority. A BDFL ruling requires an identified BDFL author; Core Maintainer consensus requires the ruling author plus one other distinct verified Core Maintainer sign-off; Working Group authority requires a Working Group Chair ruling plus one other distinct verified group-member sign-off. Draft approval is not a ruling.
 
 ### Pass 4: Schema & MADR Synthesis (`Qwen 2.5-Coder-7B-Instruct`)
 Synthesizes the complete MADR record and extracts exact character offsets `[start_char, end_char)` for all evidence quotes.
 * Evidence spans are created with default status `UNVERIFIED`.
-* The verification engine extracts `raw_content[start_char:end_char]` from `source_message_versions`. If 100% byte-for-byte match, promoted to `VERIFIED_EXACT`.
+* The verification engine extracts `raw_content[start_char:end_char]` from `source_message_versions`. If the exact string slice matches and SHA-256 over UTF-8 bytes of the quote matches `content_hash`, the span is promoted to `VERIFIED_EXACT`.
 
 ---
 
@@ -183,29 +183,32 @@ Synthesizes the complete MADR record and extracts exact character offsets `[star
 
 Per **PR #7 Review (7)**:
 Every extraction execution writes a permanent audit record into `extraction_runs`:
-* `pipeline_version`: Version string of extraction pipeline code.
+* `pipeline_version` and `schema_version`: Exact extraction code and output-schema versions.
 * `model_pass1_name` & `model_pass1_revision`: Exact HuggingFace / Ollama model tag.
 * `model_pass3_name` & `model_pass3_revision`
 * `model_pass4_name` & `model_pass4_revision`
 * `embedding_model_name` & `embedding_model_revision`
 * `prompt_templates_hash`: SHA-256 of all prompt templates used.
-* `source_thread_snapshot_sha256`: Digest of raw thread snapshot.
-* `run_status`: `SUCCESS`, `FAILED`, or `PARTIAL`.
+* `source_thread_snapshot_sha256`: Digest of the full canonical source snapshot.
+* `run_config`: Deterministic slicer/normalizer versions and parameters, thresholds, seeds, decoding settings, and runtime options.
+* `run_config_sha256`: SHA-256 of the canonical PostgreSQL JSONB text representation of `run_config`.
+* `environment_lock_sha256`: Digest of the dependency/environment lockfile.
+* `run_status`: `RUNNING`, `SUCCESS`, `FAILED`, or `PARTIAL`.
 
 ---
 
 ## 8. Day 1+ Real-Time Streaming Ingestion via Switch
 
-While Sections 1–7 govern **Mode A: Historical Batch Ingestion**, Biscuit supports **Mode B: Day 1+ Real-Time Streaming Ingestion** powered by Switch:
+While Sections 1–7 govern **Mode A: Historical Batch Ingestion**, Biscuit supports **Mode B: Day 1+ Real-Time Streaming Ingestion** powered by Switch. The model confidence threshold is suggestion-only; it cannot establish consensus, set `REJECTED`, or authorize a PR warning:
 
 ```mermaid
 flowchart LR
     LiveChat["Live CNCF Slack / Discord<br/>Working Group (#sig-node)"] --> SwitchGW["Switch WebSocket Gateway"]
     SwitchGW --> StreamIngest["biscuit.switch_agent<br/>Live Thread Buffer"]
     StreamIngest --> RollingDAG["Rolling discussion_edges<br/>(PROPOSES, OBJECTS, SUPPORTS)"]
-    RollingDAG --> ConsensusGate{"Autonomous Consensus or<br/>@biscuit record-decision"}
-    ConsensusGate --> LivingDraft["Synthesize living_decision_drafts"]
-    LivingDraft --> HITLCard["Switch Block Kit Approval Card"]
+    RollingDAG --> ConsensusGate{"Suggestion heuristic >= 0.88<br/>or @biscuit record-decision"}
+    ConsensusGate --> LivingDraft["Create candidate living_decision_drafts"]
+    LivingDraft --> HITLCard["Maintainer review / approval card"]
 ```
 
 ### Key Differences Between Ingestion Modes:
@@ -213,6 +216,6 @@ flowchart LR
 |---|---|---|
 | **Primary Source** | Discourse archives, mbox, closed PR reviews | CNCF Slack, Discord, Zulip working groups |
 | **Ingestion Protocol** | REST batch pagination (`/t/{id}.json`) | WebSocket / FastMCP real-time events |
-| **Storage Destination** | `source_threads` + `source_messages` | `source_threads` + `living_decision_drafts` |
-| **Extraction Trigger** | Offline batch evaluation job | Autonomous agreement detection / `@biscuit` ping |
-| **Verification Gate** | Zero-based character offset verifier | Switch Interactive HITL Approval Card in chat |
+| **Storage Destination** | `source_threads` + `source_messages` + `source_message_versions` | Same canonical source tables plus `living_decision_drafts` and `living_decision_draft_evidence` |
+| **Extraction Trigger** | Offline batch evaluation job | Suggestion heuristic / explicit `@biscuit` ping (draft only) |
+| **Verification Gate** | Zero-based exact substring + SHA-256 verifier | Same exact evidence verifier, followed by separate human draft approval |
