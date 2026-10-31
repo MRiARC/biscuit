@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from .normalizer import NORMALIZATION_VERSION
+
 
 class AnchorState(str, Enum):
     HISTORICAL = "HISTORICAL"
@@ -38,7 +40,7 @@ class Symbol:
     parser_backend: str = ""
     parser_version: str = ""
     grammar_version: str = ""
-    normalization_version: str = "python-ast-mask-v1"
+    normalization_version: str = NORMALIZATION_VERSION
 
     @property
     def symbol_name(self) -> str:
@@ -145,6 +147,13 @@ class CodeSymbolAnchor:
             raise ValueError("Invalid byte locator")
         if symbol.start_line <= 0 or symbol.end_line < symbol.start_line:
             raise ValueError("Invalid line locator")
+        if not all((
+            symbol.parser_backend.strip(),
+            symbol.parser_version.strip(),
+            symbol.grammar_version.strip(),
+            symbol.normalization_version.strip(),
+        )):
+            raise ValueError("Parser, grammar and normalization provenance must be nonempty")
         return cls(
             id=uuid.UUID(str(anchor_id)) if anchor_id is not None else uuid.uuid4(),
             alternative_id=uuid.UUID(str(alternative_id)),
