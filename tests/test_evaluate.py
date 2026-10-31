@@ -429,7 +429,7 @@ def test_stream3_adapter_calls_real_extraction_without_labels() -> None:
     assert prediction["warning_records"] == []
     assert prediction["warned_pr_ids"] == []
     assert "ground_truth" not in json.dumps(seen).lower()
-    assert seen["messages"][0]["author"] == "fixture-author-a"
+    assert seen["messages"][0]["author"] == "fixture-author-b"
     assert seen["messages"][0]["author_role"] == "contributor"
     assert seen["verified_project_roles"] is None
     assert run_benchmark("pep-505", predictor=lambda _: prediction).verdict != "PASSED"
