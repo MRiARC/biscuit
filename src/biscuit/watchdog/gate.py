@@ -32,6 +32,7 @@ warnings to a Switch maintainer card; ``PRODUCTION_COMMENT`` publishes.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from datetime import UTC, datetime
 
@@ -142,6 +143,14 @@ class WarningAuthorizationGate:
                 else None
             )
             anchor = self._touched_active_anchor(pr_diff, alternative)
+            target_line = 1
+            if anchor is not None:
+                for f in pr_diff.files:
+                    if (
+                        f.path == anchor.current_path or f.path == anchor.historical_file_path
+                    ) and f.hunks:
+                        target_line = f.hunks[0].new_start
+                        break
             comment_payload = self._formatter.build_comment_payload(
                 alternative=alternative,
                 decision=decision,
@@ -152,6 +161,8 @@ class WarningAuthorizationGate:
                 pr_number=pr_number,
                 repository_url=repository_url,
                 commit_sha=commit_sha,
+                line=target_line,
+                side="RIGHT",
             )
             comment_markdown = comment_payload["body"]
             if execution_mode == ExecutionMode.INTERACTIVE_HITL:
@@ -179,9 +190,7 @@ class WarningAuthorizationGate:
 
     # ── invariant evaluation ────────────────────────────────────────────
 
-    def _evaluate_candidate(
-        self, pr_diff: PRDiff, match: CandidateMatch
-    ) -> CandidateEvaluation:
+    def _evaluate_candidate(self, pr_diff: PRDiff, match: CandidateMatch) -> CandidateEvaluation:
         alternative = self._store.get_alternative(match.alternative_id)
         assert alternative is not None
         checks = (
@@ -209,9 +218,7 @@ class WarningAuthorizationGate:
         )
         return InvariantCheck(InvariantKey.DECISION_STATE, satisfied, detail)
 
-    def _check_authoritative_ruling(
-        self, alternative: DecisionAlternativeRecord
-    ) -> InvariantCheck:
+    def _check_authoritative_ruling(self, alternative: DecisionAlternativeRecord) -> InvariantCheck:
         key = InvariantKey.AUTHORITATIVE_RULING
 
         span = (
@@ -234,6 +241,15 @@ class WarningAuthorizationGate:
                 key,
                 False,
                 f"ruling evidence is {span.verification_status.value}, not VERIFIED_EXACT",
+            )
+        if alternative.ruling_actor_id is None:
+            return InvariantCheck(key, False, "ruling actor is not identified")
+        if span.author_contributor_id != alternative.ruling_actor_id:
+            return InvariantCheck(
+                key,
+                False,
+                f"ruling evidence author '{span.author_contributor_id}' does not match "
+                f"authorized ruling actor '{alternative.ruling_actor_id}'",
             )
         if alternative.ruling_authority not in {
             "BDFL",
@@ -274,9 +290,7 @@ class WarningAuthorizationGate:
             return "ruling actor is not identified"
 
         def active(role: str | None = None) -> list[SignoffRecord]:
-            return [
-                s for s in signoffs if s.is_active_for(alternative.project_context, role)
-            ]
+            return [s for s in signoffs if s.is_active_for(alternative.project_context, role)]
 
         if alternative.ruling_authority == "BDFL":
             if not any(s.contributor_id == actor_id for s in active(BDFL_ROLE)):
@@ -298,9 +312,7 @@ class WarningAuthorizationGate:
             chairs = active(WG_CHAIR_ROLE)
             if not any(s.contributor_id == actor_id for s in chairs):
                 return "Working Group ruling requires a verified Chair as ruling actor"
-            if not [
-                s for s in active(WG_MEMBER_ROLE) if s.contributor_id != actor_id
-            ]:
+            if not [s for s in active(WG_MEMBER_ROLE) if s.contributor_id != actor_id]:
                 return (
                     "Working Group ruling requires the Chair plus one distinct "
                     "verified member sign-off"
@@ -325,15 +337,9 @@ class WarningAuthorizationGate:
         if not active:
             first = touched[0]
             if not first.lineage_resolved:
-                detail = (
-                    "touched anchor has ambiguous parent-aware lineage; "
-                    "watchdog abstains"
-                )
+                detail = "touched anchor has ambiguous parent-aware lineage; watchdog abstains"
             else:
-                detail = (
-                    f"touched anchor state is {first.anchor_state.value}, "
-                    "not CURRENT/MIGRATED"
-                )
+                detail = f"touched anchor state is {first.anchor_state.value}, not CURRENT/MIGRATED"
             return InvariantCheck(key, False, detail)
         unresolved = [a for a in active if not a.lineage_resolved]
         if unresolved:
@@ -355,20 +361,33 @@ class WarningAuthorizationGate:
         key = InvariantKey.AST_STRUCTURAL_EQUIVALENCE
 
         touched = self._touched_anchors(pr_diff, alternative)
-        if not touched:
-            return InvariantCheck(key, False, "no touched anchor to verify against")
+        active_touched = [a for a in touched if a.is_active]
+        if not active_touched:
+            return InvariantCheck(key, False, "no active lineage-resolved anchor to verify against")
 
-        anchor = touched[0]
+        fingerprints = {
+            a.ast_structural_fingerprint
+            for a in active_touched
+            if a.ast_structural_fingerprint is not None
+        }
+        if len(fingerprints) != 1 or (len(active_touched) > 1 and len(fingerprints) > 1):
+            return InvariantCheck(
+                key,
+                False,
+                "ambiguous multiple differing anchor fingerprints; watchdog abstains",
+            )
+        if any(a.ast_structural_fingerprint is None for a in active_touched):
+            return InvariantCheck(
+                key, False, "anchor lacks a structural fingerprint; cannot verify"
+            )
+
+        anchor = active_touched[0]
         analysis = pr_diff.analysis_for(anchor.current_path) or pr_diff.analysis_for(
             anchor.historical_file_path
         )
         if analysis is None:
             return InvariantCheck(
                 key, False, f"no AST analysis available for {anchor.current_path}"
-            )
-        if anchor.ast_structural_fingerprint is None:
-            return InvariantCheck(
-                key, False, "anchor lacks a structural fingerprint; cannot verify"
             )
         if not analysis.parseable:
             if analysis.language != "python":
@@ -414,31 +433,31 @@ class WarningAuthorizationGate:
         # Cross-alternative association: a matched candidate's own anchors are
         # not touched while the diff touches anchors of other alternatives.
         anchor_missed = [
-            e
-            for e in evaluations
-            if not e.check(InvariantKey.ALTERNATIVE_CODE_ANCHOR).satisfied
+            e for e in evaluations if not e.check(InvariantKey.ALTERNATIVE_CODE_ANCHOR).satisfied
         ]
         if anchor_missed and self._diff_touches_other_alternatives(
             pr_diff, {e.alternative_id for e in anchor_missed}
         ):
             return WatchdogVerdict.ALTERNATIVE_MISMATCH
 
-        rejected = [
-            e for e in evaluations if e.check(InvariantKey.DECISION_STATE).satisfied
-        ]
+        rejected = [e for e in evaluations if e.check(InvariantKey.DECISION_STATE).satisfied]
         if not rejected:
             return WatchdogVerdict.NO_REJECTED_MATCH
         return WatchdogVerdict.ABSTAINED_UNCERTAIN
 
-    def _diff_touches_other_alternatives(
-        self, pr_diff: PRDiff, exclude_ids: set[str]
-    ) -> bool:
+    def _diff_touches_other_alternatives(self, pr_diff: PRDiff, exclude_ids: set[str]) -> bool:
         touched_paths = pr_diff.touched_paths
         diff_symbols = pr_diff.all_symbols
         for alternative in self._store.all_alternatives():
             if alternative.id in exclude_ids:
                 continue
             for anchor in alternative.anchors:
+                if (
+                    anchor.repository_url
+                    and pr_diff.repository_url
+                    and anchor.repository_url != pr_diff.repository_url
+                ):
+                    continue
                 if (
                     anchor.current_path in touched_paths
                     or anchor.historical_file_path in touched_paths
@@ -448,16 +467,32 @@ class WarningAuthorizationGate:
         return False
 
     @staticmethod
-    def _action_for(
-        verdict: WatchdogVerdict, execution_mode: ExecutionMode
-    ) -> WatchdogAction:
+    def _action_for(verdict: WatchdogVerdict, execution_mode: ExecutionMode) -> WatchdogAction:
         if verdict != WatchdogVerdict.WARNING_AUTHORIZED:
             return WatchdogAction.LOGGED_ONLY
         if execution_mode == ExecutionMode.AUDIT_DRY_RUN:
             return WatchdogAction.LOGGED_ONLY
         if execution_mode == ExecutionMode.INTERACTIVE_HITL:
-            return WatchdogAction.HITL_CARD_POSTED
-        return WatchdogAction.COMMENT_PUBLISHED
+            return WatchdogAction.HITL_PENDING
+        return WatchdogAction.COMMENT_AUTHORIZED
+
+    def record_dispatch_result(
+        self, result: AuthorizationResult, success: bool
+    ) -> AuthorizationResult:
+        """Record the actual external outcome of dispatching a HITL card."""
+        new_action = WatchdogAction.HITL_CARD_POSTED if success else WatchdogAction.DISPATCH_FAILED
+        updated = dataclasses.replace(result, action_taken=new_action)
+        self.audit_log.append(updated)
+        return updated
+
+    def record_publication_result(
+        self, result: AuthorizationResult, success: bool
+    ) -> AuthorizationResult:
+        """Record the actual external outcome of publishing a PR comment."""
+        new_action = WatchdogAction.COMMENT_PUBLISHED if success else WatchdogAction.PUBLISH_FAILED
+        updated = dataclasses.replace(result, action_taken=new_action)
+        self.audit_log.append(updated)
+        return updated
 
     # ── helpers ─────────────────────────────────────────────────────────
 
@@ -470,6 +505,13 @@ class WarningAuthorizationGate:
             a
             for a in alternative.anchors
             if (
+                not (
+                    a.repository_url
+                    and pr_diff.repository_url
+                    and a.repository_url != pr_diff.repository_url
+                )
+            )
+            and (
                 a.current_path in touched_paths
                 or a.historical_file_path in touched_paths
                 or a.symbol_name in diff_symbols

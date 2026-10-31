@@ -114,6 +114,8 @@ class PRCommentFormatter:
         pr_number: int | None = None,
         repository_url: str | None = None,
         commit_sha: str | None = None,
+        line: int = 1,
+        side: str = "RIGHT",
     ) -> dict:
         """Build the JSON comment payload stored in ``pr_watchdog_audit_log``."""
         body = self.format_comment(
@@ -132,6 +134,10 @@ class PRCommentFormatter:
             "repository_url": repository_url,
             "pr_number": pr_number,
             "commit_sha": commit_sha,
+            "commit_id": commit_sha,
+            "path": anchor.current_path if anchor else "",
+            "line": line,
+            "side": side,
             "execution_mode": execution_mode.value,
             "alternative_id": alternative.id,
             "proposal_text": alternative.proposal_text,

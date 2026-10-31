@@ -40,6 +40,7 @@ from biscuit.switch.activity_client import (
     SwitchActivityClient,
 )
 from biscuit.switch.cards import BlockKitBuilder
+from biscuit.switch.persistence import TranscriptStore
 from biscuit.switch.security import CallbackSecurity
 from biscuit.switch.types import (
     CheckPRDiffInput,
@@ -98,6 +99,12 @@ class CheckPRDiffParams(BaseModel):
     repository_url: str
     pr_number: int
     diff_text: str
+    commit_sha: str = Field(
+        ...,
+        min_length=40,
+        max_length=40,
+        description="PR head commit SHA (40-character hex)",
+    )
     execution_mode: str = Field(
         default=ExecutionMode.AUDIT_DRY_RUN.value,
         description="AUDIT_DRY_RUN (default), INTERACTIVE_HITL or PRODUCTION_COMMENT",
@@ -116,6 +123,7 @@ class FastMCPServer:
         switch_client: SwitchActivityClient | None = None,
         card_builder: BlockKitBuilder | None = None,
         callback_security: CallbackSecurity | None = None,
+        transcript_store: TranscriptStore | None = None,
         execution_mode: ExecutionMode = ExecutionMode.AUDIT_DRY_RUN,
         server_name: str = SERVER_NAME,
     ) -> None:
@@ -130,6 +138,7 @@ class FastMCPServer:
         self.callback_security = callback_security or CallbackSecurity(
             secret="biscuit-default-callback-secret"
         )
+        self.transcript_store = transcript_store or TranscriptStore()
         self.execution_mode = execution_mode
         self.server_name = server_name
 
@@ -159,8 +168,10 @@ class FastMCPServer:
                     repository_url=params.repository_url,
                     pr_number=params.pr_number,
                     diff_text=params.diff_text,
+                    commit_sha=params.commit_sha,
                 ),
                 execution_mode=params.execution_mode,
+                commit_sha=params.commit_sha,
             )
 
         @self.mcp.tool
@@ -229,23 +240,31 @@ class FastMCPServer:
         self,
         params: CheckPRDiffInput,
         execution_mode: str | None = None,
-        commit_sha: str = "0" * 40,
+        commit_sha: str | None = None,
     ) -> dict:
         """Run the full watchdog pipeline for one PR diff."""
+        sha = commit_sha or params.commit_sha
+        if not sha or sha == "0" * 40 or len(sha) != 40:
+            raise ValueError(
+                "A verified PR commit SHA must be supplied; synthetic or all-zero SHAs are not permitted."
+            )
         mode = self._resolve_execution_mode(execution_mode)
-        pr_diff = self.inspector.parse_and_analyze(params.diff_text)
+        pr_diff = self.inspector.parse_and_analyze(
+            params.diff_text, repository_url=params.repository_url
+        )
         candidates = self.retriever.retrieve(pr_diff)
         result = self.gate.evaluate(
             pr_diff,
             candidates,
             repository_url=params.repository_url,
             pr_number=params.pr_number,
-            commit_sha=commit_sha,
+            commit_sha=sha,
             execution_mode=mode,
         )
         return {
             "repository_url": params.repository_url,
             "pr_number": params.pr_number,
+            "commit_sha": sha,
             "execution_mode": result.execution_mode.value,
             "authorization_verdict": result.verdict.value,
             "action_taken": result.action_taken.value,
@@ -257,12 +276,10 @@ class FastMCPServer:
                     "similarity": evaluation.similarity,
                     "authorized": evaluation.authorized,
                     "invariants": {
-                        check.key.value: check.satisfied
-                        for check in evaluation.invariant_checks
+                        check.key.value: check.satisfied for check in evaluation.invariant_checks
                     },
                     "invariant_details": {
-                        check.key.value: check.detail
-                        for check in evaluation.invariant_checks
+                        check.key.value: check.detail for check in evaluation.invariant_checks
                     },
                 }
                 for evaluation in result.candidate_evaluations
@@ -285,12 +302,23 @@ class FastMCPServer:
         try:
             platform = SourcePlatform(params.source_platform)
         except ValueError:
-            return {
-                "error": f"unsupported source platform {params.source_platform!r}"
-            }
+            return {"error": f"unsupported source platform {params.source_platform!r}"}
+
+        thread_id = self.transcript_store.record_thread(
+            session_id=params.switch_session_id,
+            platform=platform.value,
+            channel_id=params.channel_id,
+            thread_ts=params.thread_ts,
+            initiating_author_handle=params.initiating_author_handle,
+        )
+
+        version_ids_by_ext_id: dict[str, str] = {}
+        for message in params.messages:
+            _, version_id = self.transcript_store.record_message(thread_id, message)
+            version_ids_by_ext_id[message.external_message_id] = version_id
 
         draft_id = f"ld-{uuid.uuid4().hex[:12]}"
-        proposal_text, evidence = self._extract_proposal(params)
+        proposal_text, evidence = self._extract_proposal(params, version_ids_by_ext_id)
         draft = LivingDecisionDraft(
             id=draft_id,
             switch_session_id=params.switch_session_id,
@@ -302,6 +330,7 @@ class FastMCPServer:
             initiating_author_handle=params.initiating_author_handle,
         )
         self._living_drafts[draft_id] = draft
+        self.transcript_store.save_draft(draft, thread_id, evidence)
 
         return DraftResult(
             draft_id=draft_id,
@@ -313,7 +342,9 @@ class FastMCPServer:
         ).to_json_dict()
 
     def _extract_proposal(
-        self, params: DraftLivingDecisionInput
+        self,
+        params: DraftLivingDecisionInput,
+        version_ids_by_ext_id: dict[str, str] | None = None,
     ) -> tuple[str, list[dict]]:
         """Deterministic consensus extraction over the exact transcript.
 
@@ -328,6 +359,7 @@ class FastMCPServer:
         decision_cues = ("reject", "rejected", "let's go with", "we should", "consensus")
         proposals: list[str] = []
         evidence: list[dict] = []
+        version_ids = version_ids_by_ext_id or {}
         for message in params.messages:
             content = message.raw_content
             lowered = content.lower()
@@ -339,6 +371,7 @@ class FastMCPServer:
             evidence.append(
                 {
                     "external_message_id": message.external_message_id,
+                    "source_message_version_id": version_ids.get(message.external_message_id, ""),
                     "author_handle": message.author_handle,
                     "exact_quote": quote,
                     "start_char": start_char,
@@ -375,7 +408,7 @@ def _topic_from_messages(messages: tuple[LiveMessagePayload, ...]) -> str:
     if not messages:
         return "Untitled live thread"
     first = messages[0].raw_content.strip()
-    return (first.splitlines()[0][:80] if first else "Untitled live thread")
+    return first.splitlines()[0][:80] if first else "Untitled live thread"
 
 
 def build_default_server(

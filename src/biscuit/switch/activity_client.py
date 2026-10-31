@@ -125,20 +125,14 @@ class SwitchActivityClient:
 
     async def close_approval(self, session_id: str, request_id: str) -> dict:
         """``POST /agent-sessions/{session_id}/approvals/{request_id}/close``."""
-        url = (
-            f"{self._base_url}/agent-sessions/{session_id}"
-            f"/approvals/{request_id}/close"
-        )
+        url = f"{self._base_url}/agent-sessions/{session_id}/approvals/{request_id}/close"
         response = await self._transport.post(url, json={}, headers=self._headers())
         response.raise_for_status()
         return response.json()
 
     async def mark_delivered(self, session_id: str, request_id: str) -> dict:
         """``POST /agent-sessions/{session_id}/approvals/{request_id}/delivered``."""
-        url = (
-            f"{self._base_url}/agent-sessions/{session_id}"
-            f"/approvals/{request_id}/delivered"
-        )
+        url = f"{self._base_url}/agent-sessions/{session_id}/approvals/{request_id}/delivered"
         response = await self._transport.post(url, json={}, headers=self._headers())
         response.raise_for_status()
         return response.json()

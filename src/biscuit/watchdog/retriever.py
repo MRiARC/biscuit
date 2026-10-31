@@ -88,6 +88,12 @@ class CandidateRetriever:
             matched_symbols: list[str] = []
             signals: list[str] = []
             for anchor in alternative.anchors:
+                if (
+                    anchor.repository_url
+                    and pr_diff.repository_url
+                    and anchor.repository_url != pr_diff.repository_url
+                ):
+                    continue
                 how = self._anchor_touched(anchor, touched_paths, diff_symbols)
                 if how is not None:
                     anchor_ids.append(anchor.id)
@@ -111,9 +117,7 @@ class CandidateRetriever:
                 )
         return matches
 
-    def _embed_diff(
-        self, pr_diff: PRDiff
-    ) -> tuple[float, ...] | list[float] | None:
+    def _embed_diff(self, pr_diff: PRDiff) -> tuple[float, ...] | list[float] | None:
         if self._embedder is None:
             return None
         text = pr_diff.added_text
@@ -132,9 +136,7 @@ class CandidateRetriever:
         A path match counts even for inactive (SPLIT/AMBIGUOUS/DELETED)
         anchors: retrieval stays generous; the gate enforces activeness.
         """
-        if anchor.current_path in touched_paths or anchor.historical_file_path in (
-            touched_paths
-        ):
+        if anchor.current_path in touched_paths or anchor.historical_file_path in (touched_paths):
             return "path"
         if anchor.symbol_name in diff_symbols:
             return "symbol"

@@ -19,6 +19,7 @@ from biscuit.switch.activity_client import (
     SwitchActivityClient,
 )
 from biscuit.switch.cards import BlockKitBuilder
+from biscuit.switch.persistence import TranscriptStore
 from biscuit.switch.security import (
     CALLBACK_REJECTED,
     IDEMPOTENCY_HEADER,
@@ -40,6 +41,7 @@ from biscuit.switch.types import (
     SWITCH_UPSTREAM_COMMIT,
     ApprovalOutcome,  # noqa: F401  (re-exported public name)
     CallbackVerification,
+    CheckPRDiffInput,
     DraftResult,
     DraftStatus,
     HITLApprovalEvent,
@@ -66,6 +68,7 @@ __all__ = [
     "BlockKitBuilder",
     "CallbackSecurity",
     "CallbackVerification",
+    "CheckPRDiffInput",
     "CheckPRDiffParams",
     "DraftLivingDecisionParams",
     "DraftResult",
@@ -83,6 +86,7 @@ __all__ = [
     "SourcePlatform",
     "SwitchActionType",
     "SwitchActivityClient",
+    "TranscriptStore",
     "build_default_server",
     "canonical_json",
     "compute_sha256_hex",

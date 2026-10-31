@@ -34,8 +34,10 @@ from test_watchdog import (
 from biscuit.switch import (
     APPROVAL_TTL_HOURS,
     SWITCH_UPSTREAM_COMMIT,
+    ApprovalOutcome,
     BlockKitBuilder,
     CallbackSecurity,
+    CheckPRDiffInput,
     DraftStatus,
     HITLApprovalRequest,
     HITLEventAction,
@@ -157,8 +159,9 @@ class TestFastMCPServerTools:
     def test_query_decisions_filters_by_repository_context(self):
         server = make_server()
         payload = server._query_decisions(
-            __import__("biscuit.switch.types", fromlist=["QueryDecisionsInput"])
-            .QueryDecisionsInput(
+            __import__(
+                "biscuit.switch.types", fromlist=["QueryDecisionsInput"]
+            ).QueryDecisionsInput(
                 query_text="coalesce",
                 repository_context="kubernetes/kubernetes",
             )
@@ -176,6 +179,7 @@ class TestFastMCPServerTools:
                         "params": {
                             "repository_url": "https://github.com/python/cpython",
                             "pr_number": 412,
+                            "commit_sha": "a" * 40,
                             "diff_text": VIOLATION_DIFF,
                         }
                     },
@@ -195,10 +199,10 @@ class TestFastMCPServerTools:
     def test_check_pr_diff_hard_negative_abstains(self):
         server = make_server()
         payload = server._check_pr_diff(
-            __import__("biscuit.switch.types", fromlist=["CheckPRDiffInput"])
-            .CheckPRDiffInput(
+            __import__("biscuit.switch.types", fromlist=["CheckPRDiffInput"]).CheckPRDiffInput(
                 repository_url="https://github.com/python/cpython",
                 pr_number=413,
+                commit_sha="a" * 40,
                 diff_text=HARD_NEGATIVE_TERNARY_DIFF,
             )
         )
@@ -209,10 +213,10 @@ class TestFastMCPServerTools:
     def test_check_pr_diff_rejects_unknown_execution_mode(self):
         server = make_server()
         payload = server._check_pr_diff(
-            __import__("biscuit.switch.types", fromlist=["CheckPRDiffInput"])
-            .CheckPRDiffInput(
+            __import__("biscuit.switch.types", fromlist=["CheckPRDiffInput"]).CheckPRDiffInput(
                 repository_url="https://github.com/python/cpython",
                 pr_number=1,
+                commit_sha="a" * 40,
                 diff_text=VIOLATION_DIFF,
             ),
             execution_mode="MAKE_LOUD_NOISES",
@@ -260,15 +264,14 @@ class TestFastMCPServerTools:
         assert first["end_char"] - first["start_char"] == len(first["exact_quote"])
         # offsets index the exact raw content
         message = LIVE_THREAD_MESSAGES[0]
-        assert message.raw_content[
-            first["start_char"]:first["end_char"]
-        ] == first["exact_quote"]
+        assert message.raw_content[first["start_char"] : first["end_char"]] == first["exact_quote"]
 
     def test_draft_living_decision_rejects_unknown_platform(self):
         server = make_server()
         payload = server._draft_living_decision(
-            __import__("biscuit.switch.types", fromlist=["DraftLivingDecisionInput"])
-            .DraftLivingDecisionInput(
+            __import__(
+                "biscuit.switch.types", fromlist=["DraftLivingDecisionInput"]
+            ).DraftLivingDecisionInput(
                 switch_session_id="sess-1",
                 source_platform="irc",
                 channel_id="C1",
@@ -282,8 +285,9 @@ class TestFastMCPServerTools:
     def test_drafting_never_assigns_lifecycle_states(self):
         server = make_server()
         payload = server._draft_living_decision(
-            __import__("biscuit.switch.types", fromlist=["DraftLivingDecisionInput"])
-            .DraftLivingDecisionInput(
+            __import__(
+                "biscuit.switch.types", fromlist=["DraftLivingDecisionInput"]
+            ).DraftLivingDecisionInput(
                 switch_session_id="sess-1",
                 source_platform="slack",
                 channel_id="C0123",
@@ -320,7 +324,7 @@ class TestBlockKitBuilder:
         # approve/dismiss actions
         actions = next(b for b in card["blocks"] if b["type"] == "actions")
         labels = [e["text"]["text"] for e in actions["elements"]]
-        assert labels == ["Approve Draft", "Dismiss Draft"]
+        assert labels == ["Approve Draft", "Edit Rationale", "Dismiss Draft"]
         # de-conflation notice
         all_text = json.dumps(card)
         assert "Alternative outcomes" in all_text
@@ -374,13 +378,9 @@ class TestBlockKitBuilder:
             decision_alternative_id="alt-1",
         )
         assert request.status == HITLRequestStatus.PENDING
-        assert request.action_payload_sha256 == compute_sha256_hex(
-            canonical_json(card)
-        )
+        assert request.action_payload_sha256 == compute_sha256_hex(canonical_json(card))
         assert request.idempotency_key != new_idempotency_key()  # unique per request
-        assert request.expires_at - request.created_at == timedelta(
-            hours=APPROVAL_TTL_HOURS
-        )
+        assert request.expires_at - request.created_at == timedelta(hours=APPROVAL_TTL_HOURS)
 
     def test_build_approval_request_validates_target_shape(self):
         builder = BlockKitBuilder()
@@ -407,8 +407,10 @@ class TestBlockKitBuilder:
         assert payload["request_id"] == request.switch_approval_id
         assert payload["options"] == [
             {"id": "approve_draft", "label": "Approve Draft", "decision": "approve"},
+            {"id": "edit_rationale", "label": "Edit Rationale", "decision": "edit"},
             {"id": "dismiss_draft", "label": "Dismiss Draft", "decision": "reject"},
         ]
+        assert payload["questions"] == []
         assert "expires_at" in payload
         assert "turn_id" in payload
 
@@ -541,9 +543,7 @@ class TestCallbackSecurity:
 
     def test_expired_request_rejected(self):
         security = CallbackSecurity(secret=SECRET)
-        request = make_request(
-            expires_at=datetime.now(UTC) - timedelta(minutes=1)
-        )
+        request = make_request(expires_at=datetime.now(UTC) - timedelta(minutes=1))
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
         )
@@ -557,21 +557,17 @@ class TestCallbackSecurity:
         security = CallbackSecurity(secret=SECRET)
         request = make_request()
         body = callback_body("AUTHORIZE_PR_COMMENT", request.switch_approval_id, "not-a-uuid")
-        valid, reason, _ = security.verify(
-            request, body, sign_body(SECRET, body), "not-a-uuid"
-        )
+        valid, reason, _ = security.verify(request, body, sign_body(SECRET, body), "not-a-uuid")
         assert not valid
         assert "UUIDv4" in reason
 
     def test_action_type_compatibility_enforced(self):
         security = CallbackSecurity(secret=SECRET)
         request = make_request()  # AUTHORIZE_PR_WARNING request
-        body = callback_body(
-            "DISMISS_PR_COMMENT", request.switch_approval_id, request.idempotency_key
-        )
+        body = callback_body("APPROVE_DRAFT", request.switch_approval_id, request.idempotency_key)
         result, reason = security.finalize(
             request,
-            HITLEventAction.DISMISS_PR_COMMENT,
+            HITLEventAction.APPROVE_DRAFT,
             body,
             sign_body(SECRET, body),
             actor_platform_id="U999",
@@ -584,9 +580,7 @@ class TestCallbackSecurity:
 
     def test_expiration_sweep_marks_pending_requests(self):
         security = CallbackSecurity(secret=SECRET)
-        stale = make_request(
-            expires_at=datetime.now(UTC) - timedelta(hours=1)
-        )
+        stale = make_request(expires_at=datetime.now(UTC) - timedelta(hours=1))
         fresh = make_request()
         expired = security.expired_requests([stale, fresh])
         assert expired == [stale]
@@ -716,8 +710,9 @@ class TestStateDeconflation:
     def test_server_draft_flow_keeps_drafts_pending(self):
         server = make_server()
         payload = server._draft_living_decision(
-            __import__("biscuit.switch.types", fromlist=["DraftLivingDecisionInput"])
-            .DraftLivingDecisionInput(
+            __import__(
+                "biscuit.switch.types", fromlist=["DraftLivingDecisionInput"]
+            ).DraftLivingDecisionInput(
                 switch_session_id="sess-1",
                 source_platform="slack",
                 channel_id="C0123",
@@ -754,3 +749,354 @@ class TestCanonicalSerialization:
         request_a = make_request(card_rendered_payload=card_a)
         request_b = make_request(card_rendered_payload=card_b)
         assert request_a.action_payload_sha256 == request_b.action_payload_sha256
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Upstream Switch schema & response contracts
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSwitchUpstreamSchemaContract:
+    def test_approval_outcome_from_json_string_answer(self):
+        """Upstream Switch 0.31.0 returns answer as a string containing option ID."""
+        payload = {
+            "sessionId": "sess-42",
+            "requestId": "req-99",
+            "state": "answered",
+            "answeredBy": "U12345",
+            "answeredAt": "2026-10-31T15:00:00Z",
+            "expiresAt": "2026-11-03T15:00:00Z",
+            "answer": "authorize_pr_comment",
+        }
+        outcome = ApprovalOutcome.from_json(payload)
+        assert outcome.session_id == "sess-42"
+        assert outcome.request_id == "req-99"
+        assert outcome.selected_option_id == "authorize_pr_comment"
+        assert outcome.answered_by == "U12345"
+
+    def test_approval_outcome_from_json_dict_answer(self):
+        """Tolerates structured object answer from earlier test harnesses."""
+        payload = {
+            "session_id": "sess-42",
+            "request_id": "req-99",
+            "state": "answered",
+            "answer": {"optionId": "edit_rationale"},
+        }
+        outcome = ApprovalOutcome.from_json(payload)
+        assert outcome.session_id == "sess-42"
+        assert outcome.request_id == "req-99"
+        assert outcome.selected_option_id == "edit_rationale"
+
+    def test_approval_open_payload_includes_empty_questions_list(self):
+        builder = BlockKitBuilder()
+        request = builder.build_approval_request(
+            action_type=SwitchActionType.AUTHORIZE_PR_WARNING,
+            card_payload=builder.build_pr_warning_card(
+                repository_url="https://github.com/python/cpython",
+                pr_number=101,
+                commit_sha="a" * 40,
+                alternative_id="alt-1",
+                proposal_text="proposal",
+                rejection_summary="rejected",
+                ruling_quote="quote",
+                ruling_author="author",
+                ruling_permalink="https://permalink",
+                comment_body="comment body",
+            ),
+            target_pr_number=101,
+            target_repository="https://github.com/python/cpython",
+            target_commit_sha="a" * 40,
+            decision_alternative_id="alt-1",
+        )
+        payload = builder.build_approval_open_payload(request, session_id="sess-1")
+        assert "questions" in payload
+        assert payload["questions"] == []
+        option_ids = [opt["id"] for opt in payload["options"]]
+        assert option_ids == ["authorize_pr_comment", "dismiss_pr_comment"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Negative security & role authorization tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCallbackSecurityNegative:
+    def test_missing_caller_idempotency_key_is_rejected(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request()
+        body = callback_body(
+            "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+        )
+        sig = sign_body(SECRET, body)
+        valid, reason, _ = security.verify(request, body, sig, idempotency_key=None)
+        assert not valid
+        assert "idempotency key is missing" in reason
+
+    def test_mismatched_idempotency_key_is_rejected(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request()
+        other_key = new_idempotency_key()
+        body = callback_body("AUTHORIZE_PR_COMMENT", request.switch_approval_id, other_key)
+        sig = sign_body(SECRET, body)
+        valid, reason, _ = security.verify(request, body, sig, idempotency_key=other_key)
+        assert not valid
+        assert "idempotency key does not match" in reason
+
+    def test_mismatched_signed_request_id_claim_is_rejected(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request()
+        body = callback_body(
+            "AUTHORIZE_PR_COMMENT", "different-request-id", request.idempotency_key
+        )
+        sig = sign_body(SECRET, body)
+        valid, reason, _ = security.verify(
+            request, body, sig, idempotency_key=request.idempotency_key
+        )
+        assert not valid
+        assert "does not match approval request" in reason
+
+    def test_stale_callback_timestamp_rejected(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request()
+        stale_time = (datetime.now(UTC) - timedelta(minutes=6)).isoformat()
+        payload = {
+            "request_id": request.switch_approval_id,
+            "action": "AUTHORIZE_PR_COMMENT",
+            "idempotency_key": request.idempotency_key,
+            "timestamp": stale_time,
+        }
+        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        sig = sign_body(SECRET, body)
+        valid, reason, _ = security.verify(
+            request, body, sig, idempotency_key=request.idempotency_key
+        )
+        assert not valid
+        assert "freshness window" in reason
+
+    def test_fresh_callback_timestamp_accepted(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request()
+        fresh_time = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+        payload = {
+            "request_id": request.switch_approval_id,
+            "action": "AUTHORIZE_PR_COMMENT",
+            "idempotency_key": request.idempotency_key,
+            "timestamp": fresh_time,
+        }
+        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        sig = sign_body(SECRET, body)
+        valid, reason, _ = security.verify(
+            request, body, sig, idempotency_key=request.idempotency_key
+        )
+        assert valid, reason
+
+    def test_unauthorized_actor_roles_rejected(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request(authorized_roles=("Core Maintainer", "BDFL"))
+        body = callback_body(
+            "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+        )
+        sig = sign_body(SECRET, body)
+        result, reason = security.finalize(
+            request,
+            HITLEventAction.AUTHORIZE_PR_COMMENT,
+            body,
+            sig,
+            actor_platform_id="U999",
+            actor_source_platform="slack",
+            actor_contributor_id="c2",
+            idempotency_key=request.idempotency_key,
+            verified_actor_roles=("Triage", "Contributor"),
+        )
+        assert result is None
+        assert "does not hold an authorized maintainer role" in reason
+
+    def test_authorized_actor_roles_accepted(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request(authorized_roles=("Core Maintainer", "BDFL"))
+        body = callback_body(
+            "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+        )
+        sig = sign_body(SECRET, body)
+        result, reason = security.finalize(
+            request,
+            HITLEventAction.AUTHORIZE_PR_COMMENT,
+            body,
+            sig,
+            actor_platform_id="U999",
+            actor_source_platform="slack",
+            actor_contributor_id="c2",
+            idempotency_key=request.idempotency_key,
+            verified_actor_roles=("Core Maintainer",),
+        )
+        assert result is not None, reason
+        assert request.status == HITLRequestStatus.DECIDED
+
+    def test_edit_rationale_action_on_living_decision_card(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request(
+            action_type=SwitchActionType.APPROVE_LIVING_DECISION,
+            authorized_roles=("Core Maintainer",),
+        )
+        body = callback_body("EDIT_RATIONALE", request.switch_approval_id, request.idempotency_key)
+        sig = sign_body(SECRET, body)
+        result, reason = security.finalize(
+            request,
+            HITLEventAction.EDIT_RATIONALE,
+            body,
+            sig,
+            actor_platform_id="U999",
+            actor_source_platform="slack",
+            actor_contributor_id="c2",
+            idempotency_key=request.idempotency_key,
+            verified_actor_roles=("Core Maintainer",),
+        )
+        assert result is not None, reason
+        assert request.status == HITLRequestStatus.DECIDED
+        assert request.idempotency_key in security.consumed_keys
+
+    def test_dismiss_warning_action_on_pr_warning_card(self):
+        security = CallbackSecurity(secret=SECRET)
+        request = make_request(
+            action_type=SwitchActionType.AUTHORIZE_PR_WARNING,
+            authorized_roles=("Core Maintainer",),
+        )
+        body = callback_body(
+            "DISMISS_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+        )
+        sig = sign_body(SECRET, body)
+        result, reason = security.finalize(
+            request,
+            HITLEventAction.DISMISS_PR_COMMENT,
+            body,
+            sig,
+            actor_platform_id="U999",
+            actor_source_platform="slack",
+            actor_contributor_id="c2",
+            idempotency_key=request.idempotency_key,
+            verified_actor_roles=("Core Maintainer",),
+        )
+        assert result is not None, reason
+        assert request.status == HITLRequestStatus.DECIDED
+        assert request.idempotency_key in security.consumed_keys
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Commit SHA validation & transcript persistence across restarts
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCommitSHABindingAndPersistence:
+    def test_check_pr_diff_rejects_missing_or_synthetic_commit_sha(self):
+        server = make_server()
+        with pytest.raises(ValueError, match="verified PR commit SHA"):
+            server._check_pr_diff(
+                CheckPRDiffInput(
+                    repository_url="https://github.com/python/cpython",
+                    pr_number=1,
+                    diff_text=VIOLATION_DIFF,
+                    commit_sha="",
+                )
+            )
+
+        with pytest.raises(ValueError, match="verified PR commit SHA"):
+            server._check_pr_diff(
+                CheckPRDiffInput(
+                    repository_url="https://github.com/python/cpython",
+                    pr_number=1,
+                    diff_text=VIOLATION_DIFF,
+                    commit_sha="0" * 40,
+                )
+            )
+
+    def test_transcript_store_persistence_and_restart_durability(self, tmp_path):
+        from biscuit.switch.persistence import TranscriptStore
+
+        db_path = str(tmp_path / "transcript.db")
+        store = TranscriptStore(db_path=db_path)
+
+        thread_id = store.record_thread(
+            session_id="sess-durability",
+            platform="slack",
+            channel_id="C9876",
+            thread_ts="1899.001",
+            initiating_author_handle="dev.charlie",
+        )
+
+        msg = LiveMessagePayload(
+            external_message_id="msg-1",
+            author_platform_id="U987",
+            author_handle="dev.charlie",
+            timestamp="2026-10-31T12:00:00Z",
+            raw_content="We should reject the eager coalesce() built-in; consensus agrees.",
+        )
+        _, v1_id = store.record_message(thread_id, msg)
+
+        # Message edit appends version 2
+        msg_edited = LiveMessagePayload(
+            external_message_id="msg-1",
+            author_platform_id="U987",
+            author_handle="dev.charlie",
+            timestamp="2026-10-31T12:05:00Z",
+            raw_content="We should reject the eager coalesce() built-in; consensus strongly agrees.",
+        )
+        _, _v2_id = store.record_message(thread_id, msg_edited)
+
+        versions = store.get_message_versions("msg-1")
+        assert len(versions) == 2
+        assert versions[0]["version_num"] == 1
+        assert versions[0]["is_current"] == 0
+        assert versions[1]["version_num"] == 2
+        assert versions[1]["is_current"] == 1
+        assert versions[0]["raw_content"] == msg.raw_content
+        assert versions[1]["raw_content"] == msg_edited.raw_content
+
+        quote = "reject the eager coalesce() built-in"
+        start_char = msg.raw_content.index(quote)
+        end_char = start_char + len(quote)
+        span_id = "span-durability-1"
+        evidence_spans = [
+            {
+                "id": span_id,
+                "source_message_version_id": v1_id,
+                "exact_quote": quote,
+                "start_char": start_char,
+                "end_char": end_char,
+                "content_hash": compute_sha256_hex(quote),
+                "verification_status": "UNVERIFIED",
+            }
+        ]
+
+        draft = LivingDecisionDraft(
+            id="ld-durability",
+            switch_session_id="sess-durability",
+            source_platform=SourcePlatform.SLACK,
+            channel_id="C9876",
+            thread_ts="1899.001",
+            topic="Reject eager coalesce",
+            proposal_text="Reject eager coalesce",
+            initiating_author_handle="dev.charlie",
+        )
+        store.save_draft(draft, thread_id, evidence_spans)
+
+        # Verify exact code-point slice and UTF-8 hash
+        verified = store.verify_span(span_id)
+        assert verified
+
+        # Close and reopen store from disk (restart simulation)
+        store.close()
+
+        reopened_store = TranscriptStore(db_path=db_path)
+        saved = reopened_store.get_draft("ld-durability")
+        assert saved is not None
+        assert saved["topic"] == "Reject eager coalesce"
+        assert len(saved["evidence_spans"]) == 1
+        saved_span = saved["evidence_spans"][0]
+        assert saved_span["verification_status"] == "VERIFIED_EXACT"
+        assert saved_span["exact_quote"] == quote
+        assert saved_span["start_char"] == start_char
+        assert saved_span["end_char"] == end_char
+
+        reopened_versions = reopened_store.get_message_versions("msg-1")
+        assert len(reopened_versions) == 2
+        reopened_store.close()

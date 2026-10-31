@@ -53,15 +53,11 @@ class BlockKitBuilder:
         (``MAINTAINER_APPROVED``); it does not resolve the decision or mark
         any alternative REJECTED.
         """
-        expiry = expires_at or datetime.now(UTC) + timedelta(
-            hours=APPROVAL_TTL_HOURS
-        )
+        expiry = expires_at or datetime.now(UTC) + timedelta(hours=APPROVAL_TTL_HOURS)
         header = f"Living decision draft — {draft.topic}"
         sections = [
             self._section_mrkdwn(f"*{header}*"),
-            self._section_mrkdwn(
-                f"*Proposed alternative:* {_truncate(draft.proposal_text)}"
-            ),
+            self._section_mrkdwn(f"*Proposed alternative:* {_truncate(draft.proposal_text)}"),
             self._section_mrkdwn(
                 f"*Initiated by:* {draft.initiating_author_handle} in "
                 f"{draft.source_platform.value} `{draft.channel_id}` "
@@ -92,6 +88,7 @@ class BlockKitBuilder:
                 self._actions(
                     [
                         {"id": "approve_draft", "label": "Approve Draft", "style": "primary"},
+                        {"id": "edit_rationale", "label": "Edit Rationale", "style": "default"},
                         {"id": "dismiss_draft", "label": "Dismiss Draft", "style": "danger"},
                     ]
                 ),
@@ -124,9 +121,7 @@ class BlockKitBuilder:
         body. A later callback that does not match these values is rejected
         by ``CallbackSecurity``.
         """
-        expiry = expires_at or datetime.now(UTC) + timedelta(
-            hours=APPROVAL_TTL_HOURS
-        )
+        expiry = expires_at or datetime.now(UTC) + timedelta(hours=APPROVAL_TTL_HOURS)
         comment_sha = compute_sha256_hex(comment_body)
 
         blocks = [
@@ -135,9 +130,7 @@ class BlockKitBuilder:
                 f"*Pull request:* <{repository_url}/pull/{pr_number}|#{pr_number}> "
                 f"at commit `{commit_sha[:12]}`"
             ),
-            self._section_mrkdwn(
-                f"*Rejected alternative:* {_truncate(proposal_text)}"
-            ),
+            self._section_mrkdwn(f"*Rejected alternative:* {_truncate(proposal_text)}"),
         ]
         if rejection_summary:
             blocks.append(
@@ -148,8 +141,7 @@ class BlockKitBuilder:
             link = f" (<{ruling_permalink}|source>)" if ruling_permalink else ""
             blocks.append(
                 self._section_mrkdwn(
-                    f"*Authoritative ruling:*\n> {_truncate(ruling_quote, 500)}"
-                    f"{author_label}{link}"
+                    f"*Authoritative ruling:*\n> {_truncate(ruling_quote, 500)}{author_label}{link}"
                 )
             )
         blocks.extend(
@@ -213,8 +205,7 @@ class BlockKitBuilder:
 
         return HITLApprovalRequest(
             id=str(uuid.uuid4()),
-            switch_approval_id=switch_approval_id
-            or f"switch-appr-{uuid.uuid4().hex[:12]}",
+            switch_approval_id=switch_approval_id or f"switch-appr-{uuid.uuid4().hex[:12]}",
             action_type=action_type,
             idempotency_key=new_idempotency_key(),
             card_rendered_payload=card_payload,
@@ -255,6 +246,7 @@ class BlockKitBuilder:
                 {"id": option_id, "label": label, "decision": decision}
                 for option_id, label, decision in options
             ],
+            "questions": [],
             "room_id": None,
             "thread_id": None,
             "expires_at": expiry.isoformat(),
@@ -265,11 +257,15 @@ class BlockKitBuilder:
         if action_type == SwitchActionType.APPROVE_LIVING_DECISION:
             return [
                 ("approve_draft", "Approve Draft", "approve"),
+                ("edit_rationale", "Edit Rationale", "edit"),
                 ("dismiss_draft", "Dismiss Draft", "reject"),
             ]
         if action_type == SwitchActionType.AUTHORIZE_PR_WARNING:
-            return [("authorize_pr_comment", "Post to PR", "approve")]
-        return [("dismiss_pr_comment", "Keep Silent", "approve")]
+            return [
+                ("authorize_pr_comment", "Post to PR", "approve"),
+                ("dismiss_pr_comment", "Keep Silent", "reject"),
+            ]
+        return [("dismiss_pr_comment", "Keep Silent", "reject")]
 
     def _title_for(self, request: HITLApprovalRequest) -> str:
         if request.action_type == SwitchActionType.APPROVE_LIVING_DECISION:

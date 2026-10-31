@@ -86,15 +86,18 @@ from pydantic import BaseModel, Field
 
 mcp = FastMCP("biscuit-intelligence")
 
+
 class QueryDecisionsInput(BaseModel):
     query_text: str = Field(description="Natural language question about past decisions")
     repository_context: str = Field(default="python/cpython", description="Target repo")
     top_k: int = Field(default=3, description="Number of decisions to retrieve")
 
+
 @mcp.tool()
 async def query_decisions(params: QueryDecisionsInput) -> dict:
     """Queries Biscuit's historical and living decision base using hybrid HNSW vector search."""
     ...
+
 
 class LiveMessagePayload(BaseModel):
     external_message_id: str
@@ -104,6 +107,7 @@ class LiveMessagePayload(BaseModel):
     timestamp: str
     raw_content: str
 
+
 class DraftLivingDecisionInput(BaseModel):
     switch_session_id: str
     source_platform: str  # 'slack', 'discord'
@@ -112,16 +116,19 @@ class DraftLivingDecisionInput(BaseModel):
     initiating_author_handle: str
     messages: list[LiveMessagePayload]
 
+
 @mcp.tool()
 async def draft_living_decision(params: DraftLivingDecisionInput) -> dict:
     """Ingests live transcript into canonical tables, runs consensus extraction,
     and returns a draft living MADR with exact evidence spans."""
     ...
 
+
 class CheckPRDiffInput(BaseModel):
     repository_url: str
     pr_number: int
     diff_text: str
+
 
 @mcp.tool()
 async def check_pr_diff(params: CheckPRDiffInput) -> dict:

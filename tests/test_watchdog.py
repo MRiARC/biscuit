@@ -168,11 +168,11 @@ def make_pipeline(store: InMemoryDecisionStore):
     return inspector, retriever, gate
 
 
-def run_check(store: InMemoryDecisionStore, diff_text: str, **kwargs):
+def run_check(store: InMemoryDecisionStore, diff_text: str, repository_url: str = REPO, **kwargs):
     inspector, retriever, gate = make_pipeline(store)
-    pr_diff = inspector.parse_and_analyze(diff_text)
+    pr_diff = inspector.parse_and_analyze(diff_text, repository_url=repository_url)
     candidates = retriever.retrieve(pr_diff)
-    return gate.evaluate(pr_diff, candidates, **kwargs)
+    return gate.evaluate(pr_diff, candidates, repository_url=repository_url, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,9 +268,7 @@ deleted file mode 100644
 
 class TestStructuralFingerprints:
     def test_fingerprint_is_stable_across_variable_renames(self):
-        assert structural_fingerprint("coalesce(a, b)") == structural_fingerprint(
-            "coalesce(x, y)"
-        )
+        assert structural_fingerprint("coalesce(a, b)") == structural_fingerprint("coalesce(x, y)")
 
     def test_fingerprint_is_stable_across_formatting(self):
         assert structural_fingerprint("coalesce( a , b )") == structural_fingerprint(
@@ -278,9 +276,7 @@ class TestStructuralFingerprints:
         )
 
     def test_fingerprint_distinguishes_constructs(self):
-        assert structural_fingerprint("coalesce(a, b)") != structural_fingerprint(
-            "pick(a, b)"
-        )
+        assert structural_fingerprint("coalesce(a, b)") != structural_fingerprint("pick(a, b)")
 
     def test_fingerprint_matches_subtree_anywhere_in_fragment(self):
         fragment = (
@@ -420,9 +416,7 @@ class TestWarningAuthorizationGate:
 
     def test_invariant_2_blocks_model_inferred_authority(self):
         """Required scenario: MODEL_INFERRED authority must block the warning."""
-        result = run_check(
-            build_store(ruling_authority="MODEL_INFERRED"), VIOLATION_DIFF
-        )
+        result = run_check(build_store(ruling_authority="MODEL_INFERRED"), VIOLATION_DIFF)
         assert result.verdict != WatchdogVerdict.WARNING_AUTHORIZED
         check = result.candidate_evaluations[0].check(InvariantKey.AUTHORITATIVE_RULING)
         assert not check.satisfied
@@ -438,9 +432,7 @@ class TestWarningAuthorizationGate:
         assert "UNVERIFIED" in check.detail
 
     def test_invariant_2_blocks_non_ruling_evidence_role(self):
-        result = run_check(
-            build_store(ruling_role=EvidenceRole.OBJECTION), VIOLATION_DIFF
-        )
+        result = run_check(build_store(ruling_role=EvidenceRole.OBJECTION), VIOLATION_DIFF)
         check = result.candidate_evaluations[0].check(InvariantKey.AUTHORITATIVE_RULING)
         assert not check.satisfied
 
@@ -472,9 +464,9 @@ class TestWarningAuthorizationGate:
             ),
         )
         result = run_check(build_store(signoffs=cross_project), VIOLATION_DIFF)
-        assert not result.candidate_evaluations[0].check(
-            InvariantKey.AUTHORITATIVE_RULING
-        ).satisfied
+        assert (
+            not result.candidate_evaluations[0].check(InvariantKey.AUTHORITATIVE_RULING).satisfied
+        )
 
         # A revoked sign-off does not count.
         revoked = (
@@ -491,17 +483,15 @@ class TestWarningAuthorizationGate:
             ),
         )
         result = run_check(build_store(signoffs=revoked), VIOLATION_DIFF)
-        assert not result.candidate_evaluations[0].check(
-            InvariantKey.AUTHORITATIVE_RULING
-        ).satisfied
+        assert (
+            not result.candidate_evaluations[0].check(InvariantKey.AUTHORITATIVE_RULING).satisfied
+        )
 
     def test_invariant_2_bdfl_ruling_succeeds_with_single_verified_bdfl(self):
         store = build_store(
             ruling_authority="BDFL",
             signoffs=(
-                SignoffRecord(
-                    contributor_id="c2", role="BDFL", project_context="python/cpython"
-                ),
+                SignoffRecord(contributor_id="c2", role="BDFL", project_context="python/cpython"),
             ),
         )
         result = run_check(store, VIOLATION_DIFF)
@@ -644,9 +634,11 @@ class TestWarningAuthorizationGate:
         )
         result = gate.evaluate(pr_diff, [vector_only], repository_url=REPO, pr_number=1)
         assert result.verdict == WatchdogVerdict.ALTERNATIVE_MISMATCH
-        assert not result.candidate_evaluations[0].check(
-            InvariantKey.ALTERNATIVE_CODE_ANCHOR
-        ).satisfied
+        assert (
+            not result.candidate_evaluations[0]
+            .check(InvariantKey.ALTERNATIVE_CODE_ANCHOR)
+            .satisfied
+        )
 
     def test_failed_invariants_are_all_recorded(self):
         """Every invariant is evaluated even after one fails (audit trail)."""
@@ -656,7 +648,8 @@ class TestWarningAuthorizationGate:
         )
         evaluation = result.candidate_evaluations[0]
         assert len(evaluation.invariant_checks) == 4
-        assert len(evaluation.failed_invariants) == 2
+        # Invariant 2 (authority), Invariant 3 (anchor state), Invariant 4 (active anchor requirement)
+        assert len(evaluation.failed_invariants) == 3
         assert not evaluation.authorized
 
 
@@ -667,34 +660,56 @@ class TestWarningAuthorizationGate:
 
 class TestExecutionModesAndAudit:
     def test_dry_run_is_the_default_and_only_logs(self):
-        result = run_check(
-            build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412
-        )
+        result = run_check(build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412)
         assert result.execution_mode == ExecutionMode.AUDIT_DRY_RUN
         assert result.action_taken == WatchdogAction.LOGGED_ONLY
         assert result.comment_markdown is not None  # rendered but not published
 
     def test_interactive_hitl_posts_card_and_never_publishes(self):
-        result = run_check(
-            build_store(),
-            VIOLATION_DIFF,
+        store = build_store()
+        inspector, retriever, gate = make_pipeline(store)
+        pr_diff = inspector.parse_and_analyze(VIOLATION_DIFF, repository_url=REPO)
+        candidates = retriever.retrieve(pr_diff)
+        result = gate.evaluate(
+            pr_diff,
+            candidates,
             repository_url=REPO,
             pr_number=412,
+            commit_sha="a" * 40,
             execution_mode=ExecutionMode.INTERACTIVE_HITL,
         )
-        assert result.action_taken == WatchdogAction.HITL_CARD_POSTED
+        assert result.action_taken == WatchdogAction.HITL_PENDING
         assert result.hitl_card_payload is not None
         assert result.hitl_card_payload["pr_number"] == 412
         assert result.hitl_card_payload["card_kind"] == "PR_WARNING_APPROVAL"
         assert len(result.hitl_card_payload["comment_body_sha256"]) == 64
 
+        dispatched = gate.record_dispatch_result(result, success=True)
+        assert dispatched.action_taken == WatchdogAction.HITL_CARD_POSTED
+
+        failed = gate.record_dispatch_result(result, success=False)
+        assert failed.action_taken == WatchdogAction.DISPATCH_FAILED
+
     def test_production_comment_mode_publishes(self):
-        result = run_check(
-            build_store(),
-            VIOLATION_DIFF,
+        store = build_store()
+        inspector, retriever, gate = make_pipeline(store)
+        pr_diff = inspector.parse_and_analyze(VIOLATION_DIFF, repository_url=REPO)
+        candidates = retriever.retrieve(pr_diff)
+        result = gate.evaluate(
+            pr_diff,
+            candidates,
+            repository_url=REPO,
+            pr_number=412,
+            commit_sha="a" * 40,
             execution_mode=ExecutionMode.PRODUCTION_COMMENT,
         )
-        assert result.action_taken == WatchdogAction.COMMENT_PUBLISHED
+        assert result.action_taken == WatchdogAction.COMMENT_AUTHORIZED
+
+        published = gate.record_publication_result(result, success=True)
+        assert published.action_taken == WatchdogAction.COMMENT_PUBLISHED
+
+        failed = gate.record_publication_result(result, success=False)
+        assert failed.action_taken == WatchdogAction.PUBLISH_FAILED
 
     def test_abstained_results_log_only_in_every_mode(self):
         for mode in ExecutionMode:
@@ -740,9 +755,7 @@ class TestExecutionModesAndAudit:
             store = build_store()
             gate = WarningAuthorizationGate(store=store, audit_log=log)
             pr_diff = PRDiffInspector().parse_and_analyze(VIOLATION_DIFF)
-            gate.evaluate(
-                pr_diff, CandidateRetriever(store=store).retrieve(pr_diff)
-            )
+            gate.evaluate(pr_diff, CandidateRetriever(store=store).retrieve(pr_diff))
         assert len(log.entries) == 2
 
 
@@ -753,9 +766,7 @@ class TestExecutionModesAndAudit:
 
 class TestPRCommentFormatter:
     def test_comment_contains_verifiable_citation(self):
-        result = run_check(
-            build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412
-        )
+        result = run_check(build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412)
         markdown = result.comment_markdown
         assert markdown is not None
         assert RULING_QUOTE in markdown
@@ -768,9 +779,7 @@ class TestPRCommentFormatter:
         assert "AUDIT_DRY_RUN" in markdown
 
     def test_comment_payload_is_json_serializable_and_pinned(self):
-        result = run_check(
-            build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412
-        )
+        result = run_check(build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412)
         payload = result.comment_payload
         assert payload is not None
         assert payload["pr_number"] == 412
@@ -787,9 +796,7 @@ class TestPRCommentFormatter:
         assert len(digest) == 64
         assert digest == compute_sha256(RULING_QUOTE)
 
-        result = run_check(
-            build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412
-        )
+        result = run_check(build_store(), VIOLATION_DIFF, repository_url=REPO, pr_number=412)
         assert result.comment_payload is not None
         assert json.dumps(result.comment_payload)  # fully JSON serializable
 
@@ -862,3 +869,96 @@ class TestWarningPrecisionScenario:
             result = run_check(store, VIOLATION_DIFF)
             assert result.verdict == expected_verdict
             assert result.action_taken == WatchdogAction.LOGGED_ONLY
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watchdog negative scoping, author verification, and partial hunk tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWatchdogNegativeScenarios:
+    def test_cross_repository_same_path_collision_abstains(self):
+        """Diff in another repo touching the same path must not trigger a warning."""
+        store = build_store()
+        other_repo = "https://github.com/unrelated-org/different-project"
+        result = run_check(store, VIOLATION_DIFF, repository_url=other_repo)
+        assert result.verdict != WatchdogVerdict.WARNING_AUTHORIZED
+        assert not result.invariants_satisfied
+
+    def test_ruling_author_contributor_mismatch_fails_invariant_2(self):
+        """Ruling span authored by one person cannot be signed off by a different ruling actor."""
+        store = build_store()
+        alt = store.get_alternative("alt-1")
+        span = store.get_evidence_span(alt.ruling_evidence_id)
+        # Change span author to a different contributor
+        mismatched_span = replace(span, author_contributor_id="contributor-imposter")
+        mismatched_store = InMemoryDecisionStore(
+            decisions=list(store._decisions.values()),
+            alternatives=[alt],
+            evidence_spans=[mismatched_span],
+        )
+        result = run_check(mismatched_store, VIOLATION_DIFF, repository_url=REPO)
+        assert result.verdict == WatchdogVerdict.ABSTAINED_UNCERTAIN
+        check2 = result.candidate_evaluations[0].check(InvariantKey.AUTHORITATIVE_RULING)
+        assert not check2.satisfied
+        assert "does not match authorized ruling actor" in check2.detail
+
+    def test_ambiguous_multiple_anchors_with_differing_fingerprints_abstain(self):
+        """Multiple touched active anchors with conflicting fingerprints causes abstention."""
+        store = build_store()
+        alt = store.get_alternative("alt-1")
+        anchor1 = alt.anchors[0]
+        anchor2 = CodeAnchorRecord(
+            id="anchor-2",
+            alternative_id="alt-1",
+            repository_url=REPO,
+            language="python",
+            symbol_type="function",
+            qualified_symbol_name="cpython.Builtins.coalesce_alt",
+            historical_file_path="Lib/builtins.py",
+            anchor_state=AnchorState.CURRENT,
+            head_file_path="Lib/builtins.py",
+            ast_structural_fingerprint=structural_fingerprint("different_construct(x)"),
+            lineage_resolved=True,
+        )
+        ambiguous_alt = replace(alt, anchors=(anchor1, anchor2))
+        ambiguous_store = InMemoryDecisionStore(
+            decisions=list(store._decisions.values()),
+            alternatives=[ambiguous_alt],
+            evidence_spans=list(store._spans.values()),
+        )
+        result = run_check(ambiguous_store, VIOLATION_DIFF, repository_url=REPO)
+        assert result.verdict == WatchdogVerdict.ABSTAINED_UNCERTAIN
+        check4 = result.candidate_evaluations[0].check(InvariantKey.AST_STRUCTURAL_EQUIVALENCE)
+        assert not check4.satisfied
+        assert "ambiguous multiple differing anchor fingerprints" in check4.detail
+
+    def test_partial_unparseable_python_hunk_abstains(self):
+        """Unparseable Python syntax in added hunk causes AST gate to abstain."""
+        unparseable_diff = """diff --git a/Lib/builtins.py b/Lib/builtins.py
+--- a/Lib/builtins.py
++++ b/Lib/builtins.py
+@@ -10,3 +10,4 @@
++def syntax_error(:::
++    ???
+"""
+        result = run_check(build_store(), unparseable_diff, repository_url=REPO)
+        assert result.verdict != WatchdogVerdict.WARNING_AUTHORIZED
+        assert result.action_taken == WatchdogAction.LOGGED_ONLY
+
+    def test_comment_payload_inline_review_fields(self):
+        """Inline review comment payload contains commit_id, path, line and side."""
+        result = run_check(
+            build_store(),
+            VIOLATION_DIFF,
+            repository_url=REPO,
+            pr_number=412,
+            commit_sha="c" * 40,
+        )
+        assert result.comment_payload is not None
+        payload = result.comment_payload
+        assert payload["commit_id"] == "c" * 40
+        assert payload["commit_sha"] == "c" * 40
+        assert payload["path"] == "Lib/builtins.py"
+        assert payload["line"] == 10
+        assert payload["side"] == "RIGHT"

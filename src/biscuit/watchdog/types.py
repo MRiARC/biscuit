@@ -112,8 +112,12 @@ class WatchdogAction(str, Enum):
     """Action taken for a checked PR, recorded in ``pr_watchdog_audit_log``."""
 
     LOGGED_ONLY = "LOGGED_ONLY"
+    HITL_PENDING = "HITL_PENDING"
     HITL_CARD_POSTED = "HITL_CARD_POSTED"
+    COMMENT_AUTHORIZED = "COMMENT_AUTHORIZED"
     COMMENT_PUBLISHED = "COMMENT_PUBLISHED"
+    DISPATCH_FAILED = "DISPATCH_FAILED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
 
 
 class InvariantKey(str, Enum):
@@ -165,9 +169,7 @@ class EvidenceSpanRecord:
 
     def __post_init__(self) -> None:
         if not self.content_hash:
-            object.__setattr__(
-                self, "content_hash", compute_sha256(self.exact_quote)
-            )
+            object.__setattr__(self, "content_hash", compute_sha256(self.exact_quote))
 
     def is_verified_exact_ruling(self) -> bool:
         """True when the span is a VERIFIED_EXACT RULING for its alternative."""
@@ -272,12 +274,8 @@ class InMemoryDecisionStore:
         evidence_spans: Iterable[EvidenceSpanRecord] = (),
     ) -> None:
         self._decisions: dict[str, DecisionRecord] = {d.id: d for d in decisions}
-        self._alternatives: dict[str, DecisionAlternativeRecord] = {
-            a.id: a for a in alternatives
-        }
-        self._spans: dict[str, EvidenceSpanRecord] = {
-            s.id: s for s in evidence_spans
-        }
+        self._alternatives: dict[str, DecisionAlternativeRecord] = {a.id: a for a in alternatives}
+        self._spans: dict[str, EvidenceSpanRecord] = {s.id: s for s in evidence_spans}
 
     def add_decision(self, decision: DecisionRecord) -> None:
         self._decisions[decision.id] = decision
@@ -372,6 +370,7 @@ class PRDiff:
 
     files: tuple[DiffFile, ...]
     analyses: tuple[FileAnalysis, ...] = field(default=())
+    repository_url: str = ""
 
     def analysis_for(self, path: str) -> FileAnalysis | None:
         for analysis in self.analyses:
@@ -518,9 +517,7 @@ class AuthorizationResult:
             commit_sha=self.commit_sha,
             checked_at=self.checked_at,
             execution_mode=self.execution_mode,
-            candidate_alternative_ids=tuple(
-                e.alternative_id for e in self.candidate_evaluations
-            ),
+            candidate_alternative_ids=tuple(e.alternative_id for e in self.candidate_evaluations),
             evaluated_similarity=self.evaluated_similarity,
             invariants_satisfied=self.invariants_satisfied,
             authorization_verdict=self.verdict,

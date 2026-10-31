@@ -126,9 +126,7 @@ def subtree_fingerprints(module: ast.Module) -> frozenset[str]:
         candidate = copy.deepcopy(node)
         masker = _IdentifierMasker()
         masked = masker.visit(candidate)
-        fingerprints.add(
-            hashlib.sha256(_masked_dump(masked).encode("utf-8")).hexdigest()
-        )
+        fingerprints.add(hashlib.sha256(_masked_dump(masked).encode("utf-8")).hexdigest())
     return frozenset(fingerprints)
 
 
@@ -172,7 +170,7 @@ class PRDiffInspector:
 
     normalization_version = AST_NORMALIZATION_VERSION
 
-    def parse(self, diff_text: str) -> PRDiff:
+    def parse(self, diff_text: str, repository_url: str = "") -> PRDiff:
         """Parse a unified git diff into files and hunks.
 
         Supports ``diff --git`` headers plus the standard
@@ -270,7 +268,7 @@ class PRDiffInspector:
             raise ValueError("empty diff text")
         if not files:
             raise ValueError("no parsable file headers found in diff text")
-        return PRDiff(files=tuple(files))
+        return PRDiff(files=tuple(files), repository_url=repository_url)
 
     @staticmethod
     def _consume_file_header(current: dict, raw_line: str) -> None:
@@ -284,10 +282,10 @@ class PRDiffInspector:
             current["is_deleted"] = True
         elif raw_line.startswith("rename to "):
             current["is_rename"] = True
-            current["new_path"] = raw_line[len("rename to "):]
+            current["new_path"] = raw_line[len("rename to ") :]
         elif raw_line.startswith("rename from "):
             current["is_rename"] = True
-            current["old_path"] = raw_line[len("rename from "):]
+            current["old_path"] = raw_line[len("rename from ") :]
         # index / mode / similarity lines carry no hunk content: ignored.
 
     def analyze(self, pr_diff: PRDiff) -> tuple[FileAnalysis, ...]:
@@ -346,7 +344,11 @@ class PRDiffInspector:
         """Public helper for building anchor fixtures: fingerprint a snippet."""
         return structural_fingerprint(code)
 
-    def parse_and_analyze(self, diff_text: str) -> PRDiff:
+    def parse_and_analyze(self, diff_text: str, repository_url: str = "") -> PRDiff:
         """Convenience: parse a diff and attach AST analyses to it."""
-        pr_diff = self.parse(diff_text)
-        return PRDiff(files=pr_diff.files, analyses=self.analyze(pr_diff))
+        pr_diff = self.parse(diff_text, repository_url=repository_url)
+        return PRDiff(
+            files=pr_diff.files,
+            analyses=self.analyze(pr_diff),
+            repository_url=repository_url,
+        )

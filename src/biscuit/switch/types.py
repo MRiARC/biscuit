@@ -71,6 +71,7 @@ class HITLEventAction(str, Enum):
     """Terminal actions recorded in ``hitl_approval_events``."""
 
     APPROVE_DRAFT = "APPROVE_DRAFT"
+    EDIT_RATIONALE = "EDIT_RATIONALE"
     REJECT_DRAFT = "REJECT_DRAFT"
     AUTHORIZE_PR_COMMENT = "AUTHORIZE_PR_COMMENT"
     DISMISS_PR_COMMENT = "DISMISS_PR_COMMENT"
@@ -136,8 +137,7 @@ class LivingDecisionDraft:
     def canonical_url(self) -> str:
         if self.source_platform == SourcePlatform.SLACK:
             return (
-                f"https://slack.com/archives/{self.channel_id}"
-                f"/p{self.thread_ts.replace('.', '')}"
+                f"https://slack.com/archives/{self.channel_id}/p{self.thread_ts.replace('.', '')}"
             )
         return f"https://{self.source_platform.value}/channels/{self.channel_id}"
 
@@ -229,15 +229,30 @@ class ApprovalOutcome:
 
     @classmethod
     def from_json(cls, payload: dict) -> ApprovalOutcome:
-        answer = payload.get("answer") or {}
+        answer = payload.get("answer")
+        selected_option_id: str | None = None
+        if isinstance(answer, dict):
+            selected_option_id = (
+                answer.get("optionId") or answer.get("option_id") or answer.get("id")
+            )
+        elif isinstance(answer, str):
+            selected_option_id = answer
+
+        if not selected_option_id:
+            selected_option_id = (
+                payload.get("selectedOptionId")
+                or payload.get("selected_option_id")
+                or payload.get("decision")
+            )
+
         return cls(
-            session_id=payload.get("session_id", ""),
-            request_id=payload.get("request_id", ""),
+            session_id=payload.get("sessionId") or payload.get("session_id", ""),
+            request_id=payload.get("requestId") or payload.get("request_id", ""),
             state=payload.get("state", ""),
             answered_by=payload.get("answeredBy") or payload.get("answered_by"),
             answered_at=payload.get("answeredAt") or payload.get("answered_at"),
             expires_at=payload.get("expiresAt") or payload.get("expires_at"),
-            selected_option_id=answer.get("optionId") or answer.get("option_id"),
+            selected_option_id=selected_option_id,
         )
 
 
@@ -272,6 +287,7 @@ class CheckPRDiffInput:
     repository_url: str
     pr_number: int
     diff_text: str
+    commit_sha: str = ""
 
 
 @dataclass(frozen=True)
