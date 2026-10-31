@@ -27,8 +27,6 @@ import json
 import re
 from datetime import UTC, datetime
 
-from dateutil import parser as dt_parser
-
 from biscuit.switch.types import (
     HITLApprovalRequest,
     HITLEventAction,
@@ -73,6 +71,16 @@ def _parse_signature(header_value: str | None) -> str | None:
         return None
     match = _SIGNATURE_RE.match(header_value.strip())
     return match.group(1).lower() if match else None
+
+
+def _parse_iso(ts_str: str) -> datetime:
+    cleaned = ts_str.strip()
+    if cleaned.endswith(("Z", "z")):
+        cleaned = cleaned[:-1] + "+00:00"
+    dt = datetime.fromisoformat(cleaned)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 
 class CallbackSecurity:
@@ -154,9 +162,7 @@ class CallbackSecurity:
             )
             if ts_str:
                 try:
-                    cb_time = dt_parser.isoparse(ts_str)
-                    if cb_time.tzinfo is None:
-                        cb_time = cb_time.replace(tzinfo=UTC)
+                    cb_time = _parse_iso(ts_str)
                     if abs((current - cb_time).total_seconds()) > self.tolerance_seconds:
                         return (
                             False,
