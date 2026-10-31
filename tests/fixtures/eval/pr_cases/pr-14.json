@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Lib/dataclasses.py",
-      "diff": "-raise ValueError('bad')\n+raise ValueError('invalid field')"
+      "diff": "diff --git a/Lib/dataclasses.py b/Lib/dataclasses.py\n--- a/Lib/dataclasses.py\n+++ b/Lib/dataclasses.py\n@@ -1,1 +1,1 @@\n-raise ValueError('bad')\n+raise ValueError('invalid field')"
     }
   ],
   "fixture_origin": "SYNTHETIC"
