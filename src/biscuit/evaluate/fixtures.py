@@ -71,12 +71,48 @@ def _benchmark_directory(name: str, root: Path | None = None) -> Path:
 def load_thread(name: str, root: Path | None = None) -> dict[str, Any]:
     thread = _json_file(_benchmark_directory(name, root) / "raw_thread.json")
     verify_thread(thread)
+    verify_manifest(name, thread, root)
     return thread
 
 
 def load_ground_truth(name: str, root: Path | None = None) -> dict[str, Any]:
     """Scorer-only function; never call this from a model/predictor adapter."""
     return _json_file(_benchmark_directory(name, root) / "ground_truth.json")
+
+
+
+def load_simulated_predictions(name: str, root: Path | None = None) -> dict[str, Any]:
+    """Explicit hand-authored offline replay; never label it a model evaluation."""
+    directory = _benchmark_directory(name, root)
+    data = _json_file(directory / "simulated_predictions.json")
+    if data.get("fixture_kind") != "RECORDED_SYNTHETIC_MOCK_OUTPUT_NOT_MODEL":
+        raise ValueError("Recorded replay must identify synthetic non-model origin")
+    forbidden = {"ground_truth", "ground_truth_status", "pr_labels", "expected_warning"}
+    if forbidden.intersection(data):
+        raise ValueError("Recorded predictions contain scoring-only fields")
+    return data
+
+
+def load_pr_expected_alternatives(root: Path | None = None) -> dict[str, str]:
+    """Scorer-only PR-to-rejected-alternative answer key."""
+    return _json_file((root or DEFAULT_FIXTURE_ROOT) / "pr_expected_alternatives.json")
+
+
+def verify_manifest(
+    name: str, thread: dict[str, Any], root: Path | None = None
+) -> dict[str, Any]:
+    manifest = _json_file(_benchmark_directory(name, root) / "manifest.json")
+    if (
+        manifest.get("canonicalization_version") != thread.get("canonicalization_version")
+        or manifest.get("expected_source_message_count")
+        != thread["expected_source_message_count"]
+        or manifest.get("actual_source_message_count") != len(thread["messages"])
+        or manifest.get("thread_sha256") != thread["thread_sha256"]
+    ):
+        raise ValueError("Fixture manifest does not match canonical thread")
+    if not manifest.get("license_identifier") or not manifest.get("reviewer"):
+        raise ValueError("Fixture provenance/independent review metadata missing")
+    return manifest
 
 
 def load_pr_cases(root: Path | None = None) -> list[dict[str, Any]]:
@@ -100,6 +136,7 @@ def predictor_input(thread: dict[str, Any], root: Path | None = None) -> dict[st
             {
                 "message_id": item["message_id"],
                 "author_handle": item["author_handle"],
+                "author_role": item.get("author_role", "unknown"),
                 "created_at": item["created_at"],
                 "raw_text": item["raw_text"],
             }
