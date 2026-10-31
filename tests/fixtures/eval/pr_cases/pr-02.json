@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Grammar/python.gram",
-      "diff": "+# Invalid expression assignment proposal\n+expression: NAME '=' expression"
+      "diff": "diff --git a/Grammar/python.gram b/Grammar/python.gram\n--- a/Grammar/python.gram\n+++ b/Grammar/python.gram\n@@ -0,0 +1,2 @@\n+# Invalid expression assignment proposal\n+expression: NAME '=' expression"
     }
   ],
   "fixture_origin": "SYNTHETIC"
