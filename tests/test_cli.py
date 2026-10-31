@@ -173,3 +173,51 @@ def test_stdlib_cli_strict_offsets_rejects_unmeasured_fixture() -> None:
     )
     assert result.returncode == 1
     assert "Strict offsets" in result.stderr
+
+
+def test_export_madr_3_with_structured_options(tmp_path) -> None:
+    db = tmp_path / "workspace.sqlite"
+    source = tmp_path / "source.json"
+    decision = {
+        **_decision(),
+        "deciders": ["core-maintainer"],
+        "date": "2026-11-01",
+        "technical_story": "Issue #21",
+        "decision_drivers": ["Exact evidence", "No warning spam"],
+        "considered_options": [{
+            "name": "Conservative gating",
+            "description": "Allow only verified rejection rulings",
+            "pros": ["No unverified warning"],
+            "cons": ["May abstain"],
+        }],
+        "links": ["https://example.org/thread/1"],
+    }
+    source.write_text(json.dumps([decision]), encoding="utf-8")
+    assert import_decisions(source, db) == 1
+    assert export_madr(db, tmp_path / "madr") == 1
+    text = (tmp_path / "madr" / "ADR-001.md").read_text(encoding="utf-8")
+    for required in (
+        "## Context and Problem Statement", "## Decision Drivers",
+        "## Considered Options", "## Decision Outcome",
+        "## Pros and Cons of the Options", "## Links",
+        "core-maintainer", "Conservative gating", "No unverified warning",
+    ):
+        assert required in text
+    assert "VERIFIED_EXACT" not in text
+
+
+def test_decision_schema_migrates_existing_local_cache(tmp_path) -> None:
+    import sqlite3
+
+    from biscuit.cli.storage import connect_db
+
+    db = tmp_path / "previous.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE decisions (decision_id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+            "status TEXT NOT NULL, context TEXT NOT NULL, rationale TEXT NOT NULL, "
+            "consequences TEXT NOT NULL)"
+        )
+    with connect_db(db) as conn:
+        fields = {row[1] for row in conn.execute("PRAGMA table_info(decisions)")}
+        assert "record_json" in fields

@@ -125,6 +125,9 @@ def connect_db(path: Path) -> sqlite3.Connection:
         );
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(decisions)")}
+    if "record_json" not in columns:
+        conn.execute("ALTER TABLE decisions ADD COLUMN record_json TEXT NOT NULL DEFAULT '{}'")
     return conn
 
 
@@ -161,19 +164,34 @@ def import_decisions(json_path: Path, db_path: Path) -> int:
             raise ValueError("Invalid decision ID")
         if status not in VALID_STATES:
             raise ValueError("Invalid decision status: " + status)
+        for field_name in ("deciders", "decision_drivers", "links"):
+            if field_name in item and (
+                not isinstance(item[field_name], list)
+                or not all(isinstance(value, str) for value in item[field_name])
+            ):
+                raise TypeError(field_name + " must be a list of strings")
+        if "considered_options" in item and (
+            not isinstance(item["considered_options"], list)
+            or not all(isinstance(value, dict) for value in item["considered_options"])
+        ):
+            raise TypeError("considered_options must be a list of objects")
         validated.append(
             (
                 decision_id,
                 str(item["title"]), status, str(item["context"]),
                 str(item["rationale"]), str(item["consequences"]),
+                json.dumps(item, ensure_ascii=False, sort_keys=True),
             )
         )
     with connect_db(db_path) as conn:
         conn.executemany(
-            """INSERT INTO decisions VALUES (?, ?, ?, ?, ?, ?)
+            """INSERT INTO decisions
+               (decision_id, title, status, context, rationale, consequences, record_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(decision_id) DO UPDATE SET
                title=excluded.title, status=excluded.status, context=excluded.context,
-               rationale=excluded.rationale, consequences=excluded.consequences""",
+               rationale=excluded.rationale, consequences=excluded.consequences,
+               record_json=excluded.record_json""",
             validated,
         )
     return len(validated)
@@ -193,19 +211,57 @@ def list_decisions(db_path: Path, status: str | None = None) -> list[dict]:
         return [dict(row) for row in rows]
 
 
+def _madr_list(values: list[str] | None) -> str:
+    if not values:
+        return "*Not supplied in the source decision record.*"
+    return "\n".join(f"- {value}" for value in values)
+
+
+def _option_text(options: list[dict]) -> str:
+    if not options:
+        return "*No considered options provided in the source record.*"
+    return "\n".join(
+        f"- **{item.get('name', item.get('title', 'Unnamed option'))}**"
+        + (f": {item['description']}" if item.get("description") else "")
+        for item in options
+    )
+
+
 def export_madr(db_path: Path, output: Path) -> int:
-    """Export explicitly imported decisions, without falsely attributing inference."""
+    """Render MADR 3.0-style records with explicit provenance gaps, never fabricated claims."""
     rows = list_decisions(db_path)
     output.mkdir(parents=True, exist_ok=True)
     for item in rows:
+        record = json.loads(item.get("record_json") or "{}")
         title = item["title"].replace("\n", " ").replace("\r", " ")
-        doc = (
-            f"# {title}\n\n"
-            f"- ID: {item['decision_id']}\n"
-            f"- Status: {item['status']}\n\n"
-            f"## Context\n\n{item['context']}\n\n"
-            f"## Decision\n\n{item['rationale']}\n\n"
-            f"## Consequences\n\n{item['consequences']}\n"
+        header = [f"# {title}", "", f"* Status: {item['status']}", f"* ID: {item['decision_id']}"]
+        if record.get("deciders"):
+            header.append("* Deciders: " + ", ".join(record["deciders"]))
+        if record.get("date"):
+            header.append("* Date: " + str(record["date"]))
+        if record.get("technical_story"):
+            header.append("* Technical Story: " + str(record["technical_story"]))
+        options = record.get("considered_options", [])
+        detail = []
+        for option in options:
+            name = option.get("name", option.get("title", "Unnamed option"))
+            pro = _madr_list(option.get("pros"))
+            con = _madr_list(option.get("cons"))
+            detail.append(f"### {name}\n\n**Pros:**\n\n{pro}\n\n**Cons:**\n\n{con}")
+        if not detail:
+            detail.append("*No option-specific trade-offs supplied in the source record.*")
+        document = (
+            "\n".join(header)
+            + "\n\n## Context and Problem Statement\n\n" + item["context"]
+            + "\n\n## Decision Drivers\n\n" + _madr_list(record.get("decision_drivers"))
+            + "\n\n## Considered Options\n\n" + _option_text(options)
+            + "\n\n## Decision Outcome\n\n" + item["rationale"]
+            + "\n\n### Consequences\n\n" + item["consequences"]
+            + "\n\n## Pros and Cons of the Options\n\n" + "\n\n".join(detail)
+            + "\n\n## Links\n\n" + _madr_list(record.get("links"))
+            + "\n"
         )
-        (output / f"{item['decision_id']}.md").write_text(doc, encoding="utf-8")
+        (output / f"{item['decision_id']}.md").write_text(
+            document, encoding="utf-8"
+        )
     return len(rows)
