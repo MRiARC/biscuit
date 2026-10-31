@@ -209,7 +209,17 @@ To prevent unauthenticated webhooks, replayed actions, or tampered approvals, Sw
 1. **HMAC-SHA256 Signature:** Incoming callbacks from Switch must include the `X-Switch-Signature: sha256=<hex>` header computed over the raw callback body using a pre-shared secret.
 2. **Idempotency Key:** Each approval card carries a unique `idempotency_key` (UUIDv4). If a callback is received for a request with `status != 'PENDING'`, Biscuit returns `409 Conflict` and discards the duplicate.
 3. **TTL / Expiration:** Approval cards carry `expires_at = NOW() + INTERVAL '72 hours'`. Expired requests are automatically marked `EXPIRED` and cannot be approved.
-4. **Role-Based Authorization:** Biscuit verifies that the deciding user's platform identity maps to an authorized contributor in `contributors` with `project_role IN ('BDFL', 'Core Maintainer')`.
+4. **Project-Scoped Role-Based Authorization:** Biscuit maps the authenticated callback identity to `contributors`, resolves the target decision's `source_threads.project_context`, and requires an active, verified, non-revoked role in `contributor_project_role_grants` for **that exact project** (such as BDFL or Core Maintainer). Global contributor identity or authority in another repository does not suffice; the role-grant ID and callback details are preserved in the audit trail.
+
+### Lifecycle Transitions and Ruling Evidence
+
+Approval of a draft is a publication action, not an alternative-level ruling.
+The trusted decision-transition service must authenticate the actor and call
+`transition_alternative_lifecycle` rather than issuing a direct status update.
+The canonical trigger records each lifecycle change atomically in
+`decision_event_log`, including previous/new state, evidence, acting contributor,
+and a snapshot of the relevant project-specific role grant and sign-offs.
+Historical rulings stay auditable after a role expires or is revoked.
 
 ### B. Append-Only Approval Event Log (`hitl_approval_events`)
 Every action taken on an approval request writes an immutable, append-only row:
