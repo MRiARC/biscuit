@@ -230,8 +230,33 @@ class ExtractionPipeline:
         # -------------------------------------------------------------
         arguments: list[ArgumentClassification] = []
         for packet in packets:
+            # Role verification must precede Pass 4. Do not send untrusted BDFL
+            # classifications into synthesis and attempt to correct them afterward.
+            if verified_project_roles is not None:
+                for message in packet.messages:
+                    author = str(message.get("author") or "").strip().lower()
+                    trusted_role = verified_project_roles.get(author, "contributor").strip().lower()
+                    message["author_role"] = trusted_role
+                    message["role"] = trusted_role
+
             packet_args = self.pass3.mine_arguments(packet)
-            arguments.extend(packet_args)
+            for arg in packet_args:
+                if verified_project_roles is not None:
+                    trusted_role = verified_project_roles.get(
+                        arg.author.strip().lower(), "contributor"
+                    ).strip().lower()
+                    is_authorized = trusted_role in (
+                        "bdfl", "maintainer", "core maintainer", "core_maintainer",
+                        "working group chair", "working_group_chair", "wg_chair",
+                    )
+                    changes: dict[str, Any] = {"author_role": trusted_role}
+                    if not is_authorized:
+                        changes.update(
+                            is_ruling=False, ruling_authority=None,
+                            fatal_rejection=False, fatal_reason=None,
+                        )
+                    arg = arg.model_copy(update=changes)
+                arguments.append(arg)
 
         # -------------------------------------------------------------
         # PASS 4: Schema & MADR Synthesis (Qwen 2.5 Coder 7B)
