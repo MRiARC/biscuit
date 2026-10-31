@@ -759,6 +759,8 @@ def test_alternative_ruling_evidence_backlink_negative(test_db_session):
     # Exercise the physical FK rather than relying on ORM dirty tracking.
     # Raw SQLite UUID parameters must use the 32-character hexadecimal form.
     assert test_db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+    fk_rows = test_db_session.execute(text("PRAGMA foreign_key_list(decision_alternatives)")).all()
+    assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), fk_rows
     good = test_db_session.execute(
         text("UPDATE decision_alternatives SET ruling_evidence_id=:eid WHERE id=:aid"),
         {"eid": graph["evidence"].id.hex, "aid": graph["alternative"].id.hex},
@@ -795,6 +797,8 @@ def test_decision_ruling_evidence_backlink_negative(test_db_session):
     from sqlalchemy import text
 
     assert test_db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+    fk_rows = test_db_session.execute(text("PRAGMA foreign_key_list(decisions)")).all()
+    assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), fk_rows
     with pytest.raises(IntegrityError):
         updated = test_db_session.execute(
             text("UPDATE decisions SET ruling_evidence_id=:eid WHERE id=:did"),
