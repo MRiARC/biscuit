@@ -200,7 +200,11 @@ def causal_rationale_alignment(
 
 
 def pr_warning_metrics(
-    labels: Mapping[str, str], warned_ids: Sequence[str]
+    labels: Mapping[str, str],
+    warned_ids: Sequence[str],
+    *,
+    warning_records: Sequence[Mapping[str, Any]] | None = None,
+    expected_alternatives: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Labels are an evaluation-only input and must never reach the predictor."""
     if set(labels.values()) - {"violation", "benign", "ambiguous"}:
@@ -213,15 +217,48 @@ def pr_warning_metrics(
     violations = {k for k, v in labels.items() if v == "violation"}
     benign = {k for k, v in labels.items() if v == "benign"}
     ambiguous = {k for k, v in labels.items() if v == "ambiguous"}
-    tp = len(warned & violations)
-    fp = len(warned - violations)
-    fn = len(violations - warned)
+    supplied_records: dict[str, Mapping[str, Any]] = {}
+    if warning_records is not None:
+        for record in warning_records:
+            if not isinstance(record, Mapping):
+                raise ValueError("Warning audit record must be an object")
+            case_id = str(record.get("case_id", ""))
+            if case_id not in labels or case_id in supplied_records:
+                raise ValueError("Unknown or duplicate warning audit case ID")
+            supplied_records[case_id] = record
+        if set(supplied_records) != warned:
+            raise ValueError("Warning records must correspond exactly to warned PR IDs")
+
+    correct_warnings: set[str] = set()
+    for case_id in warned & violations:
+        record = supplied_records.get(case_id)
+        if warning_records is None:
+            # Legacy ID-list scoring is retained solely for standalone equation tests.
+            # Benchmark runs must provide warning_records for authorization credit.
+            correct_warnings.add(case_id)
+        elif (
+            expected_alternatives is not None
+            and record is not None
+            and record.get("alternative_id") == expected_alternatives.get(case_id)
+            and record.get("authorization") == "SIMULATED_VERIFIED_RULING"
+        ):
+            # This records a synthetic replay contract, not production ruling authority.
+            correct_warnings.add(case_id)
+
+    tp = len(correct_warnings)
+    fp = len(warned - correct_warnings)
+    fn = len(violations - correct_warnings)
     audit_rows = [
         {
             "case_id": case_id,
             "ground_truth_class": label,
             "action": "WARN" if case_id in warned else "ABSTAIN",
-            "correct": (case_id in warned) == (label == "violation"),
+            "alternative_id": supplied_records.get(case_id, {}).get("alternative_id"),
+            "authorization": supplied_records.get(case_id, {}).get("authorization"),
+            "correct": (
+                case_id in correct_warnings if label == "violation"
+                else case_id not in warned
+            ),
         }
         for case_id, label in sorted(labels.items())
     ]
