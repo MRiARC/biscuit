@@ -350,3 +350,54 @@ def test_model_local_proposal_ids_are_matched_by_name() -> None:
     assert evaluated.counts["proposals"]["proposal_id_mapping"] == {
         "extract-0": "S1", "extract-1": "S2",
     }
+
+
+def test_lifecycle_rejects_unknown_judged_states() -> None:
+    for state in ("PROPOSED", "UNDER_DISCUSSION", "UNSUPPORTED"):
+        with pytest.raises(ValueError, match="Unsupported judged"):
+            lifecycle_accuracy({"p": state}, {"p": "DEFERRED"})
+        with pytest.raises(ValueError, match="Unsupported judged"):
+            lifecycle_accuracy({"p": "ACCEPTED"}, {"p": state})
+
+
+def test_ast_grounding_duplicate_predictions_do_not_inflate_precision() -> None:
+    anchor = {"proposal_id": "S1", "file_path": "Grammar/python.gram",
+              "symbol_identifier": "", "ast_node_type": "unary_op",
+              "historical_commit": "historical-sha"}
+    assert ast_grounding_precision([anchor, anchor], [anchor])["precision"] == 0.5
+
+
+def test_disambiguation_must_match_ground_truth_in_benchmark_mode() -> None:
+    ground_truth = [
+        {"proposal_id": "A", "file_path": "Grammar/g", "ast_node_type": "A",
+         "historical_commit": "real"},
+        {"proposal_id": "B", "file_path": "Grammar/g", "ast_node_type": "B",
+         "historical_commit": "real"},
+    ]
+    wrong_but_distinct = [
+        {"proposal_id": "A", "file_path": "wrong.py", "ast_node_type": "X",
+         "historical_commit": "real"},
+        {"proposal_id": "B", "file_path": "wrong.py", "ast_node_type": "Y",
+         "historical_commit": "real"},
+    ]
+    result = alternative_disambiguation_rate(
+        wrong_but_distinct, ["A", "B"],
+        expected_anchors=ground_truth, expected_proposal_ids=["A", "B"],
+    )
+    assert result["rate"] == 0.0
+    assert result["comparison"] == "INDEPENDENT_GROUND_TRUTH"
+    assert alternative_disambiguation_rate(
+        ground_truth, ["A", "B"],
+        expected_anchors=ground_truth, expected_proposal_ids=["A", "B"],
+    )["rate"] == 1.0
+
+
+def test_runner_fails_on_wrong_but_nonoverlapping_anchors() -> None:
+    predictions = load_simulated_predictions("pep-505")
+    anchor = predictions["proposals"][0]["code_anchors"][0]
+    anchor["file_path"] = "misleading/example.py"
+    outcome = run_benchmark("pep-505", predictor=lambda _: predictions)
+    assert outcome.verdict == "FAILED"
+    assert next(
+        m for m in outcome.metrics if m.name == "Alternative disambiguation rate"
+    ).status == "FAILED"
