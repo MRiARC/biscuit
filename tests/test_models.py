@@ -771,7 +771,7 @@ def test_alternative_ruling_evidence_backlink_negative(test_db_session):
     )
     assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), (
         fk_rows,
-        [(fk.name, [(e.parent.table.schema, e.column.table.schema) for e in fk.elements])
+        [(fk.name, repr(fk._create_rule), repr(fk._ddl_if), [(e.parent.table.schema, e.column.table.schema) for e in fk.elements])
          for fk in declared],
         compiled,
     )
@@ -823,7 +823,7 @@ def test_decision_ruling_evidence_backlink_negative(test_db_session):
     )
     assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), (
         fk_rows,
-        [(fk.name, [(e.parent.table.schema, e.column.table.schema) for e in fk.elements])
+        [(fk.name, repr(fk._create_rule), repr(fk._ddl_if), [(e.parent.table.schema, e.column.table.schema) for e in fk.elements])
          for fk in declared],
         compiled,
     )
