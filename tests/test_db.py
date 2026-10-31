@@ -261,7 +261,7 @@ def test_postgres_sync_and_async_bootstrap_live():
 
         alt = DecisionAlternative(
             decision_id=decision.id,
-            title="Live Postgres Vector Alternative",
+            proposal_text="Live Postgres Vector Alternative",
             embedding=[0.05] * 768,
         )
         session.add(alt)
