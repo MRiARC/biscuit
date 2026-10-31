@@ -185,7 +185,7 @@ Per **PR #7 Review (5)**:
 | Invariant | Requirement | Failure Action |
 |---|---|---|
 | **1. Decision State** | `decision_alternatives.lifecycle_status == 'REJECTED'` | **ABSTAIN.** (Never warn on `DISPUTED`, `UNRESOLVED`, or `PROPOSED` items). |
-| **2. Authoritative Ruling** | `ruling_evidence_id` is a `VERIFIED_EXACT` `RULING` span linked to this exact alternative and authored by an identified authorized human. The database enforces BDFL identity or distinct Core Maintainer/Working Group sign-offs; model inference is never authority. | **ABSTAIN.** (Never warn based on unverified or speculative evidence). |
+| **2. Authoritative Ruling** | `ruling_evidence_id` is a `VERIFIED_EXACT` `RULING` span linked to this exact alternative and authored by an identified authorized human. The database enforces a BDFL ruling, Core Maintainer consensus (ruling author plus one other verified Core Maintainer), or Working Group authority (Chair plus one other verified group member); model inference is never authority. | **ABSTAIN.** (Never warn based on unverified or speculative evidence). |
 | **3. Alternative Code Anchor** | Modified PR code touches an active `code_anchor` bound directly to THIS alternative. | **ABSTAIN.** (Never warn based on semantic similarity to unrelated code). |
 | **4. AST Structural Equivalence** | AST/CST subtree comparison confirms PR introduces the rejected syntax/construct (not an accepted or refactored pattern). | **ABSTAIN.** (Never warn on semantic embedding similarity alone). |
 
