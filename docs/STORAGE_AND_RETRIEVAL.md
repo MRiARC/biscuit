@@ -848,7 +848,7 @@ BEGIN
        OR ev_author IS DISTINCT FROM NEW.contributor_id THEN
         RAISE EXCEPTION 'Sign-off requires VERIFIED_EXACT RULING evidence authored by the signing contributor';
     END IF;
-    IF actor_role NOT IN ('Core Maintainer', 'Working Group Chair', 'Working Group Member') THEN
+    IF actor_role IS NULL OR actor_role NOT IN ('Core Maintainer', 'Working Group Chair', 'Working Group Member') THEN
         RAISE EXCEPTION 'Only an authorized maintainer/working-group member may sign a ruling';
     END IF;
     RETURN NEW;
@@ -882,10 +882,10 @@ BEGIN
            OR ev_alternative IS DISTINCT FROM NEW.id OR ev_author IS DISTINCT FROM NEW.ruling_actor_id THEN
             RAISE EXCEPTION 'REJECTED requires VERIFIED_EXACT RULING evidence for this alternative, authored by ruling_actor_id';
         END IF;
-        IF NEW.ruling_authority = 'BDFL' AND actor_role <> 'BDFL' THEN
+        IF NEW.ruling_authority = 'BDFL' AND actor_role IS DISTINCT FROM 'BDFL' THEN
             RAISE EXCEPTION 'BDFL authority requires a contributor with BDFL role';
         ELSIF NEW.ruling_authority = 'CORE_MAINTAINER_CONSENSUS' THEN
-            IF actor_role <> 'Core Maintainer' THEN
+            IF actor_role IS DISTINCT FROM 'Core Maintainer' THEN
                 RAISE EXCEPTION 'Consensus ruling evidence must be authored by a Core Maintainer';
             END IF;
             SELECT COUNT(*) INTO signoff_count FROM decision_alternative_ruling_signoffs s
@@ -898,7 +898,7 @@ BEGIN
                 RAISE EXCEPTION 'CORE_MAINTAINER_CONSENSUS requires the ruling author and one additional verified Core Maintainer sign-off';
             END IF;
         ELSIF NEW.ruling_authority = 'WORKING_GROUP' THEN
-            IF actor_role <> 'Working Group Chair' THEN
+            IF actor_role IS DISTINCT FROM 'Working Group Chair' THEN
                 RAISE EXCEPTION 'WORKING_GROUP authority requires a Working Group Chair author';
             END IF;
             SELECT COUNT(*) INTO signoff_count FROM decision_alternative_ruling_signoffs s
@@ -1013,7 +1013,7 @@ BEGIN
     END IF;
     SELECT platform_user_id, project_role INTO actor_platform_id, actor_role
       FROM contributors WHERE id = NEW.actor_contributor_id;
-    IF NOT FOUND OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id
+    IF NOT FOUND OR actor_role IS NULL OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id
        OR NOT (actor_role = ANY(request_row.authorized_roles)) THEN
         RAISE EXCEPTION 'HITL actor identity or role is not authorized for this request';
     END IF;
@@ -1148,12 +1148,12 @@ FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
   WHERE id = :source_message_version_id;
   ```
 * **Unicode & Multiline Preservation:**  
-  Offsets count Python Unicode code points (`len(str)`) in the exact decoded `raw_content` string. CRLF and LF remain distinct and are preserved. SHA-256 is computed over the UTF-8 bytes of the exact source string and exact quote. Normalized/cleaned representations are separate derived views and are never used for evidence offsets or hashes.
+  Offsets count Python Unicode code points (`len(str)`) in the exact decoded `raw_content` string. CRLF and LF remain distinct and are preserved. The source-version digest is SHA-256 over UTF-8 bytes of exact `raw_content`; the evidence-span digest is SHA-256 over UTF-8 bytes of `exact_quote`. Normalized/cleaned representations are separate derived views and are never used for evidence offsets or hashes.
 
 ### Verification Procedure
 1. Initialize evidence span with `verification_status = 'UNVERIFIED'`.
 2. Extract substring from `source_message_versions.raw_content` using `[start_char, end_char)`.
-3. If `substring == exact_quote` AND `sha256(exact_quote) == content_hash`:
+3. If `substring == exact_quote` AND `sha256(exact_quote.encode("utf-8")) == content_hash`:
    - Promote to `VERIFIED_EXACT`.
 4. If the message was edited remotely or hash mismatches:
    - Mark as `STALE_EDITED` or `UNVERIFIED`.
