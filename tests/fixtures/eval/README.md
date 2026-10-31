@@ -78,3 +78,14 @@ vectors. If model-matched GT vectors are absent (as in all checked-in
 synthetic fixtures), the semantic metric reports `NOT_MEASURED`, rather than
 falling back silently to lexical hashing or claiming calibrated model accuracy.
 There is no dependency on cloud model APIs or background downloads.
+
+## Partial runtime memory telemetry
+
+To request point-sampled Linux host memory during **actual Stream 3 execution**,
+run `biscuit evaluate --stream3 --profile-memory`. The profile reports the
+observed peak `MemTotal - MemAvailable`, the interval and sample count, with
+`measurement_status=PARTIAL_HOST_SAMPLES_ONLY`. It never declares 8 GiB
+compliance: representative workloads, all per-service RSS/PSS, swapping, OOM
+behavior, container boundaries and CPU/GPU hardware must still be profiled
+on the target deployment. The fixture replay mode does not make a fake
+measured-memory claim.
