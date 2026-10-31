@@ -54,118 +54,83 @@ def _parse_valid_uuid(val: Any) -> UUID | None:
     return None
 
 
+def _proposal_ids_in_clause(clause: str, proposals: list[ProposalCandidate]) -> set[str]:
+    """Find explicit proposal identifiers/names in one ruling clause, not the whole thread."""
+    found: set[str] = set()
+    for proposal in proposals:
+        pid = proposal.proposal_id
+        patterns = [rf"(?<!\\w){re.escape(pid)}(?!\\w)"]
+        digits = re.sub(r"[^\\d]", "", pid)
+        if digits:
+            patterns.append(rf"\\b(?:proposal|alternative|option)\\s*{re.escape(digits)}\\b")
+        if proposal.name and len(proposal.name) >= 4:
+            patterns.append(rf"\\b{re.escape(proposal.name)}\\b")
+        if any(re.search(pattern, clause, flags=re.IGNORECASE) for pattern in patterns):
+            found.add(pid)
+    return found
+
+
+def _rejection_clauses(quote: str) -> list[str]:
+    """Separate independent propositions so 'reject P1; P2 open' cannot reject P2."""
+    return [
+        clause.strip()
+        for clause in re.split(r"[;.\\n]+|\\b(?:but|however|whereas|while)\\b", quote, flags=re.I)
+        if clause.strip()
+    ]
+
+
+def _affirmative_rejection(clause: str) -> bool:
+    """Conservatively identify affirmative rejections; negated/contested rejections fail closed."""
+    if not re.search(r"\\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\\b", clause, re.I):
+        return False
+    if re.search(
+        r"\\b(?:not|never|no|don't|do\\s+not|does\\s+not|oppose|opposing|"
+        r"against|object\\s+to|disagree\\s+with|reconsider)\\b"
+        r"(?:\\s+\\w+){0,4}\\s+\\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\\b",
+        clause, re.I,
+    ):
+        return False
+    return True
+
+
 def _verify_ruling_alternative_link(
     quote: str,
     message_content: str,
     target_proposal_id: str,
     proposals: list[ProposalCandidate],
 ) -> bool:
+    """Validate an explicitly *rejecting* ruling for this alternative, not a mere mention.
+
+    The human's verbatim quote, not unrelated context in the same message or an LLM's
+    proposed alternative ID, must express the rejection. Ambiguous multi-target
+    statements are intentionally not authorized.
     """
-    Independently verifies that a ruling quote or its originating message actually
-    addresses target_proposal_id, rather than blindly trusting the LLM's classification.
-    Abstains (returns False) if the quote explicitly references a different proposal,
-    or if there is no verified textual link to the target proposal in multi-proposal discussions.
-    """
-    quote_lower = quote.lower()
-    msg_lower = message_content.lower()
-    target_id_lower = target_proposal_id.lower().strip()
+    del message_content  # Context may establish relevance, never rejection direction.
+    if not any(p.proposal_id == target_proposal_id for p in proposals):
+        return False
 
-    target_prop = next(
-        (p for p in proposals if p.proposal_id.lower().strip() == target_id_lower),
-        None,
-    )
-    other_props = [p for p in proposals if p.proposal_id.lower().strip() != target_id_lower]
+    for clause in _rejection_clauses(quote):
+        if not _affirmative_rejection(clause):
+            continue
+        referenced = _proposal_ids_in_clause(clause, proposals)
+        if referenced == {target_proposal_id}:
+            return True
+        if not referenced and len(proposals) == 1:
+            return True
+    return False
 
-    # Check 1: Does the quote explicitly reference a DIFFERENT proposal?
-    for other in other_props:
-        other_id = other.proposal_id.lower().strip()
-        other_num = re.sub(r"[^\d]", "", other_id)
 
-        other_patterns = [rf"\b{re.escape(other_id)}\b"]
-        if other_num:
-            other_patterns.extend(
-                [
-                    rf"\bproposal\s*{re.escape(other_num)}\b",
-                    rf"\balternative\s*{re.escape(other_num)}\b",
-                    rf"\boption\s*{re.escape(other_num)}\b",
-                ]
-            )
-        if other.name:
-            other_patterns.append(rf"\b{re.escape(other.name.lower())}\b")
-
-        for pattern in other_patterns:
-            if re.search(pattern, quote_lower):
-                # Quote references another proposal!
-                # Does the quote ALSO reference the target proposal?
-                target_num = re.sub(r"[^\d]", "", target_id_lower)
-                target_in_quote = (
-                    bool(re.search(rf"\b{re.escape(target_id_lower)}\b", quote_lower))
-                    or bool(
-                        target_num
-                        and re.search(rf"\bproposal\s*{re.escape(target_num)}\b", quote_lower)
-                    )
-                    or bool(
-                        target_prop and target_prop.name and target_prop.name.lower() in quote_lower
-                    )
-                )
-                if not target_in_quote:
-                    # Explicit mismatch: quote targets another proposal
-                    return False
-
-        if (
-            other.syntax_or_api
-            and len(other.syntax_or_api) >= 3
-            and other.syntax_or_api.lower() in quote_lower
-            and not (
-                target_prop
-                and target_prop.syntax_or_api
-                and target_prop.syntax_or_api.lower() in quote_lower
-            )
-        ):
-            return False
-
-    # Check 2: If there's only 1 proposal in the deliberation thread, any ruling in the thread
-    # addresses that proposal unless it referenced another proposal
-    if len(proposals) == 1 and target_prop:
-        return True
-
-    # Check 3: For multi-proposal threads, verify positive textual link in quote or message
-    target_num = re.sub(r"[^\d]", "", target_id_lower)
-    target_patterns = [rf"\b{re.escape(target_id_lower)}\b"]
-    if target_num:
-        target_patterns.extend(
-            [
-                rf"\bproposal\s*{re.escape(target_num)}\b",
-                rf"\balternative\s*{re.escape(target_num)}\b",
-                rf"\boption\s*{re.escape(target_num)}\b",
-            ]
-        )
-    if target_prop and target_prop.name:
-        target_patterns.append(rf"\b{re.escape(target_prop.name.lower())}\b")
-
-    quote_matches = any(bool(re.search(pat, quote_lower)) for pat in target_patterns)
-    if quote_matches:
-        return True
-
-    if (
-        target_prop
-        and target_prop.syntax_or_api
-        and len(target_prop.syntax_or_api) >= 2
-        and target_prop.syntax_or_api.lower() in quote_lower
-    ):
-        return True
-
-    msg_matches = any(bool(re.search(pat, msg_lower)) for pat in target_patterns)
-    if msg_matches:
-        return True
-
-    return bool(
-        target_prop
-        and target_prop.syntax_or_api
-        and len(target_prop.syntax_or_api) >= 2
-        and target_prop.syntax_or_api.lower() in msg_lower
-    )
-
+def _is_affirmative_signoff(quote: str, proposal_id: str, proposals: list[ProposalCandidate]) -> bool:
+    """A consensus sign-off explicitly agrees to reject this same proposal."""
+    for clause in _rejection_clauses(quote):
+        if not _affirmative_rejection(clause):
+            continue
+        if not re.search(r"\\b(?:agree|concur|second|endorse|support)\\b", clause, re.I):
+            continue
+        targets = _proposal_ids_in_clause(clause, proposals)
+        if targets == {proposal_id} or (not targets and len(proposals) == 1):
+            return True
+    return False
 
 class ExtractionPipeline:
     """
