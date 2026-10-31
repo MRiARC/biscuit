@@ -271,17 +271,35 @@ def _bootstrap_sqlite_schema(conn) -> None:
     CREATE TABLE, allowing us to emit the complete table DDL up front.
     Keep this path idempotent and create all SQLModel secondary indexes.
     """
-    for table in SQLModel.metadata.tables.values():
-        conn.execute(
-            CreateTable(
-                table,
-                if_not_exists=True,
-                include_foreign_key_constraints=list(table.foreign_key_constraints),
+    # A preceding PostgreSQL metadata.create_all() can set FK._create_rule to
+    # AddConstraint._create_rule_disable when breaking DDL cycles. That private
+    # rule remains attached to the shared global metadata, even in subsequent
+    # SQLite boots, and suppresses all FK clauses. Temporarily reset these
+    # rules only while compiling SQLite CREATE TABLE with complete inline FKs.
+    # Restore the original rules afterward for PostgreSQL's ALTER-based path.
+    foreign_keys = [
+        fk
+        for table in SQLModel.metadata.tables.values()
+        for fk in table.foreign_key_constraints
+    ]
+    saved_rules = [(fk, fk._create_rule) for fk in foreign_keys]
+    try:
+        for fk in foreign_keys:
+            fk._create_rule = None
+        for table in SQLModel.metadata.tables.values():
+            conn.execute(
+                CreateTable(
+                    table,
+                    if_not_exists=True,
+                    include_foreign_key_constraints=list(table.foreign_key_constraints),
+                )
             )
-        )
-    for table in SQLModel.metadata.tables.values():
-        for index in table.indexes:
-            conn.execute(CreateIndex(index, if_not_exists=True))
+        for table in SQLModel.metadata.tables.values():
+            for index in table.indexes:
+                conn.execute(CreateIndex(index, if_not_exists=True))
+    finally:
+        for fk, rule in saved_rules:
+            fk._create_rule = rule
 
 
 def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
