@@ -17,6 +17,7 @@ Enforces non-negotiable provenance and authority invariants:
 
 import re
 from typing import Any
+from biscuit.extract.audit import AuditWriter, sha256_json
 from uuid import UUID, uuid4
 
 from biscuit.extract.client import LocalLLMClient
@@ -143,6 +144,7 @@ class ExtractionPipeline:
         pass1_model: str = "llama3.2:3b",
         pass3_model: str = "phi3.5",
         pass4_model: str = "qwen2.5-coder:7b",
+        audit_writer: AuditWriter | None = None,
     ):
         self.client = client or LocalLLMClient()
         self.pass1 = Pass1ProposalDiscovery(self.client, model=pass1_model)
@@ -151,6 +153,7 @@ class ExtractionPipeline:
         self.pass4 = Pass4SchemaSynthesis(self.client, model=pass4_model)
         self.verifier = EvidenceVerifier()
         self.matcher = CandidateSpanMatcher()
+        self.audit_writer = audit_writer
 
     def run(
         self,
@@ -162,6 +165,110 @@ class ExtractionPipeline:
         alternative_ids: dict[str, UUID | str] | None = None,
         argument_ids: dict[str, UUID | str] | None = None,
         verified_project_roles: dict[str, str] | None = None,
+        source_thread_id: UUID | str | None = None,
+        environment_lock_sha256: str | None = None,
+        model_revisions: dict[str, str] | None = None,
+    ) -> ExtractionRunResult:
+        """Execute with a deterministic audit manifest and optional durable DB writer.
+
+        The zero-dependency workstream does not silently claim database persistence.
+        A configured writer requires a real source-thread UUID, dependency-lock digest,
+        and pinned model revisions; otherwise the run is rejected before inference.
+        """
+        run_id = str(uuid4())
+        revisions = model_revisions or {}
+        run_config = {
+            "pass1_chunk_word_limit": self.pass1.chunk_word_limit,
+            "pass2_target_word_limit": self.pass2.target_word_limit,
+            "temperature": 0.0,
+            "keep_alive": 0,
+            "mock_mode": bool(self.client.mock_mode),
+            "pipeline_version": "1.0.0",
+        }
+        manifest: dict[str, Any] = {
+            "id": UUID(run_id),
+            "source_thread_id": _parse_valid_uuid(source_thread_id),
+            "pipeline_version": "1.0.0",
+            "schema_version": "MADR-3.0",
+            "run_config": run_config,
+            "run_config_sha256": sha256_json(run_config),
+            "environment_lock_sha256": environment_lock_sha256,
+            "model_pass1_name": self.pass1.model,
+            "model_pass1_revision": revisions.get("pass1", "UNPINNED"),
+            "model_pass3_name": self.pass3.model,
+            "model_pass3_revision": revisions.get("pass3", "UNPINNED"),
+            "model_pass4_name": self.pass4.model,
+            "model_pass4_revision": revisions.get("pass4", "UNPINNED"),
+            "embedding_model_name": revisions.get("embedding_name", "NOT_USED"),
+            "embedding_model_revision": revisions.get("embedding", "NOT_USED"),
+            "prompt_templates_hash": get_prompt_templates_hash(),
+            "source_thread_snapshot_sha256": sha256_json({
+                "thread_id": thread_id, "topic": topic,
+                "messages": messages, "edges": edges or [],
+            }),
+            "run_status": "RUNNING",
+            "records_extracted": 0,
+        }
+        if self.audit_writer is not None:
+            if manifest["source_thread_id"] is None:
+                raise ValueError("Audit writer requires persisted source_thread_id UUID")
+            if not isinstance(environment_lock_sha256, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{64}", environment_lock_sha256
+            ):
+                raise ValueError("Audit writer requires real environment lock SHA-256")
+            if any(
+                manifest[key] in ("UNPINNED", "NOT_USED", "")
+                for key in (
+                    "model_pass1_revision", "model_pass3_revision",
+                    "model_pass4_revision", "embedding_model_revision",
+                )
+            ):
+                raise ValueError("Audit writer requires pinned model and embedding revisions")
+            self.audit_writer.write(manifest)
+
+        try:
+            result = self._run_impl(
+                thread_id=thread_id, topic=topic, messages=messages, edges=edges,
+                decision_id=decision_id, alternative_ids=alternative_ids,
+                argument_ids=argument_ids, verified_project_roles=verified_project_roles,
+                run_id=run_id,
+            )
+        except Exception:
+            if self.audit_writer is not None:
+                manifest["run_status"] = "FAILED"
+                self.audit_writer.write(manifest)
+            raise
+
+        result.audit_metadata.update({
+            "source_thread_snapshot_sha256": manifest["source_thread_snapshot_sha256"],
+            "run_config": run_config,
+            "run_config_sha256": manifest["run_config_sha256"],
+            "environment_lock_sha256": environment_lock_sha256,
+            "model_pass1_revision": manifest["model_pass1_revision"],
+            "model_pass3_revision": manifest["model_pass3_revision"],
+            "model_pass4_revision": manifest["model_pass4_revision"],
+            "embedding_model_name": manifest["embedding_model_name"],
+            "embedding_model_revision": manifest["embedding_model_revision"],
+            "audit_persisted": False,
+        })
+        if self.audit_writer is not None:
+            manifest["run_status"] = result.run_status
+            manifest["records_extracted"] = len(result.proposals)
+            self.audit_writer.write(manifest)
+            result.audit_metadata["audit_persisted"] = True
+        return result
+
+    def _run_impl(
+        self,
+        thread_id: str,
+        topic: str,
+        messages: list[dict[str, Any]],
+        edges: list[dict[str, Any]] | None = None,
+        decision_id: str | None = None,
+        alternative_ids: dict[str, UUID | str] | None = None,
+        argument_ids: dict[str, UUID | str] | None = None,
+        verified_project_roles: dict[str, str] | None = None,
+        run_id: str | None = None,
     ) -> ExtractionRunResult:
         """
         Executes the full 4-pass extraction and provenance verification workflow.
@@ -179,7 +286,7 @@ class ExtractionPipeline:
         Returns:
             ExtractionRunResult: Complete auditable extraction result.
         """
-        run_id = str(uuid4())
+        run_id = run_id or str(uuid4())
         dec_id = decision_id or f"DEC-{thread_id[:8]}"
         dec_uuid = _parse_valid_uuid(dec_id)
         prompt_templates_hash = get_prompt_templates_hash()
