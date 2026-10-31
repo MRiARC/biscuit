@@ -252,6 +252,15 @@ def run_benchmark(
             "postgres_rss_mib": None,
             "model_rss_mib": None,
             "kv_cache_mib": None,
+            "planning_estimates_gib": {
+                "PostgreSQL_and_pgvector": 1.50,
+                "Vector_index": 0.35,
+                "Python_orchestrator": 0.25,
+                "Embedding_model": 0.28,
+                "Largest_local_model": 4.40,
+                "KV_cache": 0.30,
+                "Total_unmeasured_design_estimate": 7.08,
+            },
         },
     )
     if output_path is not None:

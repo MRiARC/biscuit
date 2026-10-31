@@ -252,6 +252,7 @@ def export_madr(db_path: Path, output: Path) -> int:
             detail.append("*No option-specific trade-offs supplied in the source record.*")
         document = (
             "\n".join(header)
+            + "\n\n## Status\n\n" + item["status"]
             + "\n\n## Context and Problem Statement\n\n" + item["context"]
             + "\n\n## Decision Drivers\n\n" + _madr_list(record.get("decision_drivers"))
             + "\n\n## Considered Options\n\n" + _option_text(options)

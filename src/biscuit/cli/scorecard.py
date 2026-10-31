@@ -23,6 +23,9 @@ def render_scorecard(outcome: BenchmarkOutcome, *, file: TextIO | None = None) -
             operator = "<=" if score.direction == "max" else ">="
             lines.append(f"{score.name} | {operator}{score.target:.2f} | {value} | {score.status}")
         lines.append("Memory profile: NOT_MEASURED (no host RSS profiling)")
+        lines.append("Component | Planned GiB (UNMEASURED) | Observed MiB")
+        for component, estimate in outcome.memory_profile.get("planning_estimates_gib", {}).items():
+            lines.append(f"{component} | {estimate:.2f} | NOT_MEASURED")
         lines.append(f"Verdict: {outcome.verdict}")
         result = "\n".join(lines)
         if file is not None:
@@ -47,5 +50,14 @@ def render_scorecard(outcome: BenchmarkOutcome, *, file: TextIO | None = None) -
         "Memory profile: " + str(memory["measurement_status"])
         + " (peak host RAM / database / model / KV cache not measured)"
     )
+    planning = memory.get("planning_estimates_gib", {})
+    if planning:
+        profile = Table(title="Memory budget (DESIGN ESTIMATE ONLY; no host measurements)")
+        profile.add_column("Component")
+        profile.add_column("Planned GiB")
+        profile.add_column("Observed MiB")
+        for component, estimate in planning.items():
+            profile.add_row(component, f"{estimate:.2f}", "NOT_MEASURED")
+        console.print(profile)
     console.print("Verdict: " + outcome.verdict)
     return console.export_text()
