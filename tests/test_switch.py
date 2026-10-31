@@ -1209,7 +1209,7 @@ def test_callback_requires_trusted_project_role_resolver():
 
 def test_callback_rejects_revoked_and_cross_project_grants():
     for project in ("https://github.com/another/repository", "https://github.com/python/cpython"):
-        def invalid_grants(source, platform, actor, target):
+        def invalid_grants(source, platform, actor, target, project=project):
             return [VerifiedProjectRoleGrant(
                 contributor_id=actor, source_platform=source, platform_id=platform,
                 project_context=project, role="Core Maintainer", revoked=True,
