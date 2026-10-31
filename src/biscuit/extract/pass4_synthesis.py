@@ -69,25 +69,29 @@ class Pass4SchemaSynthesis:
             self.client.unload_model(self.model)
 
         cleaned = _clean_json_response(raw_response)
+        warnings: list[str] = []
         data: dict[str, Any] = {}
+
         if cleaned:
             try:
-                data = json.loads(cleaned)
+                parsed: Any = json.loads(cleaned)
             except json.JSONDecodeError:
-                json_candidate = re.search(r"(\{[\s\S]*\})", cleaned)
-                if json_candidate:
-                    try:
-                        data = json.loads(json_candidate.group(1))
-                    except json.JSONDecodeError:
-                        data = {}
+                match = re.search(r"(\\{[\\s\\S]*\\})", cleaned)
+                try:
+                    parsed = json.loads(match.group(1)) if match else None
+                except json.JSONDecodeError:
+                    parsed = None
+            if isinstance(parsed, dict):
+                data = parsed
+            else:
+                warnings.append("Pass 4 response is not a valid JSON object.")
 
-        # Construct ExtractedMADR with robust fallbacks
         status = data.get("status", "UNRESOLVED")
         if status not in ("ACCEPTED", "REJECTED", "DISPUTED", "UNRESOLVED"):
+            warnings.append("Invalid MADR status; defaulted to UNRESOLVED.")
             status = "UNRESOLVED"
 
-        context_and_problem = data.get("context_and_problem") or f"Deliberation on {topic}"
-        considered_alternatives = data.get("considered_alternatives") or [
+        fallback_alternatives = [
             {
                 "proposal_id": p.proposal_id,
                 "name": p.name,
@@ -96,15 +100,47 @@ class Pass4SchemaSynthesis:
             }
             for p in proposals
         ]
-        decision_outcome = data.get("decision_outcome")
-        evidence_quotes = data.get("evidence_quotes") or []
+        raw_alternatives = data.get("considered_alternatives")
+        if raw_alternatives is None:
+            considered_alternatives = fallback_alternatives
+        elif isinstance(raw_alternatives, list) and all(
+            isinstance(item, dict) for item in raw_alternatives
+        ):
+            considered_alternatives = raw_alternatives
+        else:
+            warnings.append("Malformed considered_alternatives; discarded untrusted model values.")
+            considered_alternatives = fallback_alternatives
+
+        raw_quotes = data.get("evidence_quotes")
+        if raw_quotes is None:
+            evidence_quotes: list[dict[str, Any]] = []
+        elif isinstance(raw_quotes, list) and all(isinstance(q, dict) for q in raw_quotes):
+            evidence_quotes = raw_quotes
+        else:
+            warnings.append("Malformed evidence_quotes; discarded untrusted model values.")
+            evidence_quotes = []
+
+        raw_outcome = data.get("decision_outcome")
+        if raw_outcome is None or isinstance(raw_outcome, dict):
+            decision_outcome = raw_outcome
+        else:
+            warnings.append("Malformed decision_outcome; discarded untrusted model value.")
+            decision_outcome = None
+
+        # Invalid model structure must fail closed, including a model-proposed REJECTED status.
+        if warnings:
+            status = "UNRESOLVED"
+            for alternative in considered_alternatives:
+                if str(alternative.get("status", "")).upper() == "REJECTED":
+                    alternative["status"] = "DISPUTED"
 
         return ExtractedMADR(
             decision_id=str(data.get("decision_id") or decision_id),
             title=str(data.get("title") or topic),
             status=status,
-            context_and_problem=str(context_and_problem),
+            context_and_problem=str(data.get("context_and_problem") or f"Deliberation on {topic}"),
             considered_alternatives=considered_alternatives,
             decision_outcome=decision_outcome,
             evidence_quotes=evidence_quotes,
+            validation_warnings=warnings,
         )
