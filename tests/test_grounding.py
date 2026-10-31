@@ -506,3 +506,84 @@ def test_real_tree_sitter_both_grammars_and_git_lineage(tmp_path: Path) -> None:
     assert result.verified_parser
     assert result.safe_for_automatic_migration
     assert result.resolved_path == "Parser/lexer.c"
+
+
+@pytest.mark.parametrize(
+    ("original", "renamed"),
+    [
+        ("return [x for x in items if x > 0]", "return [y for y in values if y > 0]"),
+        ("return {x for x in items}", "return {y for y in values}"),
+        ("return {x: x + 1 for x in items}", "return {y: y + 1 for y in values}"),
+        ("return sum(x for x in items)", "return sum(y for y in values)"),
+        ("return [(z := x) for x in items]", "return [(w := y) for y in values]"),
+        ("return [x + y for x in items for y in range(x)]",
+         "return [a + b for a in values for b in range(a)]"),
+    ],
+)
+def test_comprehension_and_walrus_rename_invariance(original: str, renamed: str) -> None:
+    source = "def f(items):\n    " + original + "\n"
+    rewritten = "def g(values):\n    " + renamed + "\n"
+    assert fingerprint_python_ast(source) == fingerprint_python_ast(rewritten)
+
+
+@pytest.mark.parametrize("inert", [
+    'const char *s = "}";',
+    "char literal = '{';",
+    'const char *s = "\\"}";',
+    "/* } in a comment */",
+    "// } ignored\n",
+])
+def test_c_fallback_ignores_braces_in_literals_and_comments(
+    inert: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from biscuit.grounding import cst_parser
+
+    def no_grammar(_: str) -> None:
+        raise ParserUnavailable("C restricted fallback test")
+
+    monkeypatch.setattr(cst_parser, "_ts_parser", no_grammar)
+    text = ("int tok_get(int x) {\n    " + inert +
+            "\n    return x + 1;\n}\nint other(int y) { return y; }\n")
+    syms = extract_symbols(text, "c", "parser.c")
+    match = next(s for s in syms if s.symbol_name == "tok_get")
+    assert text.encode()[match.start_byte:match.end_byte].endswith(b"return x + 1;\n}")
+    assert match.end_line == text[:match.end_byte].count("\n") + 1
+    other = next(s for s in syms if s.symbol_name == "other")
+    assert other.start_byte >= match.end_byte
+
+
+def test_c_fallback_rejects_unterminated_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from biscuit.grounding import cst_parser
+
+    def no_grammar(_: str) -> None:
+        raise ParserUnavailable("C restricted fallback test")
+
+    monkeypatch.setattr(cst_parser, "_ts_parser", no_grammar)
+    with pytest.raises(ParseError, match="Unterminated"):
+        extract_symbols('int tok_get(int x) { char *s = "unterminated; }', "c", "a.c")
+
+
+def test_python_parser_provenance_records_interpreter_version() -> None:
+    import sys
+
+    from biscuit.grounding import cst_parser
+
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    symbol = cst_parser._python_ast_symbols(b"def f(x):\n    return x\n", "a.py")[0]
+    assert version in symbol.parser_version
+    ts_symbols = extract_symbols("def f(x):\n    return x\n", "python", "a.py")
+    assert version in ts_symbols[0].parser_version
+
+
+def test_anchor_rejects_missing_parser_provenance() -> None:
+    import uuid
+    from dataclasses import replace
+
+    from biscuit.grounding import CodeSymbolAnchor
+
+    symbol = extract_symbols("def run(x):\n    return x\n", "python", "a.py")[0]
+    with pytest.raises(ValueError, match="provenance"):
+        CodeSymbolAnchor.from_symbol(
+            replace(symbol, parser_version=""), alternative_id=uuid.uuid4(),
+            repository_url="https://github.com/a/b", historical_commit_sha="a" * 40,
+        )
