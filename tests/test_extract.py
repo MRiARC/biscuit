@@ -1316,6 +1316,7 @@ def test_caller_supplied_target_uuids():
         thread_id=thread_id,
         topic=topic,
         messages=messages,
+        verified_project_roles={"guido": "bdfl"},
     )
     assert len(res_no_targets.verified_spans) == 0
     assert len(res_no_targets.evidence_spans) == 0
