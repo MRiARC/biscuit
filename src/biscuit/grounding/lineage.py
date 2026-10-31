@@ -22,10 +22,15 @@ class GitLineageError(RuntimeError):
 
 
 def _git(repo: Path, *args: str, allow_failure: bool = False) -> bytes:
+    # Inherited Git routing/config variables may silently redirect object reads
+    # into a different repository. A reproducible evidence traversal ignores them.
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), *args], capture_output=True, check=False,
-            timeout=30, env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
+            timeout=30, env=environment,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GitLineageError(f"Git invocation failed: {exc}") from exc
@@ -52,11 +57,7 @@ def forward_commits(repo: str | Path, historical_commit: str, head: str = "HEAD"
     root = Path(repo).resolve()
     past = _rev(root, historical_commit)
     current = _rev(root, head)
-    probe = subprocess.run(
-        ["git", "-C", str(root), "merge-base", "--is-ancestor", past, current],
-        capture_output=True, check=False, timeout=30,
-    )
-    if probe.returncode:
+    if _git(root, "merge-base", past, current).decode("ascii").strip() != past:
         raise GitLineageError("Historical commit is not an ancestor of the requested HEAD")
     lines = _git(root, "rev-list", "--topo-order", "--reverse", f"{past}..{current}")
     return tuple(lines.decode("ascii").split())
@@ -93,13 +94,10 @@ def _name_status(repo: Path, parent: str, commit: str) -> tuple[tuple[str, str |
 
 
 def _commit_bytes(repo: Path, commit: str, path: str) -> bytes | None:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{commit}:{path}"],
-        capture_output=True, check=False, timeout=30,
-    )
-    if result.returncode:
-        return None
-    return _git(repo, "show", f"{commit}:{path}")
+    # An empty source blob cannot contain a tracked symbol. Avoid an unguarded
+    # subprocess call so GIT_* sanitization and replace-ref disabling match _rev.
+    blob = _git(repo, "show", f"{commit}:{path}", allow_failure=True)
+    return blob if blob else None
 
 
 def _symbol_at(
