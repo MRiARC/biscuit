@@ -30,6 +30,7 @@ if typer is not None:
         benchmark: str = typer.Option("pep-505", "--benchmark"),
         all_benchmarks: bool = typer.Option(False, "--all"),
         simulate: bool = typer.Option(True, "--simulate/--no-simulate"),
+        stream3: bool = typer.Option(False, "--stream3"),
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
         fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
@@ -43,6 +44,22 @@ if typer is not None:
 
         from biscuit.evaluate.fixtures import DEFAULT_FIXTURE_ROOT
 
+        if stream3 and predictions is not None:
+            typer.echo("--stream3 and --predictions are mutually exclusive", err=True)
+            raise typer.Exit(2)
+        predictor = None
+        if stream3:
+            try:
+                from biscuit.extract.pipeline import ExtractionPipeline
+                from biscuit.evaluate.stream3_adapter import stream3_predictor
+
+                predictor = stream3_predictor(ExtractionPipeline())
+            except ImportError as exc:
+                typer.echo(
+                    "Stream 3 extraction is not installed; integrate PR #23 first: "
+                    + str(exc), err=True,
+                )
+                raise typer.Exit(1) from exc
         root = fixtures_root or DEFAULT_FIXTURE_ROOT
         if output_format not in {"rich", "json"}:
             typer.echo("--format must be rich or json", err=True)
@@ -69,8 +86,9 @@ if typer is not None:
                         if all_benchmarks and predictions is not None else predictions
                     ),
                     fixtures_root=root,
+                    predictor=predictor,
                     audit_db=audit_db or _default_db(),
-                    recorded_replay=predictions is None and simulate,
+                    recorded_replay=predictions is None and simulate and not stream3,
                 )
                 for name in names
             ]
