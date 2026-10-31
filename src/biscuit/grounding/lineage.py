@@ -57,7 +57,7 @@ def forward_commits(repo: str | Path, historical_commit: str, head: str = "HEAD"
     root = Path(repo).resolve()
     past = _rev(root, historical_commit)
     current = _rev(root, head)
-    if _git(root, "merge-base", past, current).decode("ascii").strip() != past:
+    if _git(root, "merge-base", past, current, allow_failure=True).decode("ascii").strip() != past:
         raise GitLineageError("Historical commit is not an ancestor of the requested HEAD")
     lines = _git(root, "rev-list", "--topo-order", "--reverse", f"{past}..{current}")
     return tuple(lines.decode("ascii").split())
