@@ -119,35 +119,55 @@ def ast_grounding_precision(
 def alternative_disambiguation_rate(
     anchors: Sequence[Mapping[str, Any]],
     proposal_ids: Sequence[str],
+    *,
+    expected_anchors: Sequence[Mapping[str, Any]] | None = None,
+    expected_proposal_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Fraction of alternatives with nonempty, distinct file/AST/symbol anchors."""
-    identifiers = list(dict.fromkeys(proposal_ids))
-    locations: dict[str, set[tuple[str, str, str]]] = {
-        pid: set() for pid in identifiers
-    }
-    for anchor in anchors:
-        pid = str(anchor.get("proposal_id", ""))
-        if pid not in locations:
-            continue
-        location = (
-            str(anchor.get("file_path", anchor.get("file_pattern", ""))),
-            str(anchor.get("symbol_identifier", "")),
-            str(anchor.get("ast_node_type", "")),
-        )
-        if location[0] and (location[1] or location[2]):
-            locations[pid].add(location)
+    """Require distinct, correctly assigned historical anchors when truth is available.
+
+    The legacy two-argument form checks uniqueness only and is useful for unit tests;
+    actual benchmark evaluation MUST supply independently annotated expected anchors.
+    """
+    identifiers = list(dict.fromkeys(
+        expected_proposal_ids if expected_proposal_ids is not None else proposal_ids
+    ))
+
+    def locations_for(
+        rows: Sequence[Mapping[str, Any]],
+    ) -> dict[str, set[tuple[str, str, str, str]]]:
+        locations: dict[str, set[tuple[str, str, str, str]]] = {
+            pid: set() for pid in identifiers
+        }
+        for anchor in rows:
+            pid = str(anchor.get("proposal_id", ""))
+            if pid not in locations:
+                continue
+            location = (
+                str(anchor.get("file_path", anchor.get("file_pattern", ""))),
+                str(anchor.get("symbol_identifier", "")),
+                str(anchor.get("ast_node_type", "")),
+                str(anchor.get("historical_commit", "")),
+            )
+            if location[0] and (location[1] or location[2]):
+                locations[pid].add(location)
+        return locations
+
+    found = locations_for(anchors)
+    truth = locations_for(expected_anchors) if expected_anchors is not None else None
     distinguishable = sum(
-        bool(location_set)
+        bool(found[pid])
+        and (truth is None or bool(found[pid] & truth[pid]))
         and all(
-            location_set.isdisjoint(other_set)
-            for other_id, other_set in locations.items() if other_id != pid
+            found[pid].isdisjoint(other_locations)
+            for other_id, other_locations in found.items() if other_id != pid
         )
-        for pid, location_set in locations.items()
+        for pid in identifiers
     )
     return {
         "rate": _ratio(distinguishable, len(identifiers)),
         "distinguishable": distinguishable,
         "total": len(identifiers),
+        "comparison": "INDEPENDENT_GROUND_TRUTH" if truth is not None else "UNIQUENESS_ONLY",
     }
 
 
