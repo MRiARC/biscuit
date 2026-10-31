@@ -513,8 +513,14 @@ class ExtractionPipeline:
             for p in proposals:
                 pid = p.proposal_id
                 # Check independent link between ruling quote/message and this specific proposal
-                if _verify_ruling_alternative_link(
-                    v_span.exact_quote, span_msg["content"], pid, proposals
+                # A decision-level quote or a quote bound to another alternative
+                # must never become authoritative evidence for this alternative.
+                if (
+                    v_span.alternative_id is not None
+                    and v_span.alternative_id == persisted_alt_map.get(pid)
+                    and _verify_ruling_alternative_link(
+                        v_span.exact_quote, span_msg["content"], pid, proposals
+                    )
                 ):
                     if role == "bdfl":
                         bdfl_rulings_by_prop[pid].add(author)
@@ -524,10 +530,14 @@ class ExtractionPipeline:
                     elif role in ("working group chair", "working_group_chair", "wg_chair"):
                         wg_chair_rulings_by_prop[pid].add(author)
 
-        # Collect additional proposal-bound sign-offs from maintainers participating on that specific proposal
+        # Only explicit, correctly directed, exact-verified agreement counts as a sign-off.
+        # A generic objection to the proposal (or to its rejection) is never consensus.
         for arg in arguments:
             pid = arg.proposal_id
-            if pid not in maintainer_signoffs_by_prop:
+            alt_uuid = persisted_alt_map.get(pid)
+            if not alt_uuid or pid not in maintainer_signoffs_by_prop:
+                continue
+            if not _is_affirmative_signoff(arg.quote_text, pid, proposals):
                 continue
 
             orig_msg = find_originating_message(
@@ -538,20 +548,25 @@ class ExtractionPipeline:
             )
             if not orig_msg:
                 continue
-
             author = orig_msg["author"].lower()
             role = orig_msg["author_role"]
 
-            # Must be an objection or ruling or concurrence on this specific proposal
-            if (
-                arg.stance == EvidenceStance.OBJECT or arg.fatal_rejection or arg.is_ruling
-            ) and _verify_ruling_alternative_link(
-                arg.quote_text, orig_msg["content"], pid, proposals
-            ):
-                if role in ("maintainer", "core maintainer", "core_maintainer"):
-                    maintainer_signoffs_by_prop[pid].add(author)
-                elif role in ("working group member", "working_group_member", "wg_member"):
-                    wg_member_signoffs_by_prop[pid].add(author)
+            # The sign-off must have been independently anchored to an exact,
+            # persisted alternative evidence span from the same source version.
+            verified_signoff = any(
+                span.verification_status == VerificationStatus.VERIFIED_EXACT
+                and span.alternative_id == alt_uuid
+                and span.source_message_version_id == orig_msg["version_uuid"]
+                and span.exact_quote == arg.quote_text.strip()
+                for span in verified_spans
+            )
+            if not verified_signoff:
+                continue
+
+            if role in ("maintainer", "core maintainer", "core_maintainer"):
+                maintainer_signoffs_by_prop[pid].add(author)
+            elif role in ("working group member", "working_group_member", "wg_member"):
+                wg_member_signoffs_by_prop[pid].add(author)
 
         # Determine authorized rejections per proposal
         authorized_rejected_proposals: set[str] = set()
