@@ -210,7 +210,7 @@ def _c_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
             name = node.child_by_field_name("name")
             if name:
                 out.append(Symbol(
-                    "c", "struct", f"{PurePosixPath(file_path).name}.{_node_text(name, source)}", file_path,
+                    "c", "ast_node", f"{PurePosixPath(file_path).name}.{_node_text(name, source)}", file_path,
                     node.start_byte, node.end_byte,
                     node.start_point.row + 1, node.end_point.row + 1,
                     _signature(_node_text(name, source)), parser_backend="tree-sitter",
@@ -255,7 +255,7 @@ def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
         result.append(Symbol(
             "c", "function", _c_qualified(file_path, name, signature), file_path,
             start, end, _line_at(source, start), _line_at(source, end),
-            _signature(signature),
+            _signature(text[match.start(1):match.end()-1]),
             structural_fingerprint=_sha(text[match.start():pos].strip()),
             parser_backend="restricted-c-lexer", parser_version="restricted-v1",
             grammar_version="none",
@@ -265,7 +265,7 @@ def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
         start = len(text[:match.start()].encode("utf-8"))
         end = len(text[:match.end()].encode("utf-8"))
         result.append(Symbol(
-            "c", "struct", f"{PurePosixPath(file_path).name}.{match.group(1)}", file_path,
+            "c", "ast_node", f"{PurePosixPath(file_path).name}.{match.group(1)}", file_path,
             start, end, _line_at(source, start), _line_at(source, end),
             _signature(match.group(1)), parser_backend="restricted-c-lexer",
             parser_version="restricted-v1", grammar_version="none",

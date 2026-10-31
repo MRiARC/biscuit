@@ -72,9 +72,11 @@ class LineageResult:
     resolved_path: str | None
     anchor_state: AnchorState
     mapping_confidence: float | None = None
+    verified_parser: bool = False
     candidates: tuple[str, ...] = ()
     events: tuple[LineageEvent, ...] = ()
 
     @property
     def safe_for_automatic_migration(self) -> bool:
-        return self.anchor_state in (AnchorState.CURRENT, AnchorState.MIGRATED)
+        return (self.verified_parser and self.resolved_path is not None
+                and self.anchor_state in (AnchorState.CURRENT, AnchorState.MIGRATED))

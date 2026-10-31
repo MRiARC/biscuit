@@ -201,7 +201,15 @@ def _transition(
     if len(candidates) > 1:
         operation = "COPY_C" if operation == "COPY_C" else "REWRITE_SPLIT_B"
     if not candidates and parent_paths:
-        operation = "DELETE" if operation == "UNCHANGED" else operation
+        # A modified file may survive while its historical symbol is rewritten
+        # away. This is a conservative -B-style rewrite *candidate*; the event
+        # does not claim Git supplied a measured similarity percentage.
+        if operation == "MODIFY" and any(
+            _commit_bytes(repo, commit, p) is not None for p in parent_paths
+        ):
+            operation = "REWRITE_SPLIT_B"
+        elif operation == "UNCHANGED":
+            operation = "DELETE"
     return candidates, operation, old_file, new_file, hashlib.sha256(
         _git(repo, "diff-tree", "-r", "-M80%", "-C", "--find-copies-harder", "-B",
              "-p", parent, commit)).hexdigest()
@@ -342,8 +350,8 @@ def trace_lineage(
         historical_commit_sha=past, head_commit_sha=current,
         historical_path=historical_path,
         resolved_path=next(iter(final)) if len(final) == 1 and not ambiguous else None,
-        anchor_state=state, candidates=tuple(sorted(final)),
-        events=tuple(events),
+        anchor_state=state, verified_parser=exemplar.parser_backend == "tree-sitter",
+        candidates=tuple(sorted(final)), events=tuple(events),
     )
 
 

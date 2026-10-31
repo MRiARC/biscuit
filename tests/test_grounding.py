@@ -70,7 +70,8 @@ def test_python_qualified_symbol_and_byte_offsets() -> None:
 def test_c_qualified_symbol_and_struct() -> None:
     code = "struct tok_state { int next; };\nint tok_get(struct tok_state *tok) { return tok->next; }\n"
     syms = extract_symbols(code, "c", "Parser/tokenizer.c")
-    assert any(x.qualified_name == "tokenizer.c.tok_state" for x in syms)
+    assert any(x.qualified_name == "tokenizer.c.tok_state"
+               and x.symbol_type == "ast_node" for x in syms)
     function = next(s for s in syms if s.symbol_name == "tok_get")
     assert function.qualified_name == "tokenizer.c.tok_state.tok_get"
     assert function.start_line == 2
@@ -138,7 +139,8 @@ def test_forward_rename_and_immutable_mapping_evidence(tmp_path: Path) -> None:
     assert result.resolved_path == "old/lexer.py"
     assert result.mapping_confidence is None
     assert any(e.transition_type == "RENAME_M" for e in result.events)
-    assert result.safe_for_automatic_migration
+    # Without installed Tree-sitter grammars, fallback is never authoritative.
+    assert result.safe_for_automatic_migration == result.verified_parser
     assert all(e.confidence_score is None for e in result.events)
     assert all(len(e.mapping_evidence["diff_patch_sha256"]) == 64 for e in result.events)
     assert all(e.compared_parent_sha for e in result.events)
@@ -164,6 +166,29 @@ def test_symbol_split_marks_ambiguous(tmp_path: Path) -> None:
     assert result.anchor_state == AnchorState.AMBIGUOUS
     assert result.resolved_path is None
     assert set(result.candidates) == {"new/one.py", "new/two.py"}
+    assert not result.safe_for_automatic_migration
+
+
+def test_exact_git_copy_is_classified_copy_c(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    original = (root / "old/parser.py").read_text(encoding="utf-8")
+    write(root, "copied/parser.py", original)
+    commit(root, "copy complete original source file")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert set(result.candidates) == {"old/parser.py", "copied/parser.py"}
+    assert any(e.transition_type == "COPY_C" for e in result.events)
+    assert result.mapping_confidence is None
+
+
+def test_file_rewrite_without_symbol_is_classified_and_deleted(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    write(root, "old/parser.py", "def new_feature(x):\n    return x * 50\n")
+    commit(root, "rewrite file and remove historical symbol")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.DELETED
+    assert result.resolved_path is None
+    assert any(e.transition_type == "REWRITE_SPLIT_B" for e in result.events)
     assert not result.safe_for_automatic_migration
 
 
