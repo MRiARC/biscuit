@@ -649,3 +649,32 @@ def test_git_environment_does_not_redirect_lineage(tmp_path: Path, monkeypatch: 
     result = trace_lineage(root, past, "old/parser.py", "tok_get")
     assert result.anchor_state == AnchorState.MIGRATED
     assert result.resolved_path == "old/new_parser.py"
+
+
+
+def test_storage_transition_labels_match_stream_one_enum(tmp_path: Path) -> None:
+    import uuid
+    from dataclasses import replace
+
+    from biscuit.grounding import CodeSymbolAnchor, lineage_storage_records
+
+    root, past = initialize_repo(tmp_path)
+    symbol = extract_symbols((root / "old/parser.py").read_bytes(), "python", "old/parser.py")[0]
+    anchor = CodeSymbolAnchor.from_symbol(
+        symbol, alternative_id=uuid.uuid4(),
+        repository_url="https://github.com/owner/repo", historical_commit_sha=past,
+    )
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 2\n")
+    commit(root, "modify in place")
+    lineage = trace_lineage(root, past, "old/parser.py", "tok_get")
+    raw = [e.transition_type for e in lineage.events]
+    assert "MODIFY" in raw
+    records = lineage_storage_records(anchor, lineage)
+    assert records[0]["transition_type"] == "EXACT_MATCH"
+    assert records[0]["mapping_evidence"]["raw_transition_type"] == "MODIFY"
+
+    deleted = replace(
+        lineage,
+        events=(replace(lineage.events[0], transition_type="DELETE"),),
+    )
+    assert lineage_storage_records(anchor, deleted)[0]["transition_type"] == "DELETED"
