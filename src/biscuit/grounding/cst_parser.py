@@ -14,6 +14,7 @@ import ast
 import hashlib
 import importlib.metadata
 import re
+import sys
 from pathlib import PurePosixPath
 
 from .normalizer import NORMALIZATION_VERSION, fingerprint_python_ast
@@ -33,7 +34,15 @@ def _sha(text: str) -> str:
 
 
 def _signature(text: str) -> str:
+    # Identifier-rename invariance belongs to the structural fingerprint.
+    # This signature is whitespace-normalized but retains parameter spelling;
+    # a class without bases has an empty, deliberately non-unique signature.
     return _sha(" ".join(text.split()))
+
+
+def _python_version() -> str:
+    """ast.dump fingerprints depend on the host Python AST serialization."""
+    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
 
 def _module(file_path: str) -> str:
@@ -81,7 +90,7 @@ def _python_ast_symbols(source: bytes, file_path: str) -> list[Symbol]:
                     start_line=node.lineno, end_line=node.end_lineno,
                     signature_hash=_signature(signature),
                     structural_fingerprint=fingerprint_python_ast(node),
-                    parser_backend="stdlib-ast", parser_version="python-stdlib",
+                    parser_backend="stdlib-ast", parser_version=f"python-ast/{_python_version()}",
                     grammar_version="stdlib-ast", normalization_version=NORMALIZATION_VERSION,
                 ))
                 walk(node.body, (*parents, node.name), isinstance(node, ast.ClassDef))
@@ -120,7 +129,13 @@ def _python_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
     tree = parser.parse(source)
     if tree.root_node.has_error:
         raise ParseError("Tree-sitter Python parser returned ERROR node")
-    ast_by_name = { (s.qualified_name, s.start_line): s for s in _python_ast_symbols(source, file_path)}
+    # Structural fingerprints and parameter hashes are sourced from stdlib
+    # AST even on the Tree-sitter path. If the host interpreter cannot parse
+    # new syntax accepted by the grammar, abstain rather than guessing.
+    ast_by_name = {
+        (s.qualified_name, s.start_line): s
+        for s in _python_ast_symbols(source, file_path)
+    }
     result: list[Symbol] = []
 
     def walk(node, parents: tuple[str, ...], parent_is_class: bool) -> None:
@@ -146,7 +161,7 @@ def _python_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
                 signature_hash=(ast_symbol.signature_hash if ast_symbol else
                                 _signature(_node_text(args, source) if args else "")),
                 structural_fingerprint=(ast_symbol.structural_fingerprint if ast_symbol else None),
-                parser_backend="tree-sitter", parser_version=version,
+                parser_backend="tree-sitter", parser_version=f"ts:{version};py:{_python_version()}",
                 grammar_version=grammar, normalization_version=NORMALIZATION_VERSION,
             ))
             for ch in node.named_children:
@@ -223,6 +238,69 @@ def _c_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
     return out
 
 
+def _mask_c_literals_and_comments(text: str) -> str:
+    """Mask braces inside C string/char literals and comments.
+
+    Preserve string length and newline locations so regex match indices remain
+    exact in the original source. Reject incomplete quotes/comments.
+    """
+    chars = list(text)
+    state = "code"
+    pos = 0
+    while pos < len(text):
+        char = text[pos]
+        nxt = text[pos + 1] if pos + 1 < len(text) else ""
+        if state == "code":
+            if char == "/" and nxt in ("/", "*"):
+                state = "line" if nxt == "/" else "block"
+                chars[pos] = chars[pos + 1] = " "
+                pos += 2
+                continue
+            if char in ("'", '"'):
+                state = "char" if char == "'" else "string"
+                chars[pos] = " "
+                pos += 1
+                continue
+        elif state in ("char", "string"):
+            if char == "\\":
+                chars[pos] = " "
+                if not nxt:
+                    raise ParseError("Unterminated C escape sequence")
+                if nxt != "\n":
+                    chars[pos + 1] = " "
+                pos += 2
+                continue
+            if (char == "'" and state == "char") or (char == '"' and state == "string"):
+                state = "code"
+            elif char == "\n":
+                raise ParseError("Unterminated C string/char literal")
+            if char != "\n":
+                chars[pos] = " "
+            pos += 1
+            continue
+        elif state == "line":
+            if char == "\n":
+                state = "code"
+            else:
+                chars[pos] = " "
+            pos += 1
+            continue
+        elif state == "block":
+            if char == "*" and nxt == "/":
+                chars[pos] = chars[pos + 1] = " "
+                state = "code"
+                pos += 2
+                continue
+            if char != "\n":
+                chars[pos] = " "
+            pos += 1
+            continue
+        pos += 1
+    if state in ("char", "string", "block"):
+        raise ParseError("Unterminated C string/char literal or block comment")
+    return "".join(chars)
+
+
 def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
     """Minimal offline fallback for simple snippets; never label it Tree-sitter.
 
@@ -234,16 +312,17 @@ def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
     except UnicodeError as exc:
         raise ParseError(str(exc)) from exc
     result: list[Symbol] = []
+    code = _mask_c_literals_and_comments(text)
     # This lexer intentionally does not support preprocessor-heavy, macro-based,
     # or GNU-extension declarations; callers must inspect parser_backend.
     pattern = re.compile(r"\b(?:[\w*]+\s+)+([A-Za-z_]\w*)\s*\(([^;{}]*)\)\s*\{", re.MULTILINE)
-    for match in pattern.finditer(text):
+    for match in pattern.finditer(code):
         level = 1
         pos = match.end()
         while pos < len(text) and level:
-            if text[pos] == "{":
+            if code[pos] == "{":
                 level += 1
-            elif text[pos] == "}":
+            elif code[pos] == "}":
                 level -= 1
             pos += 1
         if level:
@@ -261,7 +340,7 @@ def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
             grammar_version="none",
             normalization_version="c-lexer-v1",
         ))
-    for match in re.finditer(r"\bstruct\s+(\w+)\s*\{", text):
+    for match in re.finditer(r"\bstruct\s+(\w+)\s*\{", code):
         start = len(text[:match.start()].encode("utf-8"))
         end = len(text[:match.end()].encode("utf-8"))
         result.append(Symbol(
