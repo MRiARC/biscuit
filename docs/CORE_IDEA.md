@@ -154,13 +154,13 @@ sequenceDiagram
 
 ## 5. Model Strategy (Strictly Open-Source & Lightweight)
 
-All models run locally and require **less than 8 GB RAM in total**:
+The design **targets an 8 GB system-RAM deployment** with sequential local inference, but full-stack peak memory has **not been measured** ([tech stack and validation plan](./TECH_STACK.md)).
 
 | Model | Family | Primary Role | Why Selected |
 |---|---|---|---|
-| **Qwen 2.5-Coder-7B-Instruct** | Qwen | Core Decision Extraction & Code Grounding | SOTA open-weights code intelligence, strict JSON/MADR schema compliance, and flawless FastMCP tool calling. |
-| **Llama 3.2-3B-Instruct** | Llama | High-Throughput Thread Ingestion & Noise Filtering | Ultra-fast (<1s latency, 80+ tokens/s), perfect for rapidly scanning 100+ comment archives and live chat. |
-| **Phi-3.5-mini-instruct** | Phi | Complex Deliberation & Rejection Reasoning | 128k context window, trained specifically on high-density reasoning, excels at isolating *why* a proposal was rejected. |
+| **Qwen 2.5-Coder-7B-Instruct** | Qwen | Core Decision Extraction & Code Grounding | Candidate MADR/code outputs must pass deterministic evidence validation and held-out accuracy evaluation. |
+| **Llama 3.2-3B-Instruct** | Llama | High-Throughput Thread Ingestion & Noise Filtering | Proposed ingestion model; latency/throughput must be measured on a pinned representative workload. |
+| **Phi-3.5-mini-instruct** | Phi | Complex Deliberation & Rejection Reasoning | Proposed argument/rationale classifier; advertised context maximum does not establish RAM fit or measured accuracy. |
 
 ---
 

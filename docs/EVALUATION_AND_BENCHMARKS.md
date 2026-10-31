@@ -274,8 +274,8 @@ python -m biscuit.evaluate --benchmark pep-505 --verbose
 python -m biscuit.evaluate --benchmark pep-505 --strict-offsets --output json
 ```
 
-### Proposed Execution Pipeline (Under 8GB RAM Budget):
-1. **Model Memory Manager:** Loads models sequentially into local Ollama / vLLM runtime to respect the 8GB RAM boundary.
+### Proposed Execution Pipeline (8 GB RAM Acceptance Target, Unmeasured):
+1. **Model Memory Manager:** Proposes sequential Ollama model loading/unloading to target 8 GB host RAM. Confirm release and measure complete-host peak memory; model-weight arithmetic alone is not compliance evidence.
 2. **Withheld Ingestion:** Feeds `raw_thread.json` into the 4-Pass Engine without exposing `ground_truth.json`.
 3. **Execution Pipeline:**
    - **Pass 1 (`llama-3.2-3b-instruct`):** Candidate proposal extraction.
@@ -300,7 +300,7 @@ python -m biscuit.evaluate --benchmark pep-505 --strict-offsets --output json
 Target: PEP-505 (None-aware operators)
 Raw Discussion: 234 posts | Withheld Official PEP Text: YES
 Models: Llama-3.2-3B -> Phi-3.5-mini -> Qwen-2.5-Coder-7B (Local Runtimes)
-Target Peak Memory Budget: <6.8 GB (Within <8GB RAM limit)
+Illustrative System-Memory Allocation: ~7.08 GB (unmeasured; 8 GB host target)
 --------------------------------------------------------------------------------
 
 [1] PROPOSAL RECOVERY & MULTI-CLASS LIFECYCLE EVALUATION:

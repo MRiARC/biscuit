@@ -355,10 +355,10 @@ Estimated Peak System-Memory Budget (Qwen phase):
 ├─────────────────────────────────────────────────────────────┼───────────┤
 │ OS, host daemons, and system cache                          │ ~1.50 GB  │
 │ PostgreSQL 16 + pgvector (Docker container)                 │ ~0.35 GB  │
-│ Python 3.12 Runtime, FastAPI, and async services            │ ~0.25 GB  │
+│ Python 3.11+ runtime, FastAPI, async services (estimate)       │ ~0.25 GB  │
 │ Shared embedding model: nomic-embed-text-v1.5 (Q4 resident) │ ~0.28 GB  │
 │ Qwen 2.5-Coder-7B-Instruct Q4_K_M model weights             │ ~4.40 GB  │
-│ KV cache and context overhead                               │ ~0.30 GB  │
+│ KV cache/context/runtime buffers (unmeasured placeholder)     │ ~0.30 GB  │
 ├─────────────────────────────────────────────────────────────┼───────────┤
 │ ESTIMATED SYSTEM-MEMORY TOTAL                               │ ~7.08 GB  │
 │ ARITHMETIC HEADROOM TO AN 8.00 GB LIMIT                      │ ~0.92 GB  │
@@ -367,7 +367,7 @@ Estimated Peak System-Memory Budget (Qwen phase):
 
 * The component arithmetic is `1.50 + 0.35 + 0.25 + 0.28 + 4.40 + 0.30 = 7.08 GB`. The earlier approximately 6.8 GB estimate omitted or folded the resident embedding-model allowance into peak model memory; this document now accounts for it separately.
 * **Sequential Model Loading:** Llama 3.2 3B, Phi-3.5 mini, and Qwen 2.5 Coder 7B weights are intended to load one at a time. The Qwen phase assumes the embedding model, runtime, database, and host overhead overlap. Model offload behavior and KV-cache consumption must be measured, not inferred from weights alone.
-* **Acceptance Evidence:** Record peak process RSS per service and peak host memory for the complete workload. Do not claim the 8 GB constraint is met until full-stack measurements exist and the run manifest records model file hashes, quantization, context size, runtime/offload options, database settings, OS, and workload.
+* **Acceptance Evidence:** Proposed first profile: CPU-only 8 GB host, single worker/request, Qwen Q4_K_M, context initially capped at 2,048 tokens, batch <=128, sequential model unload verified. Record peak full-host RAM, per-service RSS/PSS, swap/OOM, model-load overlap and KV/cache use; pin model artifact hashes, quantization, runtime/OS, PostgreSQL settings, workload, and concurrency. The 0.30 GB KV/cache line is only a placeholder; reduce context/concurrency or change model if the workload exceeds 8 GB.
 
 ---
 ## 8. Summary Comparison Matrix: The Two Pillars

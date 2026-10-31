@@ -17,7 +17,7 @@ Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge 
 
 ### Strict Hackathon Operational Constraints:
 - **Open-Source Models Only:** Strictly zero proprietary cloud APIs (no OpenAI, no Anthropic, no Google Gemini API in production runtime).
-- **Hardware Memory Boundary:** $\le \text{8 GB RAM}$ total memory footprint for the entire application stack.
+- **Hardware Memory Boundary:** 8 GB complete-system RAM acceptance target. The budget below is an unmeasured planning estimate, not demonstrated compliance.
 - **Offline & Local Execution Scope:** Local model inference, vector search, AST parsing, and evaluation benchmarks execute completely offline without internet access. Live chat interception via Switch and GitHub PR webhook sync require network connectivity.
 
 ---
@@ -30,13 +30,13 @@ Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge 
 ├────────────────────────────────────────────────────────────────────────┤
 │  Layer               Technology Choice        Rationale                │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Core Language       Python 3.12+             Native AST, fast PyPI,   │
+│  Core Language       Python >=3.11           3.12 recommended; native │
 │                                               Tree-sitter bindings     │
 │  Data Modeling       Pydantic v2 + SQLModel   Rust-backed validation,  │
 │                                               strict schema contracts  │
 │  Relational + Vector PostgreSQL 16 + pgvector Scalable hybrid search,  │
 │                      (Docker container)       HNSW indexing            │
-│  Test Fallback DB    SQLite (in-memory)       Zero-config CI matrix    │
+│  Unit Test DB        SQLite (in-memory)       Portable logic tests only│
 │  Syntax Parsing      Tree-sitter (CST) +      Multi-language CST shape │
 │                      Python ast (AST)         concrete syntax trees    │
 │  Embedding Model     nomic-embed-text-v1.5    Matryoshka 768d, ~275MB  │
@@ -44,7 +44,7 @@ Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge 
 │  (Local Quantized)   Phi-3.5-mini (Pass 3)    Objection extraction     │
 │                      Qwen 2.5-Coder 7B        Spans, Anchors, Watchdog │
 │  Inference Runtime   Ollama / llama.cpp       Dynamic model swap,      │
-│                                               peak RAM < 4.7 GB (model)│
+│                                               weights estimate only    │
 │  CLI & UX            Typer + Rich             Target scorecard outputs │
 │  Agent Bridge        MCP Protocol + FastMCP   Seamless Switch hook     │
 │  CI / Testing        Pytest + GitHub Actions  Automated matrix checks  │
@@ -53,12 +53,12 @@ Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge 
 
 ---
 
-### Why Python 3.12 Over Golang:
+### Why Python 3.11+ (3.12 Recommended) Over Golang:
 
 1. **Native Parity with Switch:**
    Inspection of [`sandbox-quantum/switch` (v0.31.0)](https://github.com/sandbox-quantum/switch) demonstrates that `switch-core` is built directly on **Python 3.12, FastAPI, Pydantic v2, SQLAlchemy Async, and MCP**. Choosing Python ensures 1:1 data model compatibility and allows Biscuit to run as a native Python agent or FastMCP service with zero translation friction.
 2. **The LLM Latency Bottleneck:**
-   A local 7B-parameter model inference call takes **$1,500 \text{ ms} - 3,000 \text{ ms}$**. Vector retrieval takes **$5 \text{ ms} - 15 \text{ ms}$**. Glue code execution in Python takes **$< 2 \text{ ms}$**. Because $>98\%$ of wall-clock time is spent in local model matrix calculations, Go's microsecond advantage is imperceptible.
+   **Unmeasured hypothesis:** Local model inference may dominate vector lookup and Python orchestration overhead. Previously stated latency and percent-of-runtime figures are not measured here. Benchmark p50/p95 stage latency and tokens/s using pinned model/runtime, hardware, input size, corpus, context length, quantization and concurrency before claiming a speed advantage.
 3. **CST & AST Tooling Separation:**
    Tree-sitter serves as the **Concrete Syntax Tree (CST)** parser preserving full grammar tokens across C, Python, and Go without compilation friction. Python's standard library `ast` module serves as the **Abstract Syntax Tree (AST)** analyzer for deep structural visitor analysis on Python codebases.
 4. **Pydantic v2 is Powered by Rust:**
@@ -70,7 +70,7 @@ Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge 
 
 ## 3. Local Model Portfolio & Sequential Memory Management
 
-To maintain high reasoning accuracy while strictly respecting the **$\le 8$ GB RAM constraint**, Biscuit uses a time-sliced model orchestration strategy:
+To target 8 GB system memory (not yet demonstrated), the design proposes sequential model loading:
 
 ```
 Time-Sliced Model Execution Schedule:
@@ -86,17 +86,19 @@ Time-Sliced Model Execution Schedule:
 └────────────────────────────────────────────────────────┘
 ```
 
-* **Full-Stack System-Memory Budget (Unmeasured Engineering Estimate):**
+* **Full-Stack System-Memory Budget (unmeasured, single-worker planning allocation):**
   - OS, host daemons, and system cache: ~1.50 GB
   - PostgreSQL 16 + pgvector (Docker): ~0.35 GB
   - Python runtime and async services: ~0.25 GB
   - Resident `nomic-embed-text-v1.5` model: ~0.28 GB
   - Qwen 2.5-Coder 7B Q4_K_M model weights: ~4.40 GB
-  - KV cache and context overhead: ~0.30 GB
-  - **Estimated system-memory total:** **~7.08 GB** (`1.50 + 0.35 + 0.25 + 0.28 + 4.40 + 0.30`), leaving arithmetic headroom of ~0.92 GB to an 8.00 GB limit. This is a planning estimate, not measured peak process RSS or proof of fit. Measure both per-process RSS and complete host memory under the target workload.
-* **Sequential Execution:** Models are loaded and offloaded sequentially via the local Ollama / llama.cpp runtime during batch historical ingestion. In online PR Watchdog daemon mode, only `nomic-embed` and `qwen2.5-coder` remain resident.
+  - KV cache and context overhead: ~0.30 GB **placeholder**, not measured for a fixed context/runtime
+  - **Estimated system-memory total:** **~7.08 GB** (`1.50 + 0.35 + 0.25 + 0.28 + 4.40 + 0.30`), with nominal 0.92 GB arithmetic headroom. Proposed first profile: Q4_K_M, one worker/request, 2,048-token Qwen context, batch <=128, CPU-only 8 GB host. Measure full-host peak RAM, per-process RSS/PSS, KV/cache use, swap/OOM, warm/cold offload and runtime buffers; this number is not a guarantee.
+* **Sequential execution (planned):** Request unload using Ollama `keep_alive: 0` or equivalent and verify release of weights/buffers before the next model; embedding+Qwen residency depends on observed whole-host limits.
 
 ---
+
+**CI scope:** SQLite/Python smoke tests validate portable logic only. In the implementation PR, run PostgreSQL 16 + pgvector schema/migration integration tests for HNSW, composite FKs, JSONB, provenance triggers, project-scoped rulings/HITL and atomic lifecycle audit events. See [tech-stack acceptance requirements](./TECH_STACK.md).
 
 ## 4. Upgraded Core Implementation Architecture
 
