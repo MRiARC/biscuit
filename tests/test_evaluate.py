@@ -228,3 +228,19 @@ def test_invalid_benchmark_name_blocks_traversal() -> None:
 
     with pytest.raises(ValueError, match="Invalid benchmark"):
         load_thread("../private", DEFAULT_FIXTURE_ROOT)
+
+
+def test_issue_21_thresholds_and_audit_rows() -> None:
+    from biscuit.evaluate.metrics import pr_warning_metrics
+
+    labels = load_pr_labels()
+    ids = [name for name, label in labels.items() if label == "violation"]
+    scored = pr_warning_metrics(labels, ids)
+    assert len(scored["audit_rows"]) == 20
+    assert all(row["correct"] for row in scored["audit_rows"])
+    assert sum(row["action"] == "ABSTAIN" for row in scored["audit_rows"]) == 15
+    outcome = run_benchmark("pep-505")
+    targets = {metric.name: metric.target for metric in outcome.metrics}
+    assert targets["Lifecycle state accuracy"] == 0.80
+    assert targets["AST grounding precision"] == 0.75
+    assert targets["PR warning precision"] == 0.90

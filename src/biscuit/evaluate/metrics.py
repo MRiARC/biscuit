@@ -165,6 +165,15 @@ def pr_warning_metrics(
     tp = len(warned & violations)
     fp = len(warned - violations)
     fn = len(violations - warned)
+    audit_rows = [
+        {
+            "case_id": case_id,
+            "ground_truth_class": label,
+            "action": "WARN" if case_id in warned else "ABSTAIN",
+            "correct": (case_id in warned) == (label == "violation"),
+        }
+        for case_id, label in sorted(labels.items())
+    ]
     return {
         "precision": tp / (tp + fp) if tp + fp else (0.0 if violations else None),
         "recall": _ratio(tp, len(violations)),
@@ -176,4 +185,5 @@ def pr_warning_metrics(
         "benign_total": len(benign),
         "ambiguous_total": len(ambiguous),
         "total": len(labels),
+        "audit_rows": audit_rows,
     }
