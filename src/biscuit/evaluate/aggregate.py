@@ -43,7 +43,7 @@ def aggregate_outcomes(outcomes: Sequence[BenchmarkOutcome]) -> dict[str, Any]:
         )
         rows.append({**metric.to_dict(), "aggregation_method": method})
     verdict = (
-        "FAILED" if any(x["verdict"] == "FAILED" for x in map(lambda t: t.to_dict(), outcomes))
+        "FAILED" if any(x.verdict == "FAILED" for x in outcomes)
         else "INCOMPLETE" if any(x.verdict != "PASSED" for x in outcomes)
         else "PASSED"
     )
