@@ -2,343 +2,220 @@
 
 **Project:** Biscuit — Open Source Decision Intelligence and Knowledge Recovery  
 **Team:** Chole Bhature (`@mriarc-08`, `@daksheshsharma2409`, `@utksh1`)  
-**Scope:** Universal Ingestion, Multi-Tier Noise Stripping, Significance Gating, Zombie Deduplication, and 4-Pass Deliberation Mining.
+**Scope:** Universal Ingestion, Versioned Source Provenance, Typed Deliberation Graph, Architectural Gating, 4-Pass Argument Mining, and Proposal-Occurrence Tracking.  
+**Specification Level:** Implementation Contract (Consolidated with Issue #5 and PR #7 review requirements).
 
 ---
 
 ## 1. High-Level Engine Architecture
 
-The Ingestion and Extraction Engine is the analytical core of Biscuit. It transforms chaotic, multi-year open-source debates (stretching across 100+ comments with heavy quoting, side-tangents, and logistical noise) into structured, verifiable **Architectural Decision Records (MADRs)** using **lightweight open-source models**.
+The Ingestion and Extraction Engine processes open-source discussions across Discourse, GitHub, mailing lists, and chat into structured **Architectural Decision Records (MADRs)** without losing evidentiary provenance.
 
 ```mermaid
 flowchart TD
     Raw["Raw Discussion Sources<br/>(Discourse, GitHub PRs, Slack CNCF, Mailing Lists)"] --> Ingest["1. Universal Ingestion Adapters"]
     
-    Ingest --> Clean["2. Multi-Tier Noise Suppression Pipeline<br/>• Quote Pruning (Token reduction)<br/>• Administrative & Bot Filtering<br/>• Deliberation Graph (DAG)"]
+    Ingest --> StoreRaw["2. Persist Versioned Source Data (IMMUTABLE)<br/>source_threads + source_messages + source_message_versions"]
     
-    Clean --> Gate{"3. Architectural Significance Gate<br/>Does thread impact API, Syntax, Performance, or Compatibility?<br/>(Anti-Bikeshedding)"}
+    StoreRaw --> Clean["3. Derived Deliberation View<br/>• Quote Pruning ([Quoting post-N])<br/>• Administrative & Bot Filtering<br/>• Reconstruct Typed discussion_edges"]
     
-    Gate -- "No (Cosmetic/Trivial)" --> Drop["Discard Thread / Log as Non-Architectural"]
-    Gate -- "Yes (Architectural)" --> Dedupe{"4. Zombie Proposal Resolver<br/>Does proposal match an existing rejected alternative (cos > 0.90)?"}
+    Clean --> Gate{"4. Architectural Significance Gate<br/>Does thread impact API, Syntax, Performance, or Compatibility?<br/>(Anti-Bikeshedding)"}
     
-    Dedupe -- "Yes (Re-attempt)" --> Merge["Link as Recurring Proposal<br/>Increment recurrence_count & timeline"]
-    Dedupe -- "No (New Idea)" --> Pipeline["5. 4-Pass Deliberation Extraction Pipeline"]
+    Gate -- "No (Cosmetic/Trivial)" --> Archive["Retain in Raw Store; Skip ADR Generation"]
+    Gate -- "Yes (Architectural)" --> Dedupe{"5. Recurring Proposal Resolver<br/>Does proposal match an existing alternative (cos >= 0.90)?"}
     
-    subgraph Pipeline["5. 4-Pass Deliberation Pipeline"]
-        P1["Pass 1: Proposal Discovery (Llama 3.2 3B)"]
-        P1 --> P2["Pass 2: Deliberation Slicing (Deterministic Graph)"]
-        P2 --> P3["Pass 3: Causal Rejection Extraction (Phi-3.5-mini)"]
-        P3 --> P4["Pass 4: Schema Synthesis & MADR Generation (Qwen 2.5-Coder 7B)"]
+    Dedupe -- "Yes (Re-attempt)" --> Occurrence["Record Auditable proposal_occurrences<br/>(Link thread, context, similarity score)"]
+    Dedupe -- "No (New Idea)" --> Pipeline["6. 4-Pass Deliberation Extraction Pipeline"]
+    
+    subgraph Pipeline["6. 4-Pass Deliberation Pipeline"]
+        P1["Pass 1: Proposal Discovery (Llama 3.2 3B)<br/>Extracts Candidate Proposals [P1, P2...]"]
+        P1 --> P2["Pass 2: Deliberation Slicing (Deterministic Graph)<br/>Gathers targeted argument packets"]
+        P2 --> P3["Pass 3: Argument & Stance Mining (Phi-3.5-mini)<br/>Separates individual objections from consensus rulings"]
+        P3 --> P4["Pass 4: Schema Synthesis & MADR Generation (Qwen 2.5-Coder 7B)<br/>Extracts exact character span locators [start_char, end_char)"]
     end
     
-    Pipeline --> Audit["6. Verbatim Citation Guardrail<br/>String verification of quotes against raw source"]
-    Audit --> Store[("Structured Knowledge Base<br/>(PostgreSQL + pgvector)")]
+    Pipeline --> Audit{"7. Exact Evidence Verification<br/>Does exact quote match raw_content at [start_char, end_char)?"}
+    Audit -- "Verified (100% exact & hash match)" --> StoreReady["Promote to VERIFIED_EXACT"]
+    Audit -- "Mismatch / Stale" --> AuditFail["Retain as UNVERIFIED / STALE_EDITED<br/>(Abstain from automated warnings)"]
+    
+    StoreReady --> Commit[("Structured Knowledge Base<br/>(PostgreSQL + pgvector)")]
+    AuditFail --> Commit
 ```
 
 ---
 
-## 2. Universal Data Ingestion & Normalization
+## 2. Universal Data Ingestion & Versioned Source Storage
 
-Discussions originate from diverse platforms with wildly different data schemas. The ingestion layer translates them into a single, language-agnostic data contract.
+Per **Issue #5 (A1, C1)** and **PR #7 Review (1.1, 1.2)**:
+- `raw_content` stores the exact decoded message-content field returned by the source API. Preserve line endings, punctuation, whitespace, and Unicode exactly; do not normalize, truncate, or overwrite it.
+- `content_hash` is SHA-256 over the UTF-8 bytes of that exact decoded string. It is not a hash of the HTTP response or JSON envelope.
+- Every remote edit/deletion appends a new version. A remote deletion is represented by a tombstone/new version with `edit_state = 'DELETED'`; earlier captured versions and evidence spans remain retained.
+- CRLF normalization and noise filtering are allowed only in derived columns/views; derived text is never used for source hashes or evidence offsets.
 
-### Canonical Data Contract (Language-Agnostic Schema)
-
-```
-Structure: NormalizedComment
-    comment_id        : String         (Platform unique ID, e.g. "post-48", "rev-912")
-    author_handle     : String         (Username, e.g. "guido", "markshannon")
-    raw_content       : String         (Full unedited text body)
-    cleaned_content   : String         (Post-noise-stripped text body)
-    reply_to_id       : String or Null (Direct parent comment ID)
-    timestamp         : Timestamp      (ISO-8601 UTC)
-    reactions_count   : Integer        (Count of upvotes, hearts, thumbs-up)
-    has_code_block    : Boolean        (True if message contains code/syntax snippets)
-
-Structure: NormalizedDiscussionThread
-    source_platform   : Enum           (DISCOURSE, GITHUB_PR, GITHUB_ISSUE, SLACK, MAILING_LIST)
-    external_id       : String         (e.g. "topic-1234", "pull-505")
-    title             : String         (Title or subject line)
-    canonical_url     : String         (Permanent URL to original discussion)
-    comments          : List of NormalizedComment
-```
-
-### Source Platform Adapters
-
-1. **Discourse Adapter (`discuss.python.org`, `internals.rust-lang.org`):**
-   - Ingests via Discourse REST endpoint (`/t/{id}.json`).
-   - Paginates through `post_stream.posts` extracting `post_number`, `raw`, `reply_to_post_number`, and `like_count`.
-2. **GitHub PR Review Adapter:**
-   - Ingests top-level issue comments and multi-turn inline review threads on code diffs via GitHub GraphQL/REST APIs (`/pulls/{id}/reviews` and `/pulls/{id}/comments`).
-   - Links review comments to the specific AST code lines under discussion.
-3. **Slack Working Group Adapter (CNCF, Python Discord, Rust Zulip):**
-   - Ingests live via Switch or historical JSON exports.
-   - Resolves thread parents using `thread_ts` and message replies.
-4. **Mailing List Adapter (LKML, Python-dev, PostgreSQL Hackers):**
-   - Parses RFC 822 / mbox / public-inbox email archives.
-   - Reconstructs reply hierarchies using `In-Reply-To` and `References` email headers.
-
----
-
-## 3. Multi-Tier Noise Suppression Pipeline
-
-Raw open-source discussions are filled with noise that wastes model tokens and triggers hallucinations. Before any LLM analyzes a discussion, it passes through three deterministic noise-pruning tiers:
-
-### Tier 1: Blockquote De-duplication
-- **The Problem:** In Discourse and GitHub, users routinely quote 40 lines of earlier comments just to add a 2-line response. Across a 100-comment thread, this results in quadratic token explosion.
-- **The Solution:** Strip nested markdown blockquotes (`> ...`) and replace them with a structural reference pointer:  
-  `[Quoting post-12 by @guido]`  
-- **Impact:** Reduces input token volume by **40% to 60%** with zero loss of semantic deliberation.
-
-### Tier 2: Automated Bot & Machine Noise Elimination
-Automatically prune messages from non-human actors:
-- Authors ending in `[bot]`, `bot`, or known automated entities (`cla-assistant`, `stale[bot]`, `codecov`, `github-actions`).
-- Automated CI build reports, test matrices, and automated merge notices.
-- *Exception:* Benchmarking bots that report performance regressions (e.g., `pyperformance`, speed.python.org) are preserved.
-
-### Tier 3: Operational & Administrative Noise Pruning
-Open-source threads contain substantial logistical chatter. Messages matching the following patterns with no substantive technical argument attached are pruned:
-1. **Assignment Requests:**  
-   `\b(can\s+i\s+work\s+on\s+this|please\s+assign(\s+to\s+me)?|claiming\s+this\s+issue|taking\s+this\s+up)\b`
-2. **Review Bumps & Status Pings:**  
-   `\b(friendly\s+ping|any\s+updates?\??|bump|ptal|please\s+take\s+a\s+look|please\s+review)\b`
-3. **Repository Hygiene Chatter:**  
-   `\b(rebased\s+on\s+main|resolved\s+conflicts?|fixed\s+typo|lint\s+fixed|squashed\s+commits)\b`
-4. **Low-Entropy Social Reactions:**  
-   Messages $<20$ characters containing only affirmations or emojis (`"+1"`, `"me too"`, `"following"`, `"thanks!"`, `"LGTM"`).
-
-### Tier 4: Deliberation Graph Reconstruction (DAG)
-Converts the flat list of comments into a Directed Acyclic Graph based on `reply_to_id` and explicit user mentions (`@user`). This graph maps which comments represent direct counter-arguments to specific proposals.
-
----
-
-## 4. The Architectural Significance Gate (Anti-Bikeshedding)
-
-In open source, developers frequently spend hundreds of comments on **trivialities** (e.g., UI button colors, typo corrections, linter formatting) while barely debating critical infrastructure changes. This is known as **Bikeshedding** (Parkinson's Law of Triviality).
-
-Biscuit must **not** store trivial changes as Architectural Decision Records.
+### Canonical Data Contract: Ingested Source Message & Versions
 
 ```
-┌────────────────────────────────────────────────────────┐
-│           ARCHITECTURAL SIGNIFICANCE CRITERIA          │
-├────────────────────────────────────────────────────────┤
-│                                                        │
-│  Category A: Architectural & Significant (RETAINED)    │
-│  • Syntax / Grammar: Changes to compiler grammar,      │
-│    operators, keywords, or language parsing.           │
-│  • Public API / Interface: Adding/removing public      │
-│    methods, breaking function signatures.              │
-│  • Concurrency & Performance: Lock contention, GIL,    │
-│    memory allocations, cache invalidation, latency.    │
-│  • Compatibility: Breaking changes, deprecation cycles.│
-│  • Security / Protocol: Threat model, authentication.  │
-│                                                        │
-│  Category B: Trivial & Cosmetic (DISCARDED)            │
-│  • UI Colors & Layout styling ("Change button blue").  │
-│  • Internal variable renames (foo ➔ bar).              │
-│  • Formatting / Linter style choices (tabs vs spaces). │
-│  • Documentation typos and grammar fixes.              │
-│                                                        │
-└────────────────────────────────────────────────────────┘
-```
+Structure: IngestedMessageIdentity
+    thread_id           : UUID           (Foreign Key to source_threads)
+    external_message_id : String         (Platform unique ID, e.g. "post-48", "rev-912")
+    parent_message_id   : String or Null (Direct parent comment ID)
+    author_id           : UUID           (Foreign Key to contributors)
+    original_timestamp  : Timestamp      (ISO-8601 UTC)
+    canonical_permalink : String         (Permanent URL to message)
 
-### Significance Evaluation Logic
-Before deep extraction, discussions are scored across 4 impact dimensions:
-1. $\text{Score}_{\text{API}}$: Does the discussion propose altering public APIs or language syntax?
-2. $\text{Score}_{\text{Runtime}}$: Does it alter memory, latency, concurrency, or CPU execution?
-3. $\text{Score}_{\text{Compat}}$: Does it break backward compatibility or introduce deprecations?
-4. $\text{Score}_{\text{Security}}$: Does it alter safety, security boundaries, or threat models?
-
-If a thread scores zero across all 4 dimensions, it is classified as **`COSMETIC_NON_ARCHITECTURAL`** and discarded.
-
----
-
-## 5. The Zombie Proposal Resolver (Cross-Time Deduplication)
-
-In open-source software, rejected ideas are repeatedly proposed by new contributors every 2 to 3 years.
-
-### The Problem:
-- *2019:* Developer proposes `?.` safe navigation $\rightarrow$ Rejected (grammar collision).
-- *2021:* New developer proposes `?.` again $\rightarrow$ Rejected (same reason).
-- *2024:* Another developer opens PR proposing `?.` $\rightarrow$ Rejected.
-- Storing 3 separate records creates database bloat and fragments historical knowledge.
-
-### The Solution: Semantic Deduplication & Recurrence Tracking
-When Pass 1 discovers a candidate proposal:
-1. Generate an embedding vector using `nomic-embed-text-v1.5`.
-2. Query the existing `decision_alternatives` database using cosine similarity.
-3. **If Cosine Similarity $\ge 0.90$ with an existing alternative:**
-   - Flag as a **`RECURRING_PROPOSAL`**.
-   - Do **not** create a new duplicate record.
-   - **Update the canonical record:**
-     - Increment `recurrence_count` (e.g. `recurrence_count = 3`).
-     - Append the new discussion URL to `historical_debate_urls`.
-     - Update `last_proposed_at` timestamp.
-     - Append any novel counter-arguments to the existing rationale.
-
----
-
-## 6. The 4-Pass Model Extraction Pipeline
-
-Lightweight open-source models (3B to 7B parameters) excel when given **compact, isolated tasks** rather than massive 50,000-word raw transcripts. The work is divided into 4 sequential passes:
-
-```
-Pass 1: Proposal Discovery      (Llama 3.2 3B)  ➔ Extract [P1, P2, P3...]
-Pass 2: Deliberation Slicing    (Deterministic)  ➔ Slice thread graph per proposal
-Pass 3: Causal Rejection Mining (Phi-3.5-mini)   ➔ Extract fatal flaws & quotes
-Pass 4: Schema & MADR Synthesis (Qwen 2.5 7B)    ➔ Output verified Pydantic MADR
+Structure: IngestedMessageVersion
+    message_id          : UUID           (Foreign Key to source_messages)
+    version_number      : Integer        (Monotonically increasing version: 1, 2, ...)
+    raw_content         : String         (Immutable exact decoded content field; CRLF/LF and Unicode preserved)
+    content_hash        : String         (SHA-256 of UTF-8 bytes of exact raw_content)
+    captured_at         : Timestamp      (ISO-8601 UTC capture timestamp)
+    is_current          : Boolean        (At most one TRUE row per message; rotated transactionally)
+    edit_state          : Enum           (ORIGINAL, EDITED, DELETED, UNAVAILABLE)
+    edit_reason         : String or Null
+    derived_normalized  : String         (Optional CRLF-normalized retrieval view; never used for evidence)
+    derived_cleaned     : String         (Noise-filtered view; never used for evidence)
 ```
 
 ---
 
-### Pass 1: Proposal Discovery
-* **Model:** `Llama 3.2-3B-Instruct`
-* **Input:** Cleaned comments in chunks of 10–15 messages.
-* **Objective:** Extract all candidate technical designs or alternative syntaxes under consideration.
-* **System Prompt:**
-  ```text
-  You are an expert software architecture parser. Read this open-source discussion slice.
-  Identify all distinct technical proposals, syntax alternatives, or architectural approaches proposed by participants.
-  Ignore administrative chatter, bug reports, and conversational banter.
-  Return a JSON array of proposals with: proposal_id, summary, proponent, initial_comment_id.
-  ```
-* **Output Example:**
-  ```json
-  [
-    {
-      "proposal_id": "P1",
-      "summary": "Introduce unary '?' safe navigation operator (a?b)",
-      "proponent": "dev_alex",
-      "initial_comment_id": "post-12"
-    },
-    {
-      "proposal_id": "P2",
-      "summary": "Introduce functional coalesce(*args) built-in",
-      "proponent": "dev_ben",
-      "initial_comment_id": "post-35"
-    }
-  ]
-  ```
+## 3. Deliberation Graph Reconstruction & Typed Edges
 
----
+Per **PR #7 Review (3)**:
+The system reconstructs conversational structure into the `discussion_edges` table with explicit technical edge types and provenance:
 
-### Pass 2: Deliberation Slicing (Deterministic Graph Filtering)
-* **Execution:** Deterministic algorithm (Zero LLM Tokens).
-* **Objective:** For each identified proposal ($P_1, P_2$), trace the Deliberation DAG to collect:
-  1. The initiating comment where the proposal was introduced.
-  2. All direct and indirect replies to that comment.
-  3. All comments referencing the proposal's keywords or code symbols.
-* **Result:** Isolates a compact, high-signal sub-thread of **5 to 15 comments** focused entirely on Proposal $P_i$ (~1,000 words).
+```mermaid
+flowchart LR
+    M1["Message A (Author: Guido)<br/>'I am rejecting the unary ? proposal'"]
+    M2["Message B (Author: Steve)<br/>'Agreed, syntax collides with ternary'"]
+    M3["Message C (Author: Nick)<br/>'What about safe navigation ?.'"]
 
----
-
-### Pass 3: Causal Rejection Extraction
-* **Model:** `Phi-3.5-mini-instruct` (128k context, specialized reasoning).
-* **Input:** The targeted deliberation packet for Proposal $P_i$.
-* **Objective:** Determine whether the proposal was accepted or rejected, and extract the exact fatal flaw.
-* **System Prompt:**
-  ```text
-  You are an expert compiler and systems architect evaluating a technical debate.
-  Analyze the deliberation packet for the proposal: "{proposal_summary}".
-
-  Answer the following with strict causal accuracy:
-  1. Status: Was this proposal ACCEPTED, REJECTED, or SUPERSEDED?
-  2. If REJECTED:
-     a. What was the exact fatal technical objection or constraint that caused its rejection?
-     b. Classify the fatal flaw into: PERFORMANCE, SYNTAX_AMBIGUITY, BACKWARD_COMPAT, COMPLEXITY, SECURITY, or PHILOSOPHICAL.
-     c. Who raised the fatal objection?
-     d. Provide the EXACT verbatim quote from the comment where the fatal objection was stated.
-     e. Provide the comment ID of the fatal objection.
-  ```
-* **Output Example:**
-  ```json
-  {
-    "status": "REJECTED",
-    "rejection_category": "SYNTAX_AMBIGUITY",
-    "rejection_reason": "Creates lexical ambiguity with Python ternary expressions (x if y else z) when whitespace is omitted.",
-    "fatal_objection_by": "Guido van Rossum",
-    "fatal_comment_id": "post-48",
-    "verbatim_quote": "If we allow a?b without a dot, the tokenizer cannot distinguish between conditional expressions and safe navigation without multi-token lookahead."
-  }
-  ```
-
----
-
-### Pass 4: Structured Schema & MADR Synthesis
-* **Model:** `Qwen 2.5-Coder-7B-Instruct`
-* **Input:** The validated outputs from Pass 3 + Discussion Metadata.
-* **Objective:** Produce the final, production-ready Markdown Architectural Decision Record (MADR) and compute vector embeddings for storage.
-* **Output:** A strict, validated Pydantic object ready for insertion into the `decisions` and `decision_alternatives` tables.
-
----
-
-## 7. Anti-Hallucination Guardrail (Verbatim Quote Verification)
-
-To guarantee that no hallucinated quotes or fabricated citations ever enter the knowledge base, Biscuit enforces an automated **Source-Grounding Verification Check**:
-
-```
-[Extracted Quote from LLM] ──┐
-                             ├──> [String Matcher / Substring Evaluator]
-[Raw Original Comment Body] ──┘                 │
-                                                ▼
-                                    Does quote exist in source?
-                                    • Exact Match (100%): APPROVED
-                                    • Fuzzy Match (>= 92%): APPROVED (whitespace normalized)
-                                    • Below 92%: REJECTED (Fallback to closest contiguous sentence)
+    M1 -->|edge_type: OBJECTS<br/>provenance: MODEL_INFERRED<br/>confidence: 0.95| M3
+    M2 -->|edge_type: SUPPORTS<br/>provenance: MODEL_INFERRED<br/>confidence: 0.92| M1
+    M2 -->|edge_type: DIRECT_REPLY<br/>provenance: PLATFORM_METADATA<br/>confidence: 1.0| M1
 ```
 
-### Verification Logic:
-1. **Exact Substring Check:** Searches for the exact normalized quote inside the raw comment text of `fatal_comment_id`.
-2. **Fuzzy Levenshtein / Longest Common Substring:** Allows minor differences in trailing punctuation, quotes, or markdown formatting, requiring a minimum $\ge 0.92$ similarity ratio.
-3. **Automated Fallback:** If the model generated an imagined summary rather than a true quote, the system automatically replaces the quote with the highest-scoring sentence extracted directly from the author's comment.
+### Complete Edge Taxonomy (`discussion_edges`)
+| Edge Type | Definition | Source Provenance |
+|---|---|---|
+| `PROPOSES` | Introduces a novel technical alternative or syntax | `MODEL_INFERRED` (Pass 1) |
+| `SUPPORTS` | Advances supporting arguments or benchmarks for a proposal | `MODEL_INFERRED` (Pass 3) |
+| `OBJECTS` | Raises a specific technical, performance, or compatibility critique | `MODEL_INFERRED` (Pass 3) |
+| `REBUTS` | Directly counters or answers a previously raised objection | `MODEL_INFERRED` (Pass 3) |
+| `RESOLVES` | Authoritative maintainer ruling accepting or rejecting a proposal | Verified human `RULING` span; never model-inferred |
+| `REFERENCES` | Mentions another PEP, commit, or issue identifier | `DETERMINISTIC_RULE` (Regex) |
+| `DIRECT_REPLY` | Explicit platform reply thread relation | `PLATFORM_METADATA` (API payload) |
+| `QUOTE_REFERENCE` | Quoting a specific passage from an earlier message | `DETERMINISTIC_RULE` (Blockquote parsing) |
+| `MENTION` | User `@` handle mention | `PLATFORM_METADATA` |
+
+> [!CRITICAL]
+> **Deliberation Edge Invariant:** A platform `MENTION` or `DIRECT_REPLY` is structural metadata only. It must never be interpreted as an objection, rebuttal, or resolution. Semantic edges (`PROPOSES`, `SUPPORTS`, `OBJECTS`, `REBUTS`, `RESOLVES`) require an explicit target alternative and source-message evidence span. The canonical DDL binds the span to the originating message/version and checks the edge role/stance; `RESOLVES` additionally requires `VERIFIED_EXACT` `RULING` evidence and non-model provenance.
 
 ---
 
-## 8. End-to-End Walkthrough: The PEP-505 Evaluation Scenario
+## 4. Multi-Tier Noise Suppression Pipeline
 
-This scenario demonstrates how Biscuit passes the hackathon's core test:
-> *"Given Python PEP public discussions without the corresponding PEP, evaluate whether the system recovers the ideas that were rejected and the reasons why."*
+Per **Issue #5 (C2, C3)**, noise suppression operates on a **derived deliberation view**—it does not alter raw records in `source_message_versions`:
 
-### Step 1: Input to Biscuit
-- **Discussion Source:** `discuss.python.org/t/pep-505-none-aware-operators/1234`
-- **Raw Content:** 230 comments debating syntax proposals across 4 months. The actual PEP document is **withheld**.
+1. **Tier 1: Blockquote De-duplication:** Markdown blockquotes (`> ...`) are replaced with structural reference pointers (`[Quoting post-12 by @guido]`).
+2. **Tier 2: Automated Bot Pruning:** Prunes automated machine messages (`[bot]`, `stale[bot]`, `codecov`). Runtime performance benchmarking bots (e.g. `pyperformance`) are preserved.
+3. **Tier 3: Administrative Chatter Pruning:** Prunes assignment claims (`"can I work on this"`), status bumps (`"friendly ping"`, `"PTAL"`), and trivial affirmations (`"+1"`, `"LGTM"`).
+4. **Tier 4: Deliberation Slicing:** Extracts targeted subgraphs of messages connected by `PROPOSES`, `OBJECTS`, and `RESOLVES` edges for Pass 3 argument mining.
 
-### Step 2: Processing
-1. **Universal Ingestor:** Fetches 230 posts via Discourse API.
-2. **Noise Filter:** Prunes 110 messages (blockquotes, "+1" comments, assignment pings, and CLA bot confirmations).
-3. **Significance Gate:** Confirms changes impact Python's PEG parser and language grammar (High Architectural Significance).
-4. **Pass 1 (Llama 3.2 3B):** Discovers 3 candidate proposals:
-   - $P_1$: Unary `?` operator (`a?b`).
-   - $P_2$: Safe navigation `?.` (`a?.b`).
-   - $P_3$: Built-in `coalesce(*args)` function.
-5. **Pass 2 (DAG Slicing):** Clusters comments into 3 isolated sub-threads.
-6. **Pass 3 (Phi-3.5-mini):** Analyzes each sub-thread:
-   - $P_1$: **REJECTED** $\rightarrow$ Ambiguity with ternary expressions (Guido van Rossum, post-48).
-   - $P_3$: **REJECTED** $\rightarrow$ Eager evaluation defeats short-circuiting (Mark Shannon, post-112).
-   - $P_2$: **DEFERRED/WITHDRAWN** $\rightarrow$ Lack of community consensus on operator proliferation.
-7. **Anti-Hallucination Guardrail:** Confirms all quotes match raw post text with $>95\%$ string parity.
-8. **Pass 4 (Qwen 2.5-Coder 7B):** Generates structured MADR records and persists them into PostgreSQL with `pgvector` embeddings.
+---
 
-### Step 3: Final Output (Recovered Without the PEP)
-```yaml
-decision_id: "PEP-505-RECOVERED"
-topic: "None-aware operators (?. and ??)"
-status: "REJECTED"
-rejected_alternatives:
-  - proposal: "Using `?` without a dot (e.g. `a?b`)"
-    status: "REJECTED"
-    category: "SYNTAX_AMBIGUITY"
-    rejection_reason: "Lexical collision with ternary expression syntax when whitespace is omitted."
-    fatal_objection_by: "Guido van Rossum"
-    citation_quote: "If we allow a?b without a dot, the tokenizer cannot distinguish between conditional expressions and safe navigation without multi-token lookahead."
-    citation_url: "https://discuss.python.org/t/pep-505-none-aware-operators/1234#post-48"
+## 5. Architectural Significance Gate & Proposal-Occurrence Tracking
 
-  - proposal: "Functional coalesce(*args) built-in"
-    status: "REJECTED"
-    category: "PERFORMANCE"
-    rejection_reason: "Eager argument evaluation evaluates fallbacks before calling, defeating short-circuiting semantics."
-    fatal_objection_by: "Mark Shannon"
-    citation_quote: "coalesce(a, expensive_fallback()) would always evaluate the fallback, which breaks the primary use case."
-    citation_url: "https://discuss.python.org/t/pep-505-none-aware-operators/1234#post-112"
+### Architectural Significance Gate (Anti-Bikeshedding)
+Filters trivial discussions (e.g. documentation typos, cosmetic variable names) to ensure only decisions impacting syntax, architecture, performance, or public APIs produce ADRs.
+
+### Proposal-Occurrence Tracking (Cross-Time Recurrence)
+Per **PR #7 Review (2)**:
+When a proposal is discovered in a thread:
+1. Generate a candidate embedding using `nomic-embed-text-v1.5`.
+2. Compute cosine similarity against existing alternatives in `decision_alternatives`; the provisional $\ge 0.90$ value is candidate retrieval only.
+3. **If a candidate meets the retrieval threshold:**
+   - Do **NOT** automatically merge or confirm identity; similarity alone cannot establish that two proposals are the same.
+   - Keep the occurrence in `PROPOSED_RECURRENCE` until a human confirms the link.
+   - Insert an auditable record into `proposal_occurrences`:
+     - `alternative_id`: Link to canonical alternative.
+     - `source_thread_id`: New discussion thread.
+     - `initiating_message_id`: Message where proposal was raised again.
+     - `proposal_wording_version`: Exact wording used in this specific debate.
+     - `occurrence_context`: Contextual rationale for recurrence (e.g. "Triggered by PR #412").
+     - `occurrence_outcome`: Status in this thread (e.g. `DISMISSED_AS_DUPLICATE`, `REOPENED`).
+     - `linkage_similarity`: Candidate cosine score (retrieval signal only).
+     - `linkage_status`: `PROPOSED_RECURRENCE` until explicit human confirmation.
+     - The initiating message must belong to `source_thread_id`, and its version must belong to that message; composite foreign keys enforce both relationships.
+   - Log recurrence in `decision_event_log.proposal_occurrence_id`, bound to the same alternative and source thread.
+
+---
+
+## 6. The 4-Pass Deliberation Pipeline
+
+Per **Issue #5 (B1, B2)** and **PR #7 Review (1.4)**:
+
+```
+Pass 1: Proposal Discovery         (Llama 3.2 3B)  ➔ Candidate Proposals [P1, P2...]
+Pass 2: Deliberation Slicing       (Deterministic) ➔ Subgraph Slicing via discussion_edges
+Pass 3: Argument & Stance Mining   (Phi-3.5-mini)  ➔ Objections vs. Rulings vs. Concessions
+Pass 4: Schema & MADR Synthesis    (Qwen 2.5 7B)   ➔ Zero-based Spans [start_char, end_char)
 ```
 
-The system recovers the exact rejected ideas and technical reasons documented in the PEP without ever having seen the PEP itself.
+### Pass 1: Proposal Discovery (`Llama 3.2-3B-Instruct`)
+Extracts distinct technical proposals from thread chunks. Emits proposal summaries and alternative candidates.
+
+### Pass 2: Deliberation Slicing (Deterministic DAG Slicer)
+Extracts directed subgraphs around each alternative using `discussion_edges`, passing only relevant messages to Pass 3.
+
+### Pass 3: Argument & Stance Mining (`Phi-3.5-mini-instruct`)
+Separates individual member objections from consensus rulings:
+* **Objection:** Recorded as an `arguments` row. Does NOT change proposal status to `REJECTED`.
+* **Ruling:** A model-generated ruling label has no authority. A rejection requires a `VERIFIED_EXACT` `RULING` span linked to the same alternative and authored by an identified human authority. A BDFL ruling requires an identified BDFL author; Core Maintainer consensus requires the ruling author plus one other distinct verified Core Maintainer sign-off; Working Group authority requires a Working Group Chair ruling plus one other distinct verified group-member sign-off. Draft approval is not a ruling.
+
+### Pass 4: Schema & MADR Synthesis (`Qwen 2.5-Coder-7B-Instruct`)
+Synthesizes the complete MADR record and extracts exact character offsets `[start_char, end_char)` for all evidence quotes.
+* Evidence spans are created with default status `UNVERIFIED`.
+* The verification engine extracts `raw_content[start_char:end_char]` from `source_message_versions`. If the exact string slice matches and SHA-256 over UTF-8 bytes of the quote matches `content_hash`, the span is promoted to `VERIFIED_EXACT`.
+
+---
+
+## 7. Extraction Run Auditability Contract
+
+Per **PR #7 Review (7)**:
+Every extraction execution writes a permanent audit record into `extraction_runs`:
+* `pipeline_version` and `schema_version`: Exact extraction code and output-schema versions.
+* `model_pass1_name` & `model_pass1_revision`: Exact HuggingFace / Ollama model tag.
+* `model_pass3_name` & `model_pass3_revision`
+* `model_pass4_name` & `model_pass4_revision`
+* `embedding_model_name` & `embedding_model_revision`
+* `prompt_templates_hash`: SHA-256 of all prompt templates used.
+* `source_thread_snapshot_sha256`: Digest of the full canonical source snapshot.
+* `run_config`: Deterministic slicer/normalizer versions and parameters, thresholds, seeds, decoding settings, and runtime options.
+* `run_config_sha256`: SHA-256 of the canonical PostgreSQL JSONB text representation of `run_config`.
+* `environment_lock_sha256`: Digest of the dependency/environment lockfile.
+* `run_status`: `RUNNING`, `SUCCESS`, `FAILED`, or `PARTIAL`.
+
+---
+
+## 8. Day 1+ Real-Time Streaming Ingestion via Switch
+
+While Sections 1–7 govern **Mode A: Historical Batch Ingestion**, Biscuit supports **Mode B: Day 1+ Real-Time Streaming Ingestion** powered by Switch. The model confidence threshold is suggestion-only; it cannot establish consensus, set `REJECTED`, or authorize a PR warning:
+
+```mermaid
+flowchart LR
+    LiveChat["Live CNCF Slack / Discord<br/>Working Group (#sig-node)"] --> SwitchGW["Switch WebSocket Gateway"]
+    SwitchGW --> StreamIngest["biscuit.switch_agent<br/>Live Thread Buffer"]
+    StreamIngest --> RollingDAG["Rolling discussion_edges<br/>(PROPOSES, OBJECTS, SUPPORTS)"]
+    RollingDAG --> ConsensusGate{"Suggestion heuristic >= 0.88<br/>or @biscuit record-decision"}
+    ConsensusGate --> LivingDraft["Create candidate living_decision_drafts"]
+    LivingDraft --> HITLCard["Maintainer review / approval card"]
+```
+
+### Key Differences Between Ingestion Modes:
+| Dimension | Mode A: Historical Batch Ingestion | Mode B: Day 1+ Streaming Ingestion (Switch) |
+|---|---|---|
+| **Primary Source** | Discourse archives, mbox, closed PR reviews | CNCF Slack, Discord, Zulip working groups |
+| **Ingestion Protocol** | REST batch pagination (`/t/{id}.json`) | WebSocket / FastMCP real-time events |
+| **Storage Destination** | `source_threads` + `source_messages` + `source_message_versions` | Same canonical source tables plus `living_decision_drafts` and `living_decision_draft_evidence` |
+| **Extraction Trigger** | Offline batch evaluation job | Suggestion heuristic / explicit `@biscuit` ping (draft only) |
+| **Verification Gate** | Zero-based exact substring + SHA-256 verifier | Same exact evidence verifier, followed by separate human draft approval |

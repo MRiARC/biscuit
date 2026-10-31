@@ -1,157 +1,462 @@
-# Storage, Data Store, and Retrieval Architecture
+# Storage, Database Schema, and Retrieval Architecture
 
 **Project:** Biscuit — Open Source Decision Intelligence and Knowledge Recovery  
 **Team:** Chole Bhature (`@mriarc-08`, `@daksheshsharma2409`, `@utksh1`)  
-**Scope:** Specification for Database Schema, Vector Indexing, Identity Resolution, and Dual-Mode Retrieval.
+**Scope:** Canonical Data Contracts, Immutable Evidence Provenance, Decision Lifecycle & Argument Separation, AST Code Anchoring, and Retrieval Guardrails.  
+**Specification Level:** Implementation Contract (Consolidated with Issue #5 and PR #7 review requirements).
 
 ---
 
-## 1. Storage Engine Architecture
+## 1. Storage Engine Infrastructure
 
-To satisfy both production rigor and hackathon reproducibility, the storage layer is containerized, zero-friction, and local-first.
+The storage infrastructure combines relational integrity, immutable evidence versioning, and vector similarity search in a containerized environment.
 
 ```
-┌────────────────────────────────────────────────────────┐
-│             STORAGE & RETRIEVAL INFRASTRUCTURE         │
-├────────────────────────────────────────────────────────┤
-│                                                        │
-│  Primary Engine: Containerized PostgreSQL 16 + pgvector │
-│  • Image: pgvector/pgvector:pg16                       │
-│  • Single engine for Relational, JSONB, and Vector KNN │
-│  • Bootstrapped via docker-compose.yml + init.sql      │
-│                                                        │
-│  Local Test Fallback (CI / Fast Unit Tests):           │
-│  • SQLite for relational tables                        │
-│  • ChromaDB / In-Memory Vector Index for embeddings    │
-│  • Runs in GitHub Actions CI in <15 seconds            │
-│                                                        │
-└────────────────────────────────────────────────────────┘
-```
-
-### Dockerized Setup (`docker-compose.yml`)
-The entire database environment is spin-up ready with a single command (`docker compose up -d`):
-
-```yaml
-version: "3.8"
-
-services:
-  biscuit-store:
-    image: pgvector/pgvector:pg16
-    container_name: biscuit-knowledge-store
-    restart: always
-    environment:
-      POSTGRES_DB: biscuit_db
-      POSTGRES_USER: biscuit
-      POSTGRES_PASSWORD: biscuit_password
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U biscuit -d biscuit_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  pgdata:
+┌────────────────────────────────────────────────────────────────────────┐
+│                   STORAGE & RETRIEVAL INFRASTRUCTURE                   │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  Primary Engine: Containerized PostgreSQL 16 + pgvector                │
+│  • Image: pgvector/pgvector:pg16                                       │
+│  • Relational Schema with Full Referential Integrity (No Orphan Spans) │
+│  • Immutable Message Versions with SHA-256 Checksums                   │
+│  • HNSW Index for 768-dim Vector KNN (nomic-embed-text-v1.5)           │
+│  • Bootstrapped via docker-compose.yml + init.sql                      │
+│                                                                        │
+│  Local Test Fallback (CI / Unit Test Matrix):                          │
+│  • SQLite for relational tables                                        │
+│  • ChromaDB / In-Memory Vector Index for embeddings                    │
+│  • Parity-verified against PostgreSQL schema in CI                     │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Complete Database Schema (DDL)
+## 2. Canonical Relational & Evidence Architecture
 
-The schema cleanly decouples the high-level decision topic from individual proposed alternatives, code symbol anchors, and contributor profiles.
+Per **Issue #5** and the **PR #7 Review Contract**:
+1. **Source Versioning & Immutability:** Preserve the exact decoded message-content string in append-only `source_message_versions.raw_content`; SHA-256 covers its UTF-8 encoding. CRLF/LF and Unicode are preserved; normalized text is a derived view only.
+2. **Explicit Offset Convention:** Offsets count Python Unicode code points in that exact string and are **zero-based, start-inclusive, end-exclusive `[start_char, end_char)`**. PostgreSQL substring queries use the equivalent 1-based start and length.
+3. **Default Unverified Status:** Evidence spans initialize as `UNVERIFIED`. A database trigger verifies the source slice and SHA-256 before allowing `VERIFIED_EXACT`.
+4. **Typed Evidence Relationships:** Composite foreign keys bind evidence to the exact source message version, thread, and target alternative.
+5. **Authoritative Rejection Enforcement:** A database trigger requires verified `RULING` evidence for the exact alternative, an authorized human author, and the required consensus sign-offs. Model inference is never ruling authority.
+6. **Audit Retention:** Source versions, evidence spans, occurrences, decision events, and HITL events are retained; deletion is restricted and updates are append-only except for explicitly mutable state fields.
+7. **Candidate/Authorization Separation:** Vector thresholds retrieve candidates only. Independent AST/CST structural verification and authoritative evidence govern warning eligibility.
 
 ```mermaid
 erDiagram
-    DECISIONS ||--o{ DECISION_ALTERNATIVES : "contains"
-    DECISIONS ||--o{ CODE_ANCHORS : "anchors_to"
-    CONTRIBUTORS ||--o{ DECISION_ALTERNATIVES : "proposed_by"
-    
+    SOURCE_THREADS ||--o{ SOURCE_MESSAGES : "contains"
+    SOURCE_MESSAGES ||--|{ SOURCE_MESSAGE_VERSIONS : "has versions"
+    SOURCE_MESSAGE_VERSIONS ||--o{ EVIDENCE_SPANS : "substantiates"
+    DECISIONS ||--o{ DECISION_ALTERNATIVES : "evaluates"
+    DECISION_ALTERNATIVES ||--o{ ARGUMENTS : "receives"
+    DECISION_ALTERNATIVES ||--o{ CODE_ANCHORS : "anchors_to"
+    DECISION_ALTERNATIVES ||--o{ PROPOSAL_OCCURRENCES : "recurs_as"
+    DECISION_ALTERNATIVES ||--o{ DECISION_EVENT_LOG : "records"
+    DECISION_ALTERNATIVES ||--o{ DECISION_ALTERNATIVE_RULING_SIGNOFFS : "requires_signoffs"
+    CODE_ANCHORS ||--o{ CODE_ANCHOR_LINEAGE : "traces"
+    SOURCE_THREADS ||--o{ DISCUSSION_EDGES : "contains"
+    SOURCE_THREADS ||--o{ EXTRACTION_RUNS : "audits"
+    SOURCE_THREADS ||--o{ LIVING_DECISION_DRAFTS : "grounds"
+    SOURCE_MESSAGES ||--o{ DISCUSSION_EDGES : "originates"
+    SOURCE_MESSAGES ||--o{ PROPOSAL_OCCURRENCES : "initiates"
+    SOURCE_MESSAGES ||--o{ LIVING_DECISION_DRAFTS : "initiates"
+    LIVING_DECISION_DRAFTS ||--o{ LIVING_DECISION_DRAFT_EVIDENCE : "cites"
+    EVIDENCE_SPANS ||--o{ LIVING_DECISION_DRAFT_EVIDENCE : "supports"
+    LIVING_DECISION_DRAFTS ||--o{ HITL_APPROVAL_REQUESTS : "routes"
+    DECISION_ALTERNATIVES ||--o{ HITL_APPROVAL_REQUESTS : "references"
+    HITL_APPROVAL_REQUESTS ||--o| HITL_APPROVAL_EVENTS : "decided_by"
+    CONTRIBUTORS ||--o{ SOURCE_MESSAGES : "authors"
+    CONTRIBUTORS ||--o{ ARGUMENTS : "advances"
+    CONTRIBUTORS ||--o{ DECISION_ALTERNATIVE_RULING_SIGNOFFS : "signs"
+
+    SOURCE_THREADS {
+        uuid id PK
+        varchar source_platform
+        text project_context
+        text external_thread_id
+        text canonical_url
+        jsonb ingestion_metadata
+    }
+
+    SOURCE_MESSAGES {
+        uuid id PK
+        uuid thread_id FK
+        text external_message_id
+        text parent_message_id
+        uuid author_id FK
+        timestamptz original_timestamp
+        text canonical_permalink
+    }
+
+    SOURCE_MESSAGE_VERSIONS {
+        uuid id PK
+        uuid message_id FK
+        int version_number
+        text raw_content
+        varchar content_hash
+        timestamptz captured_at
+        boolean is_current
+        varchar edit_state
+        timestamptz deleted_at
+    }
+
+    EVIDENCE_SPANS {
+        uuid id PK
+        uuid source_message_version_id FK
+        uuid alternative_id FK
+        uuid argument_id FK
+        uuid decision_id FK
+        uuid code_anchor_id FK
+        text exact_quote
+        int start_char
+        int end_char
+        varchar content_hash
+        varchar evidence_role
+        varchar stance
+        varchar verification_status
+    }
+
     DECISIONS {
         uuid id PK
+        uuid source_thread_id FK
         text title
-        text source_platform
-        text source_url
-        text external_id
-        varchar consensus_status
-        text context_summary
-        timestamptz created_at
+        varchar resolution_status
+        varchar resolution_type
+        varchar ruling_authority
+        uuid ruling_evidence_id FK
     }
 
     DECISION_ALTERNATIVES {
         uuid id PK
         uuid decision_id FK
         text proposal_text
-        varchar status
-        varchar rejection_category
-        text rejection_reason
-        text fatal_objection_by
-        text citation_quote
-        text citation_url
-        text proposed_by
-        jsonb supporting_contributors
-        jsonb dissenting_contributors
+        varchar lifecycle_status
+        varchar ruling_authority
+        uuid ruling_actor_id FK
+        uuid ruling_evidence_id FK
         vector embedding
+    }
+
+    PROPOSAL_OCCURRENCES {
+        uuid id PK
+        uuid alternative_id FK
+        uuid source_thread_id FK
+        uuid initiating_message_id FK
+        uuid initiating_message_version_id FK
+        uuid linkage_evidence_span_id FK
+        float linkage_similarity
+        varchar linkage_status
+    }
+
+    DISCUSSION_EDGES {
+        uuid id PK
+        uuid source_thread_id FK
+        uuid from_message_id FK
+        uuid to_message_id FK
+        uuid source_message_version_id FK
+        uuid target_decision_id FK
+        uuid target_alternative_id FK
+        uuid evidence_span_id FK
+        varchar edge_type
+        varchar edge_provenance
+        float confidence_score
     }
 
     CODE_ANCHORS {
         uuid id PK
-        uuid decision_id FK
-        varchar symbol_type
-        text symbol_name
-        text historical_file_path
-        varchar historical_commit_sha
-        text code_snippet_hash
+        uuid alternative_id FK
+        varchar parser_version
+        varchar grammar_version
+        varchar ast_normalization_version
+        varchar anchor_state
+        float mapping_confidence
     }
 
-    CONTRIBUTORS {
+    CODE_ANCHOR_LINEAGE {
         uuid id PK
-        text canonical_name
-        text github_handle
-        text discourse_username
-        text slack_user_id
-        text email_prefix
-        text project_role
+        uuid code_anchor_id FK
+        varchar historical_commit_sha
+        varchar transition_commit_sha
+        varchar compared_parent_sha
+        int parent_index
+        jsonb mapping_evidence
+        float confidence_score
+    }
+
+    EXTRACTION_RUNS {
+        uuid id PK
+        uuid source_thread_id FK
+        varchar schema_version
+        jsonb run_config
+        varchar run_config_sha256
+        varchar environment_lock_sha256
+        varchar source_thread_snapshot_sha256
+    }
+
+    DECISION_EVENT_LOG {
+        uuid id PK
+        uuid alternative_id FK
+        uuid proposal_occurrence_id FK
+        uuid evidence_span_id FK
+        uuid actor_contributor_id FK
+        varchar event_type
+        varchar new_status
+    }
+
+    DECISION_ALTERNATIVE_RULING_SIGNOFFS {
+        uuid alternative_id FK
+        uuid contributor_id FK
+        uuid evidence_span_id FK
+        timestamptz signed_at
+    }
+
+    LIVING_DECISION_DRAFTS {
+        uuid id PK
+        uuid source_thread_id FK
+        uuid initiating_message_id FK
+        uuid initiating_message_version_id FK
+        uuid initiating_author_id FK
+        varchar draft_status
+        varchar proposed_lifecycle
+    }
+
+    LIVING_DECISION_DRAFT_EVIDENCE {
+        uuid living_draft_id FK
+        uuid evidence_span_id FK
+    }
+
+    HITL_APPROVAL_REQUESTS {
+        uuid id PK
+        varchar switch_approval_id
+        varchar action_type
+        varchar target_repository
+        int target_pr_number
+        varchar target_commit_sha
+        uuid living_draft_id FK
+        uuid decision_alternative_id FK
+        varchar action_payload_sha256
+        varchar status
+    }
+
+    HITL_APPROVAL_EVENTS {
+        uuid id PK
+        uuid approval_request_id FK
+        varchar actor_source_platform
+        text actor_platform_id
+        uuid actor_contributor_id FK
+        varchar action_taken
+        varchar payload_signature
+        varchar callback_body_sha256
+        timestamptz recorded_at
     }
 ```
 
-### 1. `decisions` Table
-Captures the overarching debate topic, PEP, KEP, or PR architectural discussion:
+---
+
+## 3. Complete Relational DDL Specification
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TYPE decision_status AS ENUM (
-    'ACCEPTED',
-    'REJECTED',
-    'DEFERRED',
-    'WITHDRAWN',
-    'SUPERSEDED'
+-- ─────────────────────────────────────────────────────────────
+-- 1. CONTRIBUTORS & IDENTITY RESOLUTION
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE contributors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_platform VARCHAR(32) NOT NULL,  -- 'discourse', 'github', 'slack', 'mailing_list'
+    platform_user_id TEXT NOT NULL,        -- Platform unique user id
+    canonical_name TEXT NOT NULL,
+    author_handle TEXT NOT NULL,           -- e.g. 'gvanrossum', 'markshannon'
+    email_prefix TEXT,                     -- Sanitized email identifier for mailing lists
+    -- Roles are project-scoped; contributor identity is not itself authorization.
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_contributor_platform UNIQUE (source_platform, platform_user_id)
 );
+
+CREATE INDEX idx_contributors_handle ON contributors(author_handle);
+
+-- ─────────────────────────────────────────────────────────────
+-- 2. SOURCE PROVENANCE & VERSIONED MESSAGES (IMMUTABLE)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE source_threads (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_platform VARCHAR(32) NOT NULL, -- 'discourse', 'github_pr', 'github_issue', 'slack', 'mailing_list'
+    project_context TEXT NOT NULL,         -- 'python/cpython', 'kubernetes/kubernetes'
+    external_thread_id TEXT NOT NULL,      -- 'topic_1234', 'pull_505'
+    title TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    source_revision VARCHAR(64) DEFAULT 'v1',
+    ingestion_metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_source_thread UNIQUE (source_platform, project_context, external_thread_id)
+);
+
+-- Verified project-specific authority, append-only with separate revocation events.
+-- A contributor's role in one repository conveys no authority in another.
+CREATE TYPE contributor_project_role AS ENUM ('BDFL', 'Core Maintainer', 'Working Group Chair', 'Working Group Member', 'Contributor');
+CREATE TABLE contributor_project_role_grants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    project_context TEXT NOT NULL, -- Must match the target decision's source_threads.project_context
+    role contributor_project_role NOT NULL,
+    verified_by_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    verification_source_url TEXT NOT NULL,
+    verified_at TIMESTAMPTZ NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_grant_project CHECK (length(trim(project_context)) > 0),
+    CONSTRAINT chk_grant_source CHECK (length(trim(verification_source_url)) > 0),
+    CONSTRAINT chk_grant_window CHECK (valid_until IS NULL OR valid_until > valid_from)
+);
+CREATE INDEX idx_project_role_grants
+ON contributor_project_role_grants(contributor_id, project_context, role);
+
+CREATE TABLE contributor_project_role_revocations (
+    grant_id UUID PRIMARY KEY REFERENCES contributor_project_role_grants(id) ON DELETE RESTRICT,
+    revoked_by_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) > 0)
+);
+
+CREATE TABLE source_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE RESTRICT,
+    external_message_id TEXT NOT NULL,
+    parent_message_id TEXT,
+    author_id UUID REFERENCES contributors(id),
+    original_timestamp TIMESTAMPTZ NOT NULL,
+    canonical_permalink TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_source_message UNIQUE (thread_id, external_message_id),
+    CONSTRAINT uq_source_message_id_thread UNIQUE (id, thread_id),
+    CONSTRAINT uq_source_message_author_thread UNIQUE (id, thread_id, author_id)
+);
+
+CREATE INDEX idx_source_messages_thread ON source_messages(thread_id);
+CREATE INDEX idx_source_messages_parent ON source_messages(parent_message_id);
+
+CREATE TYPE message_edit_state AS ENUM ('ORIGINAL', 'EDITED', 'DELETED', 'UNAVAILABLE');
+
+CREATE TABLE source_message_versions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    message_id UUID NOT NULL REFERENCES source_messages(id) ON DELETE RESTRICT,
+    version_number INT NOT NULL,
+    raw_content TEXT NOT NULL,             -- Exact decoded content field returned by source API; never normalized
+    content_hash VARCHAR(64) NOT NULL,     -- SHA-256 of UTF-8 bytes of exact raw_content
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_current BOOLEAN NOT NULL DEFAULT TRUE,
+    edit_state message_edit_state NOT NULL DEFAULT 'ORIGINAL',
+    edit_reason TEXT,
+    deleted_at TIMESTAMPTZ,                -- Remote deletion is a tombstone; captured text is retained
+    derived_normalized_content TEXT,       -- Optional normalized retrieval view; never used for evidence
+    derived_cleaned_content TEXT,          -- Noise-filtered view; never used for evidence
+    CONSTRAINT uq_message_version UNIQUE (message_id, version_number),
+    CONSTRAINT uq_message_version_id_message UNIQUE (id, message_id),
+    CONSTRAINT chk_message_version_number CHECK (version_number >= 1),
+    CONSTRAINT chk_message_content_hash CHECK (content_hash ~ '^[0-9a-fA-F]{64}$')
+);
+
+-- At most one version may be current for a message; rotate it transactionally.
+-- At most one version is current; a deferred trigger below also requires exactly one at commit.
+CREATE UNIQUE INDEX uq_message_single_current ON source_message_versions(message_id) WHERE is_current = TRUE;
+
+-- ─────────────────────────────────────────────────────────────
+-- 3. TYPED DELIBERATION EDGES (GRAPH MODEL)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE discussion_edge_type AS ENUM (
+    'PROPOSES',
+    'SUPPORTS',
+    'OBJECTS',
+    'REBUTS',
+    'RESOLVES',
+    'REFERENCES',
+    'DIRECT_REPLY',
+    'QUOTE_REFERENCE',
+    'MENTION'
+);
+
+CREATE TYPE edge_provenance AS ENUM (
+    'PLATFORM_METADATA',
+    'DETERMINISTIC_RULE',
+    'MODEL_INFERRED'
+);
+
+CREATE TABLE discussion_edges (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE RESTRICT,
+    from_message_id UUID NOT NULL,
+    to_message_id UUID NOT NULL,
+    source_message_version_id UUID,
+    evidence_span_id UUID,
+    target_decision_id UUID,
+    target_alternative_id UUID,
+    edge_type discussion_edge_type NOT NULL,
+    edge_provenance edge_provenance NOT NULL,
+    confidence_score FLOAT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_edge_confidence CHECK (confidence_score >= 0.0 AND confidence_score <= 1.0),
+    CONSTRAINT chk_edge_target_shape CHECK (
+        (
+          edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES')
+          AND target_alternative_id IS NOT NULL
+          AND target_decision_id IS NULL
+          AND source_message_version_id IS NOT NULL
+          AND evidence_span_id IS NOT NULL
+        )
+        OR (edge_type = 'REFERENCES' AND num_nonnulls(target_decision_id, target_alternative_id) = 1)
+        OR (
+          edge_type IN ('DIRECT_REPLY', 'QUOTE_REFERENCE', 'MENTION')
+          AND target_decision_id IS NULL AND target_alternative_id IS NULL
+        )
+    )
+);
+
+CREATE INDEX idx_edges_thread ON discussion_edges(source_thread_id);
+CREATE INDEX idx_edges_nodes ON discussion_edges(from_message_id, to_message_id);
+CREATE INDEX idx_edges_alt ON discussion_edges(target_alternative_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 4. DECISIONS & ALTERNATIVE LIFECYCLES
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE decision_resolution AS ENUM ('RESOLVED', 'UNRESOLVED', 'DISPUTED');
+CREATE TYPE resolution_type AS ENUM ('ACCEPTED', 'REJECTED', 'DEFERRED', 'WITHDRAWN', 'SUPERSEDED');
+CREATE TYPE ruling_authority AS ENUM ('BDFL', 'CORE_MAINTAINER_CONSENSUS', 'WORKING_GROUP');
 
 CREATE TABLE decisions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE RESTRICT,
     title TEXT NOT NULL,
-    source_platform TEXT NOT NULL,     -- 'discourse', 'github_pr', 'slack_cncf', 'mailing_list'
-    source_url TEXT NOT NULL,          -- Canonical link to debate
-    external_id TEXT NOT NULL,         -- e.g. 'topic_1234', 'pr_452', 'pep_505'
-    consensus_status decision_status NOT NULL,
-    context_summary TEXT NOT NULL,     -- Problem statement being debated
+    context_summary TEXT NOT NULL,
+    resolution_status decision_resolution NOT NULL DEFAULT 'UNRESOLVED',
+    resolution_type resolution_type,
+    ruling_authority ruling_authority,
+    ruling_evidence_id UUID,               -- Foreign key linked below
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT uq_decisions_source UNIQUE (source_platform, external_id)
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-```
 
-### 2. `decision_alternatives` Table *(The Core Evaluation Entity)*
-Isolates candidate approaches, with dedicated fields for why an approach was **rejected**:
+CREATE TYPE proposal_lifecycle AS ENUM (
+    'PROPOSED',
+    'UNDER_DISCUSSION',
+    'ACCEPTED',
+    'REJECTED',
+    'WITHDRAWN',
+    'DEFERRED',
+    'SUPERSEDED',
+    'UNRESOLVED',
+    'DISPUTED',
+    'ACCEPTED_WITH_MODIFICATION'
+);
 
-```sql
-CREATE TYPE alternative_status AS ENUM ('ACCEPTED', 'REJECTED', 'SUPERSEDED');
 CREATE TYPE rejection_category AS ENUM (
     'PERFORMANCE',
     'SYNTAX_AMBIGUITY',
@@ -163,129 +468,1052 @@ CREATE TYPE rejection_category AS ENUM (
 
 CREATE TABLE decision_alternatives (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    decision_id UUID NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
-    proposal_text TEXT NOT NULL,             -- e.g. "Use unary ? without dot: a?b"
-    status alternative_status NOT NULL,      -- REJECTED, ACCEPTED, etc.
-    rejection_category rejection_category,   -- Fatal flaw category
-    rejection_reason TEXT,                   -- Why it failed
-    fatal_objection_by TEXT,                 -- Maintainer who voiced the fatal objection
-    citation_quote TEXT,                     -- Exact verbatim excerpt from debate
-    citation_url TEXT,                       -- Direct permalink to specific comment
-    proposed_by TEXT,                        -- Contributor who proposed the alternative
-    supporting_contributors JSONB DEFAULT '[]'::jsonb, -- Array of usernames
-    dissenting_contributors JSONB DEFAULT '[]'::jsonb, -- Array of usernames
-    embedding vector(768),                   -- nomic-embed-text-v1.5 embedding
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT uq_alternative UNIQUE (decision_id, proposal_text)
+    decision_id UUID NOT NULL REFERENCES decisions(id) ON DELETE RESTRICT,
+    proposal_text TEXT NOT NULL,
+    lifecycle_status proposal_lifecycle NOT NULL DEFAULT 'PROPOSED',
+    rejection_category rejection_category,
+    rejection_summary TEXT,
+    proposed_by_id UUID REFERENCES contributors(id),
+    ruling_evidence_id UUID,               -- Composite FK linked below
+    ruling_authority ruling_authority,
+    ruling_actor_id UUID REFERENCES contributors(id) ON DELETE RESTRICT,
+    ruling_actor_grant_id UUID REFERENCES contributor_project_role_grants(id) ON DELETE RESTRICT,
+    embedding vector(768),                 -- nomic-embed-text-v1.5; candidate retrieval only
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_alt_proposal UNIQUE (decision_id, proposal_text),
+    CONSTRAINT chk_rejected_requires_ruling CHECK (
+        lifecycle_status <> 'REJECTED'
+        OR (ruling_evidence_id IS NOT NULL AND ruling_authority IS NOT NULL
+            AND ruling_actor_id IS NOT NULL AND ruling_actor_grant_id IS NOT NULL)
+    )
 );
 
--- Fast Approximate Nearest Neighbor Index (HNSW)
+-- HNSW Vector Index for Instant Semantic Matching
 CREATE INDEX idx_alternatives_embedding 
 ON decision_alternatives 
 USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
-```
 
-### 3. `code_anchors` Table (Surviving Code Moves & Renames)
-Connects decisions to AST code identities rather than fragile paths:
+-- ─────────────────────────────────────────────────────────────
+-- 5. ARGUMENTS (DECOUPLED OBJECTIONS VS DECISIONS)
+-- ─────────────────────────────────────────────────────────────
 
-```sql
+CREATE TYPE evidence_stance AS ENUM ('SUPPORT', 'OBJECT', 'NEUTRAL');
+
+CREATE TABLE arguments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    author_id UUID REFERENCES contributors(id),
+    stance evidence_stance NOT NULL,
+    rationale TEXT NOT NULL,
+    evidence_span_id UUID,                 -- Foreign key linked below
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_arguments_alt ON arguments(alternative_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 6. CODE ANCHORS & LINEAGE (ALTERNATIVE-SPECIFIC)
+-- ─────────────────────────────────────────────────────────────
+
 CREATE TYPE code_symbol_type AS ENUM (
     'function',
     'class',
+    'method',
     'grammar_rule',
     'ast_node',
+    'interface',
     'module'
+);
+
+CREATE TYPE anchor_state AS ENUM (
+    'HISTORICAL',
+    'CURRENT',
+    'MIGRATED',
+    'SPLIT',
+    'MERGED',
+    'DELETED',
+    'AMBIGUOUS'
 );
 
 CREATE TABLE code_anchors (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    decision_id UUID NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    repository_url TEXT NOT NULL DEFAULT 'https://github.com/python/cpython',
+    language VARCHAR(32) NOT NULL,          -- 'python', 'c', 'rust', 'go'
     symbol_type code_symbol_type NOT NULL,
-    symbol_name TEXT NOT NULL,               -- e.g. 'parse_subscript', 'Tokenizer'
-    historical_file_path TEXT NOT NULL,      -- Path at the time of debate
-    historical_commit_sha VARCHAR(40),       -- Git SHA at time of decision
-    code_snippet_hash TEXT,                  -- Normalized AST hash of the block
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_code_anchors_symbol ON code_anchors(symbol_name);
-```
-
-### 4. `contributors` Table (Cross-Platform Identity Resolution)
-Resolves contributors across disparate open-source platforms:
-
-```sql
-CREATE TABLE contributors (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    canonical_name TEXT NOT NULL,            -- e.g. "Guido van Rossum"
-    github_handle TEXT,                      -- e.g. "gvanrossum"
-    discourse_username TEXT,                 -- e.g. "guido"
-    slack_user_id TEXT,                      -- e.g. "U01234567"
-    email_prefix TEXT,                       -- e.g. "guido@"
-    project_role TEXT,                       -- e.g. "Core Developer / BDFL"
+    qualified_symbol_name TEXT NOT NULL,    -- 'cpython.Parser.Tokenizer.get_next_token'
+    source_locator_type VARCHAR(32) NOT NULL DEFAULT 'AST_NODE_QUERY', -- 'FILE_BYTE_RANGE', 'FILE_LINE_RANGE', 'AST_NODE_QUERY'
+    start_line INT,
+    end_line INT,
+    start_byte INT,
+    end_byte INT,
+    parser_name VARCHAR(64) NOT NULL,
+    parser_version VARCHAR(32) NOT NULL,
+    grammar_version VARCHAR(32) NOT NULL,
+    fingerprint_algorithm VARCHAR(32) NOT NULL,
+    ast_normalization_version VARCHAR(32) NOT NULL,
+    ast_structural_fingerprint VARCHAR(64),
+    signature_hash VARCHAR(64),
+    anchor_state anchor_state NOT NULL DEFAULT 'HISTORICAL',
+    historical_file_path TEXT NOT NULL,
+    historical_commit_sha VARCHAR(64) NOT NULL,
+    head_commit_sha VARCHAR(64),
+    mapping_confidence FLOAT,              -- Explicitly computed; never defaulted to 1.0
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT uq_contributor_canonical UNIQUE (canonical_name)
+    CONSTRAINT chk_anchor_confidence CHECK (mapping_confidence IS NULL OR (mapping_confidence >= 0.0 AND mapping_confidence <= 1.0))
 );
+
+CREATE INDEX idx_code_anchors_alt ON code_anchors(alternative_id);
+CREATE INDEX idx_code_anchors_sym ON code_anchors(qualified_symbol_name);
+
+CREATE TABLE code_anchor_lineage (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    code_anchor_id UUID NOT NULL REFERENCES code_anchors(id) ON DELETE RESTRICT,
+    historical_commit_sha VARCHAR(64) NOT NULL,
+    transition_commit_sha VARCHAR(64) NOT NULL,
+    compared_parent_sha VARCHAR(64) NOT NULL,
+    parent_index INT NOT NULL,
+    target_commit_sha VARCHAR(64) NOT NULL,
+    traversal_strategy VARCHAR(50) NOT NULL,
+    historical_path TEXT NOT NULL,
+    migrated_path TEXT,
+    transition_type VARCHAR(32) NOT NULL,
+    mapping_evidence JSONB NOT NULL, -- Patch/tree digest, method, matched symbols and parser/grammar/normalizer versions
+    confidence_score FLOAT,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_lineage_parent_index CHECK (parent_index >= 0),
+    CONSTRAINT chk_lineage_confidence CHECK (confidence_score IS NULL OR (confidence_score >= 0.0 AND confidence_score <= 1.0)),
+    CONSTRAINT chk_lineage_evidence_object CHECK (jsonb_typeof(mapping_evidence) = 'object' AND mapping_evidence <> '{}'::jsonb),
+    CONSTRAINT uq_anchor_lineage_transition UNIQUE (code_anchor_id, transition_commit_sha, compared_parent_sha, historical_path)
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- 7. EXACT EVIDENCE SPANS (ANTI-HALLUCINATION PROOF)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE evidence_role AS ENUM (
+    'PROPOSAL',
+    'OBJECTION',
+    'REBUTTAL',
+    'RULING',
+    'CONCESSION',
+    'BENCHMARK_REPORT'
+);
+
+CREATE TYPE verification_status AS ENUM ('VERIFIED_EXACT', 'STALE_EDITED', 'UNVERIFIED', 'UNAVAILABLE');
+
+CREATE TABLE evidence_spans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_message_version_id UUID NOT NULL REFERENCES source_message_versions(id) ON DELETE RESTRICT,
+    decision_id UUID REFERENCES decisions(id) ON DELETE RESTRICT,
+    alternative_id UUID REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    argument_id UUID REFERENCES arguments(id) ON DELETE RESTRICT,
+    code_anchor_id UUID REFERENCES code_anchors(id) ON DELETE RESTRICT,
+    exact_quote TEXT NOT NULL,             -- Must match substring in source_message_versions(raw_content)
+    start_char INT NOT NULL,               -- 0-based character offset start
+    end_char INT NOT NULL,                 -- 0-based character offset end (exclusive)
+    content_hash VARCHAR(64) NOT NULL,     -- SHA-256 of exact_quote
+    evidence_role evidence_role NOT NULL,
+    stance evidence_stance NOT NULL,
+    verification_status verification_status NOT NULL DEFAULT 'UNVERIFIED',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- Enforce referential integrity: exactly one typed target must be non-null
+    CONSTRAINT chk_evidence_target_exactly_one CHECK (
+        num_nonnulls(decision_id, alternative_id, argument_id, code_anchor_id) = 1
+    ),
+    CONSTRAINT chk_char_offsets CHECK (start_char >= 0 AND end_char > start_char),
+    CONSTRAINT chk_evidence_hash CHECK (content_hash ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT uq_evidence_id_alternative UNIQUE (id, alternative_id),
+    CONSTRAINT uq_evidence_id_decision UNIQUE (id, decision_id),
+    CONSTRAINT uq_evidence_id_argument UNIQUE (id, argument_id),
+    CONSTRAINT uq_evidence_edge_source UNIQUE (id, alternative_id, source_message_version_id)
+);
+
+-- Foreign Key Back-Links for Authoritative Rulings
+ALTER TABLE decisions ADD CONSTRAINT fk_decisions_ruling_evidence
+FOREIGN KEY (ruling_evidence_id, id) REFERENCES evidence_spans(id, decision_id) ON DELETE RESTRICT;
+
+ALTER TABLE decision_alternatives ADD CONSTRAINT fk_alternatives_ruling_evidence
+FOREIGN KEY (ruling_evidence_id, id) REFERENCES evidence_spans(id, alternative_id) ON DELETE RESTRICT;
+
+ALTER TABLE arguments ADD CONSTRAINT fk_arguments_evidence
+FOREIGN KEY (evidence_span_id, id) REFERENCES evidence_spans(id, argument_id) ON DELETE RESTRICT;
+
+-- ─────────────────────────────────────────────────────────────
+-- 8. PROPOSAL OCCURRENCE TRACKING (RECURRENCE RECOVERY)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE proposal_occurrences (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE RESTRICT,
+    initiating_message_id UUID NOT NULL,
+    initiating_message_version_id UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    proposal_wording_version TEXT NOT NULL,
+    occurrence_context TEXT NOT NULL,
+    occurrence_outcome VARCHAR(50) NOT NULL,
+    linkage_similarity FLOAT,
+    linkage_status VARCHAR(50) NOT NULL DEFAULT 'PROPOSED_RECURRENCE',
+    linkage_evidence_span_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_occurrence_message_thread FOREIGN KEY (initiating_message_id, source_thread_id)
+        REFERENCES source_messages(id, thread_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_occurrence_message_version FOREIGN KEY (initiating_message_version_id, initiating_message_id)
+        REFERENCES source_message_versions(id, message_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_occurrence_evidence_alternative FOREIGN KEY (linkage_evidence_span_id, alternative_id, initiating_message_version_id)
+        REFERENCES evidence_spans(id, alternative_id, source_message_version_id) ON DELETE RESTRICT,
+    CONSTRAINT chk_occurrence_similarity CHECK (linkage_similarity IS NULL OR (linkage_similarity >= 0.0 AND linkage_similarity <= 1.0)),
+    CONSTRAINT uq_occurrence_alt_thread UNIQUE (id, alternative_id, source_thread_id)
+);
+
+CREATE INDEX idx_occurrences_alt ON proposal_occurrences(alternative_id);
+CREATE INDEX idx_occurrences_thread ON proposal_occurrences(source_thread_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 9. EXTRACTION RUNS (AUDITABILITY & REPRODUCIBILITY)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE extraction_runs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE RESTRICT,
+    pipeline_version VARCHAR(32) NOT NULL,
+    schema_version VARCHAR(32) NOT NULL,
+    run_config JSONB NOT NULL,             -- Slicer/normalizer versions, parameters, thresholds, seeds and runtime options
+    run_config_sha256 VARCHAR(64) NOT NULL,
+    environment_lock_sha256 VARCHAR(64) NOT NULL,
+    model_pass1_name VARCHAR(64) NOT NULL,
+    model_pass1_revision VARCHAR(64) NOT NULL,
+    model_pass3_name VARCHAR(64) NOT NULL,
+    model_pass3_revision VARCHAR(64) NOT NULL,
+    model_pass4_name VARCHAR(64) NOT NULL,
+    model_pass4_revision VARCHAR(64) NOT NULL,
+    embedding_model_name VARCHAR(64) NOT NULL,
+    embedding_model_revision VARCHAR(64) NOT NULL,
+    prompt_templates_hash VARCHAR(64) NOT NULL,
+    source_thread_snapshot_sha256 VARCHAR(64) NOT NULL,
+    run_status VARCHAR(32) NOT NULL,         -- 'RUNNING', 'SUCCESS', 'FAILED', 'PARTIAL'
+    records_extracted INT DEFAULT 0,
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    CONSTRAINT chk_extraction_run_config_object CHECK (jsonb_typeof(run_config) = 'object' AND run_config <> '{}'::jsonb),
+    CONSTRAINT chk_extraction_config_hash CHECK (run_config_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_extraction_environment_hash CHECK (environment_lock_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_extraction_source_snapshot_hash CHECK (source_thread_snapshot_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_extraction_prompt_hash CHECK (prompt_templates_hash ~ '^[0-9a-fA-F]{64}$')
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- 10. PR WATCHDOG AUDIT LOG (DRY-RUN / HITL LOGGING)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE pr_watchdog_audit_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    repository_url TEXT NOT NULL,
+    pr_number INT NOT NULL,
+    commit_sha VARCHAR(64) NOT NULL,
+    checked_at TIMESTAMPTZ DEFAULT NOW(),
+    execution_mode VARCHAR(32) NOT NULL DEFAULT 'AUDIT_DRY_RUN', -- 'AUDIT_DRY_RUN', 'INTERACTIVE_HITL', 'PRODUCTION_COMMENT'
+    candidate_alternative_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    evaluated_similarity FLOAT,
+    invariants_satisfied BOOLEAN NOT NULL DEFAULT FALSE,
+    authorization_verdict VARCHAR(64) NOT NULL, -- 'WARNING_AUTHORIZED', 'ABSTAINED_UNCERTAIN', 'NO_REJECTED_MATCH', 'ALTERNATIVE_MISMATCH'
+    action_taken VARCHAR(64) NOT NULL,          -- 'LOGGED_ONLY', 'HITL_CARD_POSTED', 'COMMENT_PUBLISHED'
+    comment_payload JSONB
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- 11. AUDITABLE DECISION EVENT LOG
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE decision_event_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    source_thread_id UUID REFERENCES source_threads(id) ON DELETE RESTRICT,
+    proposal_occurrence_id UUID,
+    recurrence_number INT NOT NULL DEFAULT 1,
+    event_type VARCHAR(32) NOT NULL,
+    previous_status proposal_lifecycle,
+    new_status proposal_lifecycle NOT NULL,
+    reason TEXT NOT NULL,
+    evidence_span_id UUID,
+    actor_contributor_id UUID REFERENCES contributors(id) ON DELETE RESTRICT,
+    authority_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb, -- Immutable role/grant/evidence IDs at decision time
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_recurrence_event_link CHECK (
+        event_type <> 'RECURRENCE_RECORDED'
+        OR (proposal_occurrence_id IS NOT NULL AND source_thread_id IS NOT NULL)
+    ),
+    CONSTRAINT chk_decision_event_type CHECK (event_type IN ('STATUS_CHANGE', 'RULING_OVERTURNED', 'RECURRENCE_RECORDED', 'RECURRENCE_CONFIRMED')),
+    CONSTRAINT chk_recurrence_number CHECK (recurrence_number >= 1),
+    CONSTRAINT fk_decision_event_occurrence FOREIGN KEY (proposal_occurrence_id, alternative_id, source_thread_id)
+        REFERENCES proposal_occurrences(id, alternative_id, source_thread_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_decision_event_evidence FOREIGN KEY (evidence_span_id, alternative_id)
+        REFERENCES evidence_spans(id, alternative_id) ON DELETE RESTRICT
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- 12. DAY 1+ LIVING DECISION DRAFTS (SWITCH INTERCEPTION)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE living_decision_state AS ENUM (
+    'DRAFT_PENDING_APPROVAL',
+    'MAINTAINER_APPROVED',
+    'MAINTAINER_REJECTED',
+    'EDIT_REQUESTED'
+);
+
+CREATE TABLE living_decision_drafts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    switch_session_id TEXT NOT NULL,
+    source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE RESTRICT,
+    initiating_message_id UUID NOT NULL,
+    initiating_message_version_id UUID NOT NULL,
+    initiating_author_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    topic TEXT NOT NULL,
+    draft_status living_decision_state NOT NULL DEFAULT 'DRAFT_PENDING_APPROVAL',
+    proposed_lifecycle proposal_lifecycle NOT NULL DEFAULT 'PROPOSED',
+    proposal_text TEXT NOT NULL,
+    rejection_summary TEXT,
+    target_subsystem TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    CONSTRAINT fk_living_draft_message_thread FOREIGN KEY (initiating_message_id, source_thread_id)
+        REFERENCES source_messages(id, thread_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_living_draft_author FOREIGN KEY (initiating_message_id, source_thread_id, initiating_author_id)
+        REFERENCES source_messages(id, thread_id, author_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_living_draft_message_version FOREIGN KEY (initiating_message_version_id, initiating_message_id)
+        REFERENCES source_message_versions(id, message_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE living_decision_draft_evidence (
+    living_draft_id UUID NOT NULL REFERENCES living_decision_drafts(id) ON DELETE RESTRICT,
+    evidence_span_id UUID NOT NULL REFERENCES evidence_spans(id) ON DELETE RESTRICT,
+    PRIMARY KEY (living_draft_id, evidence_span_id)
+);
+
+CREATE INDEX idx_living_drafts_thread ON living_decision_drafts(source_thread_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 13. DAY 1+ SWITCH HUMAN-IN-THE-LOOP (HITL) APPROVALS
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE hitl_action_type AS ENUM (
+    'APPROVE_LIVING_DECISION',
+    'AUTHORIZE_PR_WARNING',
+    'DISMISS_PR_WARNING'
+);
+
+CREATE TYPE hitl_request_status AS ENUM (
+    'PENDING',
+    'DECIDED',
+    'EXPIRED',
+    'REVOKED'
+);
+
+CREATE TABLE hitl_approval_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    switch_approval_id TEXT NOT NULL UNIQUE, -- Switch host-side approval request ID
+    action_type hitl_action_type NOT NULL,
+    status hitl_request_status NOT NULL DEFAULT 'PENDING',
+    idempotency_key VARCHAR(64) NOT NULL UNIQUE, -- Prevents replayed webhook callbacks
+    target_pr_number INT,
+    target_repository TEXT,
+    living_draft_id UUID REFERENCES living_decision_drafts(id),
+    decision_alternative_id UUID REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    target_commit_sha VARCHAR(64),
+    card_rendered_payload JSONB NOT NULL,
+    action_payload_sha256 VARCHAR(64) NOT NULL,
+    authorized_roles TEXT[] NOT NULL DEFAULT ARRAY['BDFL', 'Core Maintainer'],
+    callback_hmac_secret_id VARCHAR(64) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '72 hours'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_hitl_action_target CHECK (
+        (action_type = 'APPROVE_LIVING_DECISION' AND living_draft_id IS NOT NULL
+         AND decision_alternative_id IS NULL AND target_pr_number IS NULL
+         AND target_repository IS NULL AND target_commit_sha IS NULL)
+        OR
+        (action_type IN ('AUTHORIZE_PR_WARNING', 'DISMISS_PR_WARNING')
+         AND living_draft_id IS NULL AND decision_alternative_id IS NOT NULL
+         AND target_pr_number IS NOT NULL AND target_repository IS NOT NULL
+         AND target_commit_sha IS NOT NULL)
+    ),
+    CONSTRAINT chk_hitl_expiry CHECK (expires_at > created_at),
+    CONSTRAINT chk_hitl_pr_target CHECK (
+        action_type = 'APPROVE_LIVING_DECISION'
+        OR (target_pr_number > 0 AND length(target_repository) > 0 AND target_commit_sha ~ '^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')
+    ),
+    CONSTRAINT chk_hitl_idempotency_key CHECK (idempotency_key ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'),
+    CONSTRAINT chk_hitl_action_payload_hash CHECK (action_payload_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_hitl_roles_nonempty CHECK (cardinality(authorized_roles) > 0)
+);
+
+CREATE INDEX idx_hitl_approval_switch ON hitl_approval_requests(switch_approval_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 14. DAY 1+ APPEND-ONLY APPROVAL AUDIT LOG
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE hitl_approval_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    approval_request_id UUID NOT NULL REFERENCES hitl_approval_requests(id) ON DELETE RESTRICT,
+    actor_source_platform VARCHAR(32) NOT NULL,
+    actor_platform_id TEXT NOT NULL,
+    actor_contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    action_taken VARCHAR(32) NOT NULL,
+    payload_signature VARCHAR(64) NOT NULL,  -- HMAC-SHA256 signature, verified by the callback service before insert
+    callback_body_sha256 VARCHAR(64) NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_hitl_event_per_request UNIQUE (approval_request_id),
+    CONSTRAINT chk_hitl_event_action CHECK (action_taken IN ('APPROVE_DRAFT', 'REJECT_DRAFT', 'AUTHORIZE_PR_COMMENT', 'DISMISS_PR_COMMENT')),
+    CONSTRAINT chk_hitl_signature_format CHECK (payload_signature ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_hitl_callback_hash_format CHECK (callback_body_sha256 ~ '^[0-9a-fA-F]{64}$')
+);
+
+CREATE INDEX idx_hitl_events_request ON hitl_approval_events(approval_request_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 15. CROSS-TABLE PROVENANCE, RULING, AND AUDIT INVARIANTS
+-- ─────────────────────────────────────────────────────────────
+
+ALTER TABLE discussion_edges
+    ADD CONSTRAINT fk_edge_from_message_thread FOREIGN KEY (from_message_id, source_thread_id)
+    REFERENCES source_messages(id, thread_id) ON DELETE RESTRICT;
+ALTER TABLE discussion_edges
+    ADD CONSTRAINT fk_edge_to_message_thread FOREIGN KEY (to_message_id, source_thread_id)
+    REFERENCES source_messages(id, thread_id) ON DELETE RESTRICT;
+ALTER TABLE discussion_edges
+    ADD CONSTRAINT fk_edge_source_version FOREIGN KEY (source_message_version_id, from_message_id)
+    REFERENCES source_message_versions(id, message_id) ON DELETE RESTRICT;
+ALTER TABLE discussion_edges
+    ADD CONSTRAINT fk_edge_target_decision FOREIGN KEY (target_decision_id)
+    REFERENCES decisions(id) ON DELETE RESTRICT;
+ALTER TABLE discussion_edges
+    ADD CONSTRAINT fk_edge_target_alternative FOREIGN KEY (target_alternative_id)
+    REFERENCES decision_alternatives(id) ON DELETE RESTRICT;
+ALTER TABLE discussion_edges
+    ADD CONSTRAINT fk_edge_evidence_source_target FOREIGN KEY (evidence_span_id, target_alternative_id, source_message_version_id)
+    REFERENCES evidence_spans(id, alternative_id, source_message_version_id) ON DELETE RESTRICT;
+
+CREATE OR REPLACE FUNCTION enforce_discussion_edge_evidence()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    ev_role evidence_role;
+    ev_stance evidence_stance;
+    ev_status verification_status;
+    ev_author UUID;
+    decision_project TEXT;
+BEGIN
+    IF NEW.edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES') THEN
+        SELECT es.evidence_role, es.stance, es.verification_status, sm.author_id, st.project_context
+          INTO ev_role, ev_stance, ev_status, ev_author, decision_project
+          FROM evidence_spans es
+          JOIN source_message_versions smv ON smv.id = es.source_message_version_id
+          JOIN source_messages sm ON sm.id = smv.message_id
+          JOIN decision_alternatives da ON da.id = NEW.target_alternative_id
+          JOIN decisions d ON d.id = da.decision_id
+          JOIN source_threads st ON st.id = d.source_thread_id
+         WHERE es.id = NEW.evidence_span_id;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edge needs evidence for a known alternative'; END IF;
+        IF NEW.edge_type = 'PROPOSES' AND ev_role <> 'PROPOSAL' THEN
+            RAISE EXCEPTION 'PROPOSES requires PROPOSAL evidence';
+        ELSIF NEW.edge_type = 'SUPPORTS' AND ev_stance <> 'SUPPORT' THEN
+            RAISE EXCEPTION 'SUPPORTS requires SUPPORT evidence';
+        ELSIF NEW.edge_type = 'OBJECTS' AND ev_stance <> 'OBJECT' THEN
+            RAISE EXCEPTION 'OBJECTS requires OBJECT evidence';
+        ELSIF NEW.edge_type = 'REBUTS' AND ev_role <> 'REBUTTAL' THEN
+            RAISE EXCEPTION 'REBUTS requires REBUTTAL evidence';
+        ELSIF NEW.edge_type = 'RESOLVES'
+          AND (ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
+               OR NEW.edge_provenance = 'MODEL_INFERRED'
+               OR NOT EXISTS (
+                   SELECT 1 FROM contributor_project_role_grants g
+                    WHERE g.contributor_id = ev_author AND g.project_context = decision_project
+                      AND g.role IN ('BDFL', 'Core Maintainer', 'Working Group Chair')
+                      AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+                      AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id)
+               )) THEN
+            RAISE EXCEPTION 'RESOLVES needs verified human RULING from this project';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_discussion_edge_evidence
+BEFORE INSERT OR UPDATE ON discussion_edges
+FOR EACH ROW EXECUTE FUNCTION enforce_discussion_edge_evidence();
+
+CREATE TABLE decision_alternative_ruling_signoffs (
+    alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    project_role_grant_id UUID NOT NULL REFERENCES contributor_project_role_grants(id) ON DELETE RESTRICT,
+    evidence_span_id UUID NOT NULL,
+    signed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (alternative_id, contributor_id),
+    CONSTRAINT fk_ruling_signoff_evidence FOREIGN KEY (evidence_span_id, alternative_id)
+        REFERENCES evidence_spans(id, alternative_id) ON DELETE RESTRICT
+);
+
+CREATE OR REPLACE FUNCTION enforce_ruling_signoff()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    ev_role evidence_role;
+    ev_status verification_status;
+    ev_author UUID;
+    decision_project TEXT;
+BEGIN
+    SELECT es.evidence_role, es.verification_status, sm.author_id, st.project_context
+      INTO ev_role, ev_status, ev_author, decision_project
+      FROM evidence_spans es
+      JOIN source_message_versions smv ON smv.id = es.source_message_version_id
+      JOIN source_messages sm ON sm.id = smv.message_id
+      JOIN decision_alternatives da ON da.id = NEW.alternative_id
+      JOIN decisions d ON d.id = da.decision_id
+      JOIN source_threads st ON st.id = d.source_thread_id
+     WHERE es.id = NEW.evidence_span_id AND es.alternative_id = NEW.alternative_id;
+    IF NOT FOUND OR ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
+       OR ev_author IS DISTINCT FROM NEW.contributor_id THEN
+        RAISE EXCEPTION 'Sign-off requires own VERIFIED_EXACT RULING evidence for this alternative';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM contributor_project_role_grants g
+         WHERE g.id = NEW.project_role_grant_id AND g.contributor_id = NEW.contributor_id
+           AND g.project_context = decision_project
+           AND g.role IN ('Core Maintainer', 'Working Group Chair', 'Working Group Member')
+           AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+           AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id)
+    ) THEN
+        RAISE EXCEPTION 'Sign-off needs active verified project-specific role grant';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_enforce_ruling_signoff
+BEFORE INSERT ON decision_alternative_ruling_signoffs
+FOR EACH ROW EXECUTE FUNCTION enforce_ruling_signoff();
+
+-- The ruling_evidence_id composite FK binds evidence to the same alternative.
+-- This trigger additionally verifies the exact quote, ruling role and human authority.
+CREATE OR REPLACE FUNCTION enforce_authoritative_alternative_rejection()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    ev_role evidence_role;
+    ev_status verification_status;
+    ev_alternative UUID;
+    ev_author UUID;
+    decision_project TEXT;
+    actor_role contributor_project_role;
+    signoff_count INT;
+BEGIN
+    IF NEW.lifecycle_status = 'REJECTED' THEN
+        SELECT es.evidence_role, es.verification_status, es.alternative_id,
+               sm.author_id, st.project_context
+          INTO ev_role, ev_status, ev_alternative, ev_author, decision_project
+          FROM evidence_spans es
+          JOIN source_message_versions smv ON smv.id = es.source_message_version_id
+          JOIN source_messages sm ON sm.id = smv.message_id
+          JOIN decisions d ON d.id = NEW.decision_id
+          JOIN source_threads st ON st.id = d.source_thread_id
+         WHERE es.id = NEW.ruling_evidence_id;
+        IF NOT FOUND OR ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
+           OR ev_alternative IS DISTINCT FROM NEW.id OR ev_author IS DISTINCT FROM NEW.ruling_actor_id THEN
+            RAISE EXCEPTION 'REJECTED needs verified RULING by the exact alternative ruling actor';
+        END IF;
+        SELECT g.role INTO actor_role
+          FROM contributor_project_role_grants g
+         WHERE g.id = NEW.ruling_actor_grant_id AND g.contributor_id = NEW.ruling_actor_id
+           AND g.project_context = decision_project
+           AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+           AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id);
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Ruling actor lacks active role grant for this decision project';
+        END IF;
+        -- Valid BDFL falls into this branch and succeeds (rather than falling into ELSE).
+        IF NEW.ruling_authority = 'BDFL' THEN
+            IF actor_role <> 'BDFL' THEN
+                RAISE EXCEPTION 'BDFL ruling requires this project''s verified BDFL';
+            END IF;
+        ELSIF NEW.ruling_authority = 'CORE_MAINTAINER_CONSENSUS' THEN
+            IF actor_role <> 'Core Maintainer' THEN
+                RAISE EXCEPTION 'Consensus ruling author must be Core Maintainer in this project';
+            END IF;
+            SELECT COUNT(*) INTO signoff_count
+              FROM decision_alternative_ruling_signoffs s
+              JOIN contributor_project_role_grants g ON g.id = s.project_role_grant_id
+             WHERE s.alternative_id = NEW.id AND g.project_context = decision_project
+               AND g.role = 'Core Maintainer' AND g.contributor_id = s.contributor_id
+               AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+               AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id);
+            IF signoff_count < 2 OR NOT EXISTS (
+                SELECT 1 FROM decision_alternative_ruling_signoffs s
+                WHERE s.alternative_id = NEW.id AND s.contributor_id = NEW.ruling_actor_id
+                  AND s.project_role_grant_id = NEW.ruling_actor_grant_id
+            ) THEN
+                RAISE EXCEPTION 'Consensus requires ruling author plus another verified project Core Maintainer';
+            END IF;
+        ELSIF NEW.ruling_authority = 'WORKING_GROUP' THEN
+            IF actor_role <> 'Working Group Chair' THEN
+                RAISE EXCEPTION 'Working-group ruling requires verified Chair for this project';
+            END IF;
+            SELECT COUNT(*) INTO signoff_count
+              FROM decision_alternative_ruling_signoffs s
+              JOIN contributor_project_role_grants g ON g.id = s.project_role_grant_id
+             WHERE s.alternative_id = NEW.id AND s.contributor_id <> NEW.ruling_actor_id
+               AND g.contributor_id = s.contributor_id AND g.project_context = decision_project
+               AND g.role = 'Working Group Member'
+               AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+               AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id);
+            IF signoff_count < 1 OR NOT EXISTS (
+                SELECT 1 FROM decision_alternative_ruling_signoffs s
+                WHERE s.alternative_id = NEW.id AND s.contributor_id = NEW.ruling_actor_id
+                  AND s.project_role_grant_id = NEW.ruling_actor_grant_id
+            ) THEN
+                RAISE EXCEPTION 'Working-group ruling needs Chair and distinct verified Member signoffs';
+            END IF;
+        ELSE
+            RAISE EXCEPTION 'Unknown or model-inferred authority cannot reject an alternative';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_authoritative_alternative_rejection
+BEFORE INSERT OR UPDATE OF lifecycle_status, ruling_evidence_id, ruling_authority, ruling_actor_id, ruling_actor_grant_id
+ON decision_alternatives
+FOR EACH ROW EXECUTE FUNCTION enforce_authoritative_alternative_rejection();
+
+
+-- Verify the source capture digest over the exact decoded UTF-8 content.
+CREATE OR REPLACE FUNCTION verify_source_message_version_hash()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF encode(digest(convert_to(NEW.raw_content, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.content_hash) THEN
+        RAISE EXCEPTION 'content_hash must be SHA-256 of exact raw_content UTF-8 bytes';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_source_message_version_hash
+BEFORE INSERT OR UPDATE OF raw_content, content_hash ON source_message_versions
+FOR EACH ROW EXECUTE FUNCTION verify_source_message_version_hash();
+
+-- Every source message must have exactly one current version at transaction commit.
+CREATE OR REPLACE FUNCTION enforce_exactly_one_current_message_version()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    target_message_id UUID;
+    current_count INT;
+BEGIN
+    IF TG_TABLE_NAME = 'source_messages' THEN
+        target_message_id := NEW.id;
+    ELSIF TG_OP = 'DELETE' THEN
+        target_message_id := OLD.message_id;
+    ELSE
+        target_message_id := NEW.message_id;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM source_messages WHERE id = target_message_id) THEN
+        RETURN NULL;
+    END IF;
+    SELECT COUNT(*) INTO current_count FROM source_message_versions
+     WHERE message_id = target_message_id AND is_current = TRUE;
+    IF current_count <> 1 THEN
+        RAISE EXCEPTION 'Each source message must have exactly one current version at transaction commit';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER trg_source_message_requires_current_version
+AFTER INSERT ON source_messages DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_exactly_one_current_message_version();
+CREATE CONSTRAINT TRIGGER trg_source_message_version_current_count
+AFTER INSERT OR UPDATE OR DELETE ON source_message_versions DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_exactly_one_current_message_version();
+
+-- Run configuration is hashed using PostgreSQL's canonical JSONB text representation.
+CREATE OR REPLACE FUNCTION verify_extraction_run_config_hash()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF encode(digest(convert_to(NEW.run_config::text, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.run_config_sha256) THEN
+        RAISE EXCEPTION 'run_config_sha256 must hash the PostgreSQL JSONB text representation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_extraction_run_config_hash
+BEFORE INSERT OR UPDATE OF run_config, run_config_sha256 ON extraction_runs
+FOR EACH ROW EXECUTE FUNCTION verify_extraction_run_config_hash();
+
+-- Validate that the exact approvable payload cannot be changed after its hash is recorded.
+CREATE OR REPLACE FUNCTION verify_hitl_action_payload_hash()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF encode(digest(convert_to(NEW.card_rendered_payload::text, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.action_payload_sha256) THEN
+        RAISE EXCEPTION 'action_payload_sha256 must hash the canonical JSONB approval payload';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_hitl_action_payload_hash
+BEFORE INSERT OR UPDATE OF card_rendered_payload, action_payload_sha256 ON hitl_approval_requests
+FOR EACH ROW EXECUTE FUNCTION verify_hitl_action_payload_hash();
+
+CREATE OR REPLACE FUNCTION protect_hitl_approval_request()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'HITL approval requests are retained for audit'; END IF;
+    IF (to_jsonb(NEW) - 'status') IS DISTINCT FROM (to_jsonb(OLD) - 'status') THEN
+        RAISE EXCEPTION 'HITL request identity, target, payload, expiry and secret reference are immutable';
+    END IF;
+    IF OLD.status <> 'PENDING' OR NEW.status NOT IN ('DECIDED', 'EXPIRED', 'REVOKED') THEN
+        RAISE EXCEPTION 'HITL request status may transition only from PENDING to a terminal state';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_protect_hitl_approval_request
+BEFORE UPDATE OR DELETE ON hitl_approval_requests
+FOR EACH ROW EXECUTE FUNCTION protect_hitl_approval_request();
+
+-- The HMAC is verified by the application against the raw callback body; this trigger
+-- enforces request, platform identity, role, expiry, action binding and the one-way
+-- PENDING -> DECIDED status transition in the same transaction.
+CREATE OR REPLACE FUNCTION enforce_hitl_approval_event()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    request_row hitl_approval_requests%ROWTYPE;
+    actor_source_platform TEXT;
+    actor_platform_id TEXT;
+    decision_project TEXT;
+BEGIN
+    SELECT * INTO request_row FROM hitl_approval_requests
+     WHERE id = NEW.approval_request_id FOR UPDATE;
+    IF NOT FOUND OR request_row.status <> 'PENDING' OR request_row.expires_at <= NOW() THEN
+        RAISE EXCEPTION 'HITL request is not pending or has expired';
+    END IF;
+    SELECT source_platform, platform_user_id INTO actor_source_platform, actor_platform_id
+      FROM contributors WHERE id = NEW.actor_contributor_id;
+    IF NOT FOUND OR actor_source_platform IS DISTINCT FROM NEW.actor_source_platform
+       OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id THEN
+        RAISE EXCEPTION 'HITL callback identity does not match contributor';
+    END IF;
+    IF request_row.living_draft_id IS NOT NULL THEN
+        SELECT st.project_context INTO decision_project
+          FROM living_decision_drafts ld JOIN source_threads st ON st.id = ld.source_thread_id
+         WHERE ld.id = request_row.living_draft_id;
+    ELSE
+        SELECT st.project_context INTO decision_project
+          FROM decision_alternatives da
+          JOIN decisions d ON d.id = da.decision_id
+          JOIN source_threads st ON st.id = d.source_thread_id
+         WHERE da.id = request_row.decision_alternative_id;
+    END IF;
+    IF decision_project IS NULL OR NOT EXISTS (
+        SELECT 1 FROM contributor_project_role_grants g
+         WHERE g.contributor_id = NEW.actor_contributor_id AND g.project_context = decision_project
+           AND g.role::text = ANY(request_row.authorized_roles)
+           AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+           AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id)
+    ) THEN
+        RAISE EXCEPTION 'HITL actor lacks verified role for target decision project';
+    END IF;
+    IF (request_row.action_type = 'APPROVE_LIVING_DECISION' AND NEW.action_taken NOT IN ('APPROVE_DRAFT', 'REJECT_DRAFT'))
+       OR (request_row.action_type = 'AUTHORIZE_PR_WARNING' AND NEW.action_taken <> 'AUTHORIZE_PR_COMMENT')
+       OR (request_row.action_type = 'DISMISS_PR_WARNING' AND NEW.action_taken <> 'DISMISS_PR_COMMENT') THEN
+        RAISE EXCEPTION 'Callback action does not match request type';
+    END IF;
+    UPDATE hitl_approval_requests SET status = 'DECIDED'
+     WHERE id = NEW.approval_request_id AND status = 'PENDING';
+    IF NOT FOUND THEN RAISE EXCEPTION 'HITL request changed before callback finalization'; END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_enforce_hitl_approval_event
+BEFORE INSERT ON hitl_approval_events
+FOR EACH ROW EXECUTE FUNCTION enforce_hitl_approval_event();
+
+-- Every evidence span attached to a living draft must come from that draft's source thread.
+CREATE OR REPLACE FUNCTION enforce_living_draft_evidence_thread()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    draft_thread UUID;
+    evidence_thread UUID;
+BEGIN
+    SELECT source_thread_id INTO draft_thread FROM living_decision_drafts WHERE id = NEW.living_draft_id;
+    SELECT sm.thread_id INTO evidence_thread
+      FROM evidence_spans es
+      JOIN source_message_versions smv ON smv.id = es.source_message_version_id
+      JOIN source_messages sm ON sm.id = smv.message_id
+     WHERE es.id = NEW.evidence_span_id;
+    IF draft_thread IS NULL OR evidence_thread IS DISTINCT FROM draft_thread THEN
+        RAISE EXCEPTION 'Living-draft evidence must belong to the same source thread';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_living_draft_evidence_thread
+BEFORE INSERT OR UPDATE ON living_decision_draft_evidence
+FOR EACH ROW EXECUTE FUNCTION enforce_living_draft_evidence_thread();
+
+CREATE OR REPLACE FUNCTION protect_source_message_version()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Source message versions cannot be deleted'; END IF;
+    IF (to_jsonb(NEW) - 'is_current') IS DISTINCT FROM (to_jsonb(OLD) - 'is_current') THEN
+        RAISE EXCEPTION 'Source content and provenance are immutable; only is_current may rotate';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_protect_source_message_versions
+BEFORE UPDATE OR DELETE ON source_message_versions
+FOR EACH ROW EXECUTE FUNCTION protect_source_message_version();
+
+CREATE OR REPLACE FUNCTION verify_evidence_span_exactness()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    source_text TEXT;
+    source_slice TEXT;
+BEGIN
+    IF NEW.verification_status = 'VERIFIED_EXACT' THEN
+        SELECT raw_content INTO source_text FROM source_message_versions WHERE id = NEW.source_message_version_id;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Evidence source version does not exist'; END IF;
+        IF NEW.start_char < 0 OR NEW.end_char <= NEW.start_char OR NEW.end_char > char_length(source_text) THEN
+            RAISE EXCEPTION 'Evidence offsets exceed exact raw_content bounds';
+        END IF;
+        source_slice := substring(source_text FROM (NEW.start_char + 1) FOR (NEW.end_char - NEW.start_char));
+        IF source_slice IS DISTINCT FROM NEW.exact_quote THEN
+            RAISE EXCEPTION 'Evidence quote does not equal raw_content[start_char:end_char]';
+        END IF;
+        IF encode(digest(convert_to(NEW.exact_quote, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.content_hash) THEN
+            RAISE EXCEPTION 'Evidence SHA-256 does not match exact_quote UTF-8 bytes';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_evidence_span_exactness
+BEFORE INSERT OR UPDATE OF verification_status, source_message_version_id, exact_quote, start_char, end_char, content_hash
+ON evidence_spans
+FOR EACH ROW EXECUTE FUNCTION verify_evidence_span_exactness();
+
+CREATE OR REPLACE FUNCTION protect_evidence_span_mutation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Evidence spans are retained permanently'; END IF;
+    IF (to_jsonb(NEW) - 'verification_status') IS DISTINCT FROM (to_jsonb(OLD) - 'verification_status') THEN
+        RAISE EXCEPTION 'Evidence quote, locator, target and provenance are immutable';
+    END IF;
+    IF OLD.verification_status = 'VERIFIED_EXACT' AND NEW.verification_status <> 'VERIFIED_EXACT' THEN
+        RAISE EXCEPTION 'A verified span cannot be downgraded; source versions are immutable';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_protect_evidence_span_mutation
+BEFORE UPDATE OR DELETE ON evidence_spans
+FOR EACH ROW EXECUTE FUNCTION protect_evidence_span_mutation();
+
+CREATE OR REPLACE FUNCTION reject_audit_row_mutation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'Audit records are append-only';
+END;
+$$;
+CREATE TRIGGER trg_project_role_grants_append_only
+BEFORE UPDATE OR DELETE ON contributor_project_role_grants
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+CREATE TRIGGER trg_project_role_revocations_append_only
+BEFORE UPDATE OR DELETE ON contributor_project_role_revocations
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+
+-- Audit every lifecycle transition in the same transaction as its state change.
+-- The application DB role has NO direct UPDATE/DELETE on decision_alternatives;
+-- only the trusted transition service may use the protected transition entrypoint.
+CREATE OR REPLACE FUNCTION record_alternative_status_change()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    acting_contributor UUID;
+    explanation TEXT;
+    discussion_thread UUID;
+    snapshot JSONB := '{}'::jsonb;
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.lifecycle_status IS NOT DISTINCT FROM OLD.lifecycle_status THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' AND NEW.lifecycle_status = 'PROPOSED' THEN
+        RETURN NEW;
+    END IF;
+    acting_contributor := NULLIF(current_setting('biscuit.transition_actor_id', TRUE), '')::UUID;
+    explanation := NULLIF(trim(current_setting('biscuit.transition_reason', TRUE)), '');
+    IF acting_contributor IS NULL OR explanation IS NULL THEN
+        RAISE EXCEPTION 'Status changes require authenticated actor and reason in transaction';
+    END IF;
+    SELECT source_thread_id INTO discussion_thread FROM decisions WHERE id = NEW.decision_id;
+    IF NEW.lifecycle_status = 'REJECTED' THEN
+        snapshot := jsonb_build_object(
+            'ruling_authority', NEW.ruling_authority::text,
+            'ruling_actor_id', NEW.ruling_actor_id,
+            'ruling_actor_grant_id', NEW.ruling_actor_grant_id,
+            'ruling_evidence_id', NEW.ruling_evidence_id,
+            'signoffs', COALESCE((
+                SELECT jsonb_agg(jsonb_build_object('contributor_id', s.contributor_id,
+                    'role_grant_id', s.project_role_grant_id, 'evidence_span_id', s.evidence_span_id)
+                    ORDER BY s.contributor_id)
+                  FROM decision_alternative_ruling_signoffs s
+                 WHERE s.alternative_id = NEW.id
+            ), '[]'::jsonb)
+        );
+    END IF;
+    INSERT INTO decision_event_log (
+        alternative_id, source_thread_id, event_type, previous_status,
+        new_status, reason, evidence_span_id, actor_contributor_id, authority_snapshot
+    ) VALUES (
+        NEW.id, discussion_thread, 'STATUS_CHANGE',
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.lifecycle_status ELSE NULL END,
+        NEW.lifecycle_status, explanation,
+        CASE WHEN NEW.lifecycle_status = 'REJECTED' THEN NEW.ruling_evidence_id ELSE NULL END,
+        acting_contributor, snapshot
+    );
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_alternative_status_audit
+AFTER INSERT OR UPDATE OF lifecycle_status ON decision_alternatives
+FOR EACH ROW EXECUTE FUNCTION record_alternative_status_change();
+
+-- SECURITY BOUNDARY: only a trusted service that has *already authenticated*
+-- and bound p_actor_id to the caller may EXECUTE this function. An arbitrary
+-- actor UUID supplied through a public API is never accepted as identity proof.
+-- In deployment, REVOKE EXECUTE ... FROM PUBLIC, GRANT only to that service, and
+-- REVOKE direct lifecycle-table writes from runtime/LLM/MCP/ingestion DB roles.
+CREATE OR REPLACE FUNCTION transition_alternative_lifecycle(
+    p_alternative_id UUID, p_new_status proposal_lifecycle, p_actor_id UUID,
+    p_reason TEXT, p_ruling_evidence_id UUID DEFAULT NULL,
+    p_ruling_authority ruling_authority DEFAULT NULL,
+    p_ruling_actor_id UUID DEFAULT NULL, p_ruling_actor_grant_id UUID DEFAULT NULL
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    IF p_actor_id IS NULL OR p_reason IS NULL OR length(trim(p_reason)) = 0 THEN
+        RAISE EXCEPTION 'Verified actor and reason required';
+    END IF;
+    PERFORM set_config('biscuit.transition_actor_id', p_actor_id::text, TRUE);
+    PERFORM set_config('biscuit.transition_reason', p_reason, TRUE);
+    UPDATE decision_alternatives SET
+        lifecycle_status = p_new_status,
+        ruling_evidence_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_evidence_id ELSE NULL END,
+        ruling_authority = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_authority ELSE NULL END,
+        ruling_actor_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_actor_id ELSE NULL END,
+        ruling_actor_grant_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_actor_grant_id ELSE NULL END
+    WHERE id = p_alternative_id AND lifecycle_status IS DISTINCT FROM p_new_status;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Alternative not found or status unchanged'; END IF;
+END;
+$$;
+
+CREATE TRIGGER trg_decision_event_log_append_only
+BEFORE UPDATE OR DELETE ON decision_event_log
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+CREATE TRIGGER trg_hitl_approval_events_append_only
+BEFORE UPDATE OR DELETE ON hitl_approval_events
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+CREATE TRIGGER trg_pr_watchdog_audit_append_only
+BEFORE UPDATE OR DELETE ON pr_watchdog_audit_log
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+CREATE TRIGGER trg_ruling_signoffs_append_only
+BEFORE UPDATE OR DELETE ON decision_alternative_ruling_signoffs
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+
 ```
 
 ---
 
-## 3. Embedding Model & Vector Specification
+## Lifecycle Authority and Transition Contract
 
-- **Embedding Model:** `nomic-embed-text-v1.5`
-- **Dimensionality:** 768 dimensions
-- **Context Window:** 8,192 tokens (crucial for embedding full code diffs and discussion chunks without premature truncation)
-- **Search Prefix Modes:**
-  - Ingestion: `search_document: <proposal_text> - Rejected: <rejection_reason>`
-  - Retrieval: `search_query: <code_diff_summary or dev_question>`
-- **Index Type:** **HNSW** (`vector_cosine_ops`), tuned with `m = 16` and `ef_construction = 64` for $<5\text{ms}$ sub-millisecond query latencies.
+Project roles are verified against the **exact** `source_threads.project_context` of
+each decision. `contributor_project_role_grants` stores immutable, source-backed,
+effective-dated grants; revocations create separate append-only rows. Ruling sign-offs
+reference their own verified role grant. BDFL rulings require one verified BDFL in that
+project; Core Maintainer consensus requires the ruling author and a distinct verified
+Core Maintainer sign-off; Working Group rulings require the Chair and a distinct Member.
+The role grant, ruling evidence, sign-offs and acting contributor are snapshotted in
+the same transaction as the lifecycle transition, and role changes do not rewrite it.
+
+The trusted gateway must authenticate the transition actor independently of any
+caller-provided ID. Revoke public EXECUTE privileges on the SECURITY DEFINER
+transition function, grant them only to the trusted transition service, and revoke
+direct writes to `decision_alternatives` from all ordinary runtime roles. Database
+superusers and the trusted service remain privileged and must be audited separately.
+The `AFTER` trigger rejects any status transition that cannot atomically append an
+event with old/new state, evidence, authenticated actor and reason.
+
+**Implementation-phase regression fixtures (not claimed as executed by this PR):**
+valid and invalid project-scoped BDFL rulings; cross-project BDFL denial; exactly
+two distinct verified Core Maintainer sign-offs; Chair plus distinct Working Group
+Member sign-offs; revoked/expired grants; cross-project HITL denial; no status change
+without an audit record; status reversals preserve the former ruling in event history.
+
+## 4. Evidence Verification & Offset Math Contract
+
+### Explicit Character Offset Definition
+* **Application Layer (Python):**  
+  Offsets use **zero-based indexing, start-inclusive, end-exclusive `[start_char, end_char)`**.  
+  `extracted_quote = source_message_version.raw_content[start_char:end_char]`
+* **Database Layer (PostgreSQL SQL):**  
+  PostgreSQL's `SUBSTRING(string FROM start FOR count)` uses **1-based indexing** and takes a length argument:  
+  ```sql
+  SELECT SUBSTRING(raw_content FROM (start_char + 1) FOR (end_char - start_char)) AS verified_quote
+  FROM source_message_versions
+  WHERE id = :source_message_version_id;
+  ```
+* **Unicode & Multiline Preservation:**  
+  Offsets count Python Unicode code points (`len(str)`) in the exact decoded `raw_content` string. CRLF and LF remain distinct and are preserved. The source-version digest is SHA-256 over UTF-8 bytes of exact `raw_content`; the evidence-span digest is SHA-256 over UTF-8 bytes of `exact_quote`. Normalized/cleaned representations are separate derived views and are never used for evidence offsets or hashes.
+
+### Verification Procedure
+1. Initialize evidence span with `verification_status = 'UNVERIFIED'`.
+2. Extract substring from `source_message_versions.raw_content` using `[start_char, end_char)`.
+3. If `substring == exact_quote` AND `sha256(exact_quote.encode("utf-8")) == content_hash`:
+   - Promote to `VERIFIED_EXACT`.
+4. If the message was edited remotely or hash mismatches:
+   - Mark as `STALE_EDITED` or `UNVERIFIED`.
+   - **Biscuit never silently substitutes alternative sentences.**
 
 ---
 
-## 4. Dual-Mode Retrieval Engine
-
-The retrieval engine serves two distinct open-source workflows:
+## 5. Dual-Mode Retrieval & Warning Authorization Gate
 
 ```mermaid
-flowchart LR
-    subgraph Mode1["Mode 1: Automated PR Diff Watchdog"]
-        Diff["GitHub PR Diff"] --> AST["Tree-sitter AST Extractor"]
-        AST --> Search["Hybrid Lookup:<br/>1. Exact Symbol Anchors<br/>2. HNSW Cosine Similarity"]
-        Search --> Threshold{"Similarity >= 0.82<br/>AND<br/>status == REJECTED?"}
-        Threshold -- Yes --> Alert["Post In-Line Warning Comment"]
-        Threshold -- No --> Silent["Stay Silent"]
+flowchart TD
+    PR["Incoming GitHub PR Diff"] --> CandidateGen
+
+    subgraph CandidateGen["1. Candidate Retrieval (Hypothesis Generation)"]
+        Tree["Tree-sitter AST Extractor"] --> SymMatch["Lookup Symbol Anchors in code_anchors"]
+        DiffHunk["Diff Text"] --> VecSearch["HNSW Vector Search on decision_alternatives"]
+        SymMatch --> Candidates["Candidate Alternative IDs"]
+        VecSearch --> Candidates
     end
 
-    subgraph Mode2["Mode 2: Interactive Knowledge Explorer"]
-        Query["Dev Query (Slack / CLI)"] --> Hybrid["BM25 Keyword + Vector Search"]
-        Hybrid --> LLM["Qwen 2.5-Coder Rerank & Synthesis"]
-        LLM --> Response["Verifiable Answer + Direct Quotes"]
+    Candidates --> AuthGate{"2. Warning Authorization Gate<br/>(PR #7 Contract)"}
+
+    subgraph AuthGateCriteria["Mandatory Authorization Invariants"]
+        C1["REJECTED state is database-enforced with non-model authority"]
+        C2["VERIFIED_EXACT RULING span belongs to this exact alternative"]
+        C3["Active code anchor and unambiguous lineage match this alternative"]
+        C4["Independent AST/CST equivalence confirms the rejected construct"]
     end
+
+    AuthGate --> AllPass{"Do ALL Invariants Pass?"}
+    AllPass -- No --> Abstain["ABSTAIN (Silent Log)"]
+    AllPass -- Yes --> ModeCheck{"Execution Mode"}
+    
+    ModeCheck -- "AUDIT_DRY_RUN (Default)" --> AuditLog["Log Warning to pr_watchdog_audit_log"]
+    ModeCheck -- "INTERACTIVE_HITL" --> HITL["Post Switch HITL Card (Slack/Discord)"]
+    ModeCheck -- "PRODUCTION_COMMENT" --> PostPR["Post Verifiable In-Line Review Comment"]
 ```
 
-### Mode 1: Automated PR Diff Watchdog
-1. **Trigger:** A pull request is opened or updated on GitHub.
-2. **AST Parsing:** Tree-sitter extracts changed function signatures, class definitions, and AST nodes from the `git diff`.
-3. **Symbol Matching:** Direct query against `code_anchors` for any matching `symbol_name`.
-4. **Semantic Embedding Search:** Modified code chunks are embedded and queried against `decision_alternatives`.
-5. **False-Positive Guardrail:**
-   - **Threshold:** Cosine similarity must be $\ge 0.82$.
-   - **Status Check:** Must be marked `status = 'REJECTED'`.
-   - **Context Verification:** Modified code must overlap with either an AST symbol anchor or relevant technical keywords.
-6. **Action:** Posts an actionable PR comment citing the rejected decision, author, and permalink.
-
-### Mode 2: Interactive Knowledge Query (Developer Chat / CLI)
-1. **Trigger:** Developer asks in CNCF Slack/Discord (via Switch) or the CLI:  
-   *`"Why didn't we use coalesce() for null handling?"`*
-2. **Hybrid Search:** Combines BM25 keyword matching (for exact terms like `coalesce`) with HNSW vector search (for semantic meaning like `eager fallback functions`).
-3. **Synthesis:** `Qwen 2.5-Coder-7B` formats the retrieved records into a concise explanation with citations:
-   > *"The `coalesce()` proposal was evaluated in PEP-505 and **rejected** because Python's eager evaluation evaluates all arguments before calling the function, breaking short-circuiting. Fatal objection by Mark Shannon in [post-112](https://discuss.python.org/t/.../112)."*
-
----
-
-## 5. Idempotency & Data Ingestion Guarantees
-
-- **Upsert Safety:** All ingestion pipelines execute `INSERT ... ON CONFLICT (source_platform, external_id) DO UPDATE`.
-- **Zero Duplicate Alternatives:** Proposals are slugified and keyed against `(decision_id, proposal_text)`.
-- **Traceability Guarantee:** No decision alternative is stored without both an exact verbatim `citation_quote` and a valid `citation_url`.
+### Warning Authorization Invariants & Abstention Rules:
+1. **Decision State:** The alternative must be `REJECTED`; disputed, unresolved, proposed, or merely objected-to alternatives always abstain.
+2. **Authoritative Ruling:** A database trigger requires `VERIFIED_EXACT` `RULING` evidence linked to this exact alternative and authored by an identified authority. Consensus/working-group rulings require distinct verified sign-offs. Model inference is never authority.
+3. **Alternative-Specific Code Grounding:** The PR diff must touch an active anchor bound to the same alternative, with complete and non-ambiguous lineage evidence.
+4. **Independent Structural Verification:** AST/CST comparison must establish that the PR introduces the rejected construct. A vector similarity score cannot authorize a warning.
+5. **Hard Negatives and Abstention:** Accepted constructs, formatting-only refactors, parser errors, unknown versions, split/ambiguous lineage, or missing mapping evidence cause abstention.
+6. **Human Authorization:** Production comments require approval bound to the exact repository, PR, commit, alternative, and rendered comment payload. Audit/dry-run remains the default.

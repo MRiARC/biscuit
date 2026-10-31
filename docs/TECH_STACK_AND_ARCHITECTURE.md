@@ -1,0 +1,247 @@
+# Tech Stack Decision and Core Architecture Specification
+
+**Project:** Biscuit — Open Source Decision Intelligence and Knowledge Recovery  
+**Team:** Chole Bhature (`@mriarc-08`, `@daksheshsharma2409`, `@utksh1`)  
+**Scope:** Core Language Selection, Model Portfolio, Inference Memory Management, System Architecture, and Module Implementation Contracts.  
+**Specification Level:** Implementation Contract (Consolidated with Issue #5 and PR #7 review requirements).
+
+---
+
+## 1. Executive Summary & Constraint Checklist
+
+Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge Recovery** by:
+1. Mining historical engineering debates across Discourse, mailing lists, and GitHub PR reviews to recover rejected technical alternatives and causal rationales.
+2. Grounding decisions into codebase AST symbols across historical refactors and renames.
+3. Intercepting modern CNCF Slack/Discord discussions via **Switch** to capture living decisions before code is committed.
+4. Guarding active pull requests against re-introducing rejected architectural antipatterns without alert fatigue.
+
+### Strict Hackathon Operational Constraints:
+- **Open-Source Models Only:** Strictly zero proprietary cloud APIs (no OpenAI, no Anthropic, no Google Gemini API in production runtime).
+- **Hardware Memory Boundary:** 8 GB complete-system RAM acceptance target. The budget below is an unmeasured planning estimate, not demonstrated compliance.
+- **Offline & Local Execution Scope:** Local model inference, vector search, AST parsing, and evaluation benchmarks execute completely offline without internet access. Live chat interception via Switch and GitHub PR webhook sync require network connectivity.
+
+---
+
+## 2. Tech Stack Selection & Architectural Justifications
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                          BISCUIT TECH STACK                            │
+├────────────────────────────────────────────────────────────────────────┤
+│  Layer               Technology Choice        Rationale                │
+├────────────────────────────────────────────────────────────────────────┤
+│  Core Language       Python >=3.11           3.12 recommended; native │
+│                                               Tree-sitter bindings     │
+│  Data Modeling       Pydantic v2 + SQLModel   Rust-backed validation,  │
+│                                               strict schema contracts  │
+│  Relational + Vector PostgreSQL 16 + pgvector Scalable hybrid search,  │
+│                      (Docker container)       HNSW indexing            │
+│  Unit Test DB        SQLite (in-memory)       Portable logic tests only│
+│  Syntax Parsing      Tree-sitter (CST) +      Multi-language CST shape │
+│                      Python ast (AST)         concrete syntax trees    │
+│  Embedding Model     nomic-embed-text-v1.5    Matryoshka 768d, ~275MB  │
+│  Pipeline Models     Llama 3.2 3B (Pass 1)    Proposal discovery       │
+│  (Local Quantized)   Phi-3.5-mini (Pass 3)    Objection extraction     │
+│                      Qwen 2.5-Coder 7B        Spans, Anchors, Watchdog │
+│  Inference Runtime   Ollama / llama.cpp       Dynamic model swap,      │
+│                                               weights estimate only    │
+│  CLI & UX            Typer + Rich             Target scorecard outputs │
+│  Agent Bridge        MCP Protocol + FastMCP   Seamless Switch hook     │
+│  CI / Testing        Pytest + GitHub Actions  Automated matrix checks  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Why Python 3.11+ (3.12 Recommended) Over Golang:
+
+1. **Native Parity with Switch:**
+   Inspection of [`sandbox-quantum/switch` (v0.31.0)](https://github.com/sandbox-quantum/switch) demonstrates that `switch-core` is built directly on **Python 3.12, FastAPI, Pydantic v2, SQLAlchemy Async, and MCP**. Choosing Python ensures 1:1 data model compatibility and allows Biscuit to run as a native Python agent or FastMCP service with zero translation friction.
+2. **The LLM Latency Bottleneck:**
+   **Unmeasured hypothesis:** Local model inference may dominate vector lookup and Python orchestration overhead. Previously stated latency and percent-of-runtime figures are not measured here. Benchmark p50/p95 stage latency and tokens/s using pinned model/runtime, hardware, input size, corpus, context length, quantization and concurrency before claiming a speed advantage.
+3. **CST & AST Tooling Separation:**
+   Tree-sitter serves as the **Concrete Syntax Tree (CST)** parser preserving full grammar tokens across C, Python, and Go without compilation friction. Python's standard library `ast` module serves as the **Abstract Syntax Tree (AST)** analyzer for deep structural visitor analysis on Python codebases.
+4. **Pydantic v2 is Powered by Rust:**
+   Core validation and serialization in Pydantic v2 are written in **Rust** (`pydantic-core`), delivering near-C speed validation without the boilerplate of Go.
+5. **Official Model Context Protocol (MCP) Ecosystem:**
+   The open **Model Context Protocol (MCP)** specification (2024-11-05) is supported natively in Python via the **FastMCP SDK** (`fastmcp>=3.2.0,<4`), exactly matching Switch's platform dependencies.
+
+---
+
+## 3. Local Model Portfolio & Sequential Memory Management
+
+To target 8 GB system memory (not yet demonstrated), the design proposes sequential model loading:
+
+```
+Time-Sliced Model Execution Schedule:
+┌────────────────────────────────────────────────────────┐
+│ Phase 1: Ingestion & Pass 1                            │
+│ [nomic-embed (~275MB)] + [Llama-3.2-3B (~2.0GB)]       │ Model Peak: ~2.3 GB
+├────────────────────────────────────────────────────────┤
+│ Phase 2: Argument Mining & Pass 3                      │
+│ [nomic-embed (~275MB)] + [Phi-3.5-mini (~2.2GB)]       │ Model Peak: ~2.5 GB
+├────────────────────────────────────────────────────────┤
+│ Phase 3: MADR Synthesis, Code Grounding & PR Watchdog  │
+│ [nomic-embed (~275MB)] + [Qwen-2.5-Coder-7B (~4.4GB)]  │ Model Peak: ~4.7 GB
+└────────────────────────────────────────────────────────┘
+```
+
+* **Full-Stack System-Memory Budget (unmeasured, single-worker planning allocation):**
+  - OS, host daemons, and system cache: ~1.50 GB
+  - PostgreSQL 16 + pgvector (Docker): ~0.35 GB
+  - Python runtime and async services: ~0.25 GB
+  - Resident `nomic-embed-text-v1.5` model: ~0.28 GB
+  - Qwen 2.5-Coder 7B Q4_K_M model weights: ~4.40 GB
+  - KV cache and context overhead: ~0.30 GB **placeholder**, not measured for a fixed context/runtime
+  - **Estimated system-memory total:** **~7.08 GB** (`1.50 + 0.35 + 0.25 + 0.28 + 4.40 + 0.30`), with nominal 0.92 GB arithmetic headroom. Proposed first profile: Q4_K_M, one worker/request, 2,048-token Qwen context, batch <=128, CPU-only 8 GB host. Measure full-host peak RAM, per-process RSS/PSS, KV/cache use, swap/OOM, warm/cold offload and runtime buffers; this number is not a guarantee.
+* **Sequential execution (planned):** Request unload using Ollama `keep_alive: 0` or equivalent and verify release of weights/buffers before the next model; embedding+Qwen residency depends on observed whole-host limits.
+
+---
+
+**CI scope:** SQLite/Python smoke tests validate portable logic only. In the implementation PR, run PostgreSQL 16 + pgvector schema/migration integration tests for HNSW, composite FKs, JSONB, provenance triggers, project-scoped rulings/HITL and atomic lifecycle audit events. See [tech-stack acceptance requirements](./TECH_STACK.md).
+
+## 4. Upgraded Core Implementation Architecture
+
+> [!IMPORTANT]
+> The complete, end-to-end blueprint detailing both **Pillar 1: The Past (Historical Knowledge Recovery)** and **Pillar 2: Day 1+ (Living Decision Intelligence & Switch FastMCP)** is documented in [`docs/TWO_PILLAR_ARCHITECTURE.md`](./TWO_PILLAR_ARCHITECTURE.md).
+
+```mermaid
+flowchart TD
+    %% Historical Stream
+    subgraph S1["1. PILLAR 1: UNIVERSAL INGESTION & IMMUTABLE PROVENANCE"]
+        Raw["Raw Discussion Threads<br/>(Discourse, GitHub, Mailing Lists)"] --> Ingest["Universal Adapters"]
+        Ingest --> DB_Msg[("source_threads<br/>source_messages")]
+        DB_Msg --> DB_Ver[("source_message_versions<br/>(Monotonic v1..vN, SHA-256,<br/>raw_content BYTE-FOR-BYTE EXACT)")]
+    end
+
+    subgraph S2["2. TYPED DELIBERATION GRAPH & RECURRENCE TRACKING"]
+        DB_Ver --> CleanView["Derived Deliberation View<br/>(Prune quotes, bots, bumps)"]
+        CleanView --> EdgeBuilder["Deliberation Graph Builder<br/>(discussion_edges: PROPOSES, OBJECTS,<br/>REBUTS, RESOLVES, REFERENCES)"]
+        EdgeBuilder --> OccurCheck{"Proposal Recurrence?<br/>(Candidate Cosine >= 0.90)"}
+        OccurCheck -- Yes --> OccurDB[("proposal_occurrences<br/>(Proposed recurrence,<br/>human link confirmation required)")]
+        OccurCheck -- No --> Slicer["Deliberation DAG Slicer<br/>(Extracts focused proposal subgraphs)"]
+    end
+
+    subgraph S3["3. 4-PASS DELIBERATION PIPELINE (<8GB RAM)"]
+        Slicer --> P1["Pass 1: Proposal Extractor (Llama 3.2 3B)"]
+        P1 --> P2["Pass 2: Deliberation Slicer (Deterministic Graph)"]
+        P2 --> P3["Pass 3: Objection vs Ruling Miner (Phi-3.5-mini)"]
+        P3 --> P4["Pass 4: Schema & Span Locator (Qwen 2.5-Coder 7B)"]
+        P4 --> ExtAudit[("extraction_runs<br/>(Audit trail: models, prompt hash,<br/>thread snapshot SHA)")]
+    end
+
+    subgraph S4["4. PROVENANCE VERIFIER & CODE GROUNDING"]
+        P4 --> Verifier{"Zero-Based Offset Verifier<br/>raw_content[start:end] == quote?"}
+        Verifier -- 100% Match --> SpanExact[("evidence_spans<br/>(VERIFIED_EXACT)")]
+        Verifier -- Mismatch/Edit --> SpanUnver[("evidence_spans<br/>(UNVERIFIED / STALE_EDITED)")]
+        SpanExact --> RelStore[("PostgreSQL 16 + pgvector<br/>• decisions (resolution_status)<br/>• decision_alternatives (lifecycle)<br/>• arguments (decoupled objections)<br/>• Typed FKs & CHECK constraint")]
+        RelStore --> ASTGround["Tree-sitter CST + Python AST Linker<br/>(Maps alternative to code symbols)"]
+        ASTGround --> FwdGit["Forward Commit-DAG Lineage Engine<br/>(git diff-tree -M80% -C -B + AST tracking)"]
+        FwdGit --> Anchors[("code_anchors + code_anchor_lineage<br/>(HISTORICAL ➔ MIGRATED / CURRENT)")]
+    end
+
+    %% Day 1+ Live Stream
+    subgraph S6["6. PILLAR 2: DAY 1+ LIVING INTELLIGENCE (SWITCH FASTMCP)"]
+        LiveChat["Live Chat (CNCF Slack, Discord)"] --> SwitchHook["Switch FastMCP Gateway"]
+        SwitchHook --> LiveBuffer["Live Deliberation Window Buffer"]
+        LiveBuffer --> ConsensusDetect{"Consensus Heuristic or<br/>@biscuit record-decision"}
+        ConsensusDetect --> LiveDraft["Synthesize living_decision_drafts"]
+        LiveDraft --> SwitchHITL["Switch Block Kit Approval Card"]
+        SwitchHITL -- Maintainer Approves --> RelStore
+    end
+
+    subgraph S5["5. PR DIFF WATCHDOG & GUARDRAIL GATE"]
+        PR["Incoming GitHub PR Diff"] --> ASTDiff["Tree-sitter Diff Inspector"]
+        ASTDiff --> HybridSearch["Candidate Retrieval<br/>• AST Symbol Anchor Lookup<br/>• nomic-embed Cosine Match (Signal Only)"]
+        Anchors --> HybridSearch
+        RelStore --> HybridSearch
+        HybridSearch --> Gate{"Warning Authorization Gate<br/>1. lifecycle_status == REJECTED<br/>2. ruling_evidence == VERIFIED_EXACT (Human Authority)<br/>3. Code anchor matches THIS alternative<br/>4. AST structural equivalence verified"}
+        Gate -- All Pass --> Mode{"Execution Mode"}
+        Gate -- Uncertain/Disputed --> Abstain["ABSTAIN (Silent Log)"]
+        Mode -- AUDIT_DRY_RUN --> AuditLog[("pr_watchdog_audit_log")]
+        Mode -- INTERACTIVE_HITL --> SwitchAgent["Switch Agent Bridge"]
+        SwitchAgent --> SlackHITL["Slack / Discord Interactive Approval Card"]
+        SlackHITL --> PostPR["In-Line GitHub PR Review Comment"]
+    end
+```
+
+---
+
+## 5. Detailed Component Breakdown ("How, Why, and When")
+
+### Module 1: `biscuit.ingest` (Universal Ingestion & Versioning)
+* **When:** Ingesting historical archives or streaming live webhook payloads.
+* **How:** Ingests source threads and exact decoded message-content fields into `source_threads`, `source_messages`, and append-only `source_message_versions`. It preserves original line endings and Unicode; `content_hash` is SHA-256 over the UTF-8 bytes of exact `raw_content`. CRLF normalization/noise filtering occurs only in derived views, never in source hashes or evidence offsets. Remote edits/deletions append new versions or tombstones while retaining prior captures.
+* **Why:** Guarantees tamper-proof provenance. Evidence spans link directly to `source_message_version_id`, preventing broken citations when forum posts are edited years later.
+
+### Module 2: `biscuit.deliberation` (Graph Reconstruction & Occurrences)
+* **When:** Post-ingestion graph construction.
+* **How:**
+  1. Prunes blockquotes, machine bots, and administrative bumps into a derived secondary view.
+  2. Constructs `discussion_edges` with explicit technical semantics (`PROPOSES`, `SUPPORTS`, `OBJECTS`, `REBUTS`, `RESOLVES`, `REFERENCES`) and explicit target/evidence relationships. Model inference may propose semantic edges, but a `RESOLVES` edge requires verified human `RULING` evidence and non-model provenance.
+  3. Evaluates discovered proposals against existing alternatives. Candidate cosine similarity $\ge 0.90$ may create a `PROPOSED_RECURRENCE` entry in `proposal_occurrences` only; it does not confirm identity, merge alternatives, or change lifecycle state. A human confirms the link, and the exact occurrence is referenced by `decision_event_log`.
+* **Why:** Preserves the multi-year timeline of recurring proposals while preventing mentions or replies from being misinterpreted as objections.
+
+### Module 3: `biscuit.extract` (Multi-Pass Local LLM Pipeline)
+* **When:** Deliberation argument mining.
+* **How:** Executes the 4-Pass protocol sequentially:
+  * **Pass 1 (`llama-3.2-3b-instruct`):** Discovers candidate proposals and alternative syntaxes.
+  * **Pass 2 (Deterministic DAG Slicer):** Traces `discussion_edges` to produce isolated sub-threads per proposal.
+  * **Pass 3 (`phi-3.5-mini-instruct`):** Classifies comments into individual `arguments` (objections/support) versus authoritative `ruling_evidence` (maintainer consensus). `MODEL_INFERRED` is never treated as an authoritative ruling.
+  * **Pass 4 (`qwen2.5-coder-7b-instruct`):** Synthesizes MADR records and identifies zero-based character offsets `[start_char, end_char)`.
+  * Logs model revisions, prompt/template hash, source snapshot digest, schema version, deterministic slicer/normalizer versions and parameters, seeds, decoding settings, runtime options, canonical run-config digest, and environment-lock digest into `extraction_runs`.
+* **Why:** Decouples individual objections from formal rejections and ensures 100% reproducible execution runs.
+
+### Module 4: `biscuit.provenance` (Zero-Based Substring Verifier)
+* **When:** Immediately post-Pass 4 extraction.
+* **How:** Queries `source_message_versions.raw_content` and verifies:
+  $$\text{raw\_content}[start\_char:end\_char] == exact\_quote \quad \land \quad \text{sha256}(\text{UTF8}(exact\_quote)) == content\_hash$$
+  * If true: Promotes status from default `UNVERIFIED` to `VERIFIED_EXACT`.
+  * If false: Marks `UNVERIFIED` or `STALE_EDITED`.
+* **Why:** Eliminates hallucinated quotations. Only `VERIFIED_EXACT` spans signed by human maintainers can ever authorize a PR warning.
+
+### Module 5: `biscuit.grounding` (AST Anchors & Forward DAG Lineage)
+* **When:** Indexing time and PR diff analysis.
+* **How:**
+  * Parses concrete syntax trees with `tree-sitter` and abstract syntax trees with Python `ast`.
+  * Attaches code anchors directly to `decision_alternatives(id)`.
+  * **Forward DAG Traversal:** When the historical commit is an ancestor of modern `HEAD`, enumerates the reachable commit DAG topologically and compares every commit with each parent, including every merge parent. It records parent/commit IDs, patch/tree digest, symbol evidence, and exact parser/grammar/normalization versions. If the historical commit is not an ancestor or viable parent histories diverge, Biscuit marks the lineage unresolved and abstains rather than inventing a path.
+* **Why:** Resolves historical anchors when recorded lineage and structural evidence support a unique path; otherwise preserves uncertainty and abstains.
+
+### Module 6: `biscuit.watchdog` (PR Diff Watchdog & Guardrail Gate)
+* **When:** Triggered on pull request opening or commit update.
+* **How:** Inspects PR diffs, extracts modified AST symbols and hunks, and queries candidates. Authorizes a warning **if and only if all 4 invariants hold**:
+  1. `lifecycle_status == 'REJECTED'`
+  2. `ruling_evidence_id` is a `VERIFIED_EXACT` `RULING` span for this alternative, authored by an authorized human (`BDFL`, `CORE_MAINTAINER_CONSENSUS`, or `WORKING_GROUP` with the required sign-offs).
+  3. PR diff modifies the active `code_anchor` bound directly to that specific alternative.
+  4. AST structural equivalence confirms the modified code matches the rejected pattern (not an accepted language construct).
+  * Operates in `AUDIT_DRY_RUN` mode by default, logging to `pr_watchdog_audit_log`.
+* **Why:** Designed to achieve zero comment spam and 0.0% false alarm rate on benign refactors.
+
+### Module 7: `biscuit.switch_agent` (Switch FastMCP Bridge & Day 1+ Living Intelligence)
+* **When:** Continuous daemon / MCP bridge.
+* **How:** Exposes FastMCP endpoints (`query_decisions`, `check_pr_diff`, `draft_living_decision`) to `sandbox-quantum/switch`. When maintainers debate in Slack or Discord, Switch streams messages to Biscuit to create living ADR drafts in `living_decision_drafts`. In `INTERACTIVE_HITL` mode, PR warnings and decision approvals are routed to Slack/Discord Block Kit cards via `hitl_approval_requests` for maintainer confirmation before commenting or publishing.
+* **Why:** Connects Biscuit to living team communication channels without writing bespoke bot code for every platform. Fully detailed in [`docs/LIVING_DECISION_INTELLIGENCE.md`](./LIVING_DECISION_INTELLIGENCE.md).
+
+### Module 8: `biscuit.evaluate` (Reproducible Benchmark Harness)
+* **When:** CI/CD test runs and validation benchmarks.
+* **How:** Executes the withheld canonical benchmark suite (PEP 505, PEP 572, PEP 557) and the 20-PR held-out test suite. Computes the quantitative metric suites (Proposal F1, Multi-Class State Accuracy, Exact Evidence EMR, AST Grounding Precision, Causal Rationale CRA, and PR Warning Precision). Emits auditable terminal tables and JSON scorecards.
+* **Why:** Designed to target 100% exact evidence fidelity and 0.0% false rejections upon execution against labeled benchmarks.
+
+---
+
+## 6. Implementation PR Sequence
+
+```
+Implementation Sequence:
+├── PR #7: (OPEN) Architecture Specifications & Data Contracts (Follow-up Review)
+├── PR #8: Core Database Models & Migrations (SQLModel, PostgreSQL/pgvector, typed FKs)
+├── PR #9: Ingestion Engine & Message Versioning (Discourse/GitHub adapters, SHA-256 hasher)
+├── PR #10: Deliberation Graph & Recurrence Tracker (discussion_edges, proposal_occurrences)
+├── PR #11: Multi-Pass Local LLM Pipeline (Ollama client, sequential memory loader, prompts)
+├── PR #12: Provenance Verifier & Offset Matcher (Substring verification, UNVERIFIED default)
+├── PR #13: Tree-sitter Code Grounding & Forward DAG Lineage (AST symbol queries, git diff-tree -M)
+├── PR #14: PR Diff Watchdog & Guardrail Authorization (4 Invariants, dry-run audit logging)
+├── PR #15: Switch FastMCP Server Integration (MCP tools, Slack/Discord HITL approval cards)
+└── PR #16: PEP 505 Benchmark Fixtures & CLI Runner (Reproducible evaluation suite, scorecards)
+```
