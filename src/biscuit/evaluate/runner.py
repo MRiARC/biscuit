@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .audit import write_pr_audit
 from .fixtures import (
     DEFAULT_FIXTURE_ROOT,
     load_ground_truth,
@@ -38,6 +40,7 @@ def run_benchmark(
     predictor: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     fixtures_root: Path | None = None,
     output_path: Path | None = None,
+    audit_db: Path | None = None,
 ) -> BenchmarkOutcome:
     """Score supplied predictions without passing labels or official PEP text to extraction.
 
@@ -120,6 +123,16 @@ def run_benchmark(
         anchors = ast_grounding_precision(found_anchors, truth_anchors)
         rationale = causal_rationale_alignment(found_vectors, truth_vectors)
         watchdog = pr_warning_metrics(labels, predictions.get("warned_pr_ids", []))
+        if audit_db is not None:
+            run_hash = hashlib.sha256(
+                json.dumps(
+                    predictions, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            write_pr_audit(
+                audit_db, benchmark_id=benchmark_id,
+                run_sha256=run_hash, rows=watchdog["audit_rows"],
+            )
         metrics = (
             _metric("Proposal recovery F1", recovery["f1"], 0.85, len(truth_states)),
             _metric("Lifecycle state accuracy", state["accuracy"], 0.80, state["total"]),
