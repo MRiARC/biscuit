@@ -624,6 +624,7 @@ class ExtractionPipeline:
             "evidence_spans_count": len(evidence_spans),
             "verified_spans_count": len(verified_spans),
             "unanchored_warnings": unanchored_warnings,
+            "pass4_validation_warnings": madr.validation_warnings,
             "unpersisted_candidate_targets": unpersisted_candidate_targets,
             "has_unpersisted_target_ids": bool(unpersisted_candidate_targets),
             "downgraded_rejections": downgraded_rejections,
