@@ -7,6 +7,8 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .authorization import verify_production_warning
+
 JUDGED_STATES = frozenset({
     "ACCEPTED", "REJECTED", "UNRESOLVED", "DISPUTED",
     "WITHDRAWN", "DEFERRED", "SUPERSEDED", "ACCEPTED_WITH_MODIFICATION",
@@ -259,8 +261,16 @@ def pr_warning_metrics(
     warning_records: Sequence[Mapping[str, Any]] | None = None,
     expected_alternatives: Mapping[str, str] | None = None,
     expected_rulings: Mapping[str, Mapping[str, str]] | None = None,
+    trusted_ruling_proofs: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    verified_project_roles: Mapping[str, str] | None = None,
+    allow_simulated_authorization: bool = True,
 ) -> dict[str, Any]:
-    """Labels are an evaluation-only input and must never reach the predictor."""
+    """Compare warnings with withheld labels and independent ruling evidence.
+
+    Scorer-side trusted_ruling_proofs and verified_project_roles are never
+    supplied by the prediction generator. Synthetic proof credit is restricted
+    by the benchmark runner to explicitly labeled synthetic runs.
+    """
     if set(labels.values()) - {"violation", "benign", "ambiguous"}:
         raise ValueError("Unknown PR fixture class")
     if len(set(warned_ids)) != len(warned_ids):
@@ -287,21 +297,30 @@ def pr_warning_metrics(
     for case_id in warned & violations:
         record = supplied_records.get(case_id)
         if warning_records is None:
-            # Legacy ID-list scoring is retained solely for standalone equation tests.
-            # Benchmark runs must provide warning_records for authorization credit.
+            # Retain the mathematical ID-only test helper; the runner always
+            # supplies records, so this branch never credits live benchmarks.
             correct_warnings.add(case_id)
-        elif (
-            expected_alternatives is not None
-            and record is not None
-            and record.get("alternative_id") == expected_alternatives.get(case_id)
-            and record.get("authorization") == "SIMULATED_VERIFIED_RULING"
-            and expected_rulings is not None
-            and record.get("ruling_source_message_id")
-            == expected_rulings.get(case_id, {}).get("ruling_source_message_id")
-            and record.get("ruling_quote_sha256")
-            == expected_rulings.get(case_id, {}).get("ruling_quote_sha256")
+            continue
+        if (
+            record is None
+            or expected_alternatives is None
+            or expected_rulings is None
+            or record.get("alternative_id") != expected_alternatives.get(case_id)
+            or record.get("ruling_source_message_id")
+            != expected_rulings.get(case_id, {}).get("ruling_source_message_id")
+            or record.get("ruling_quote_sha256")
+            != expected_rulings.get(case_id, {}).get("ruling_quote_sha256")
         ):
-            # This records a synthetic replay contract, not production ruling authority.
+            continue
+        if allow_simulated_authorization and record.get("authorization") == (
+            "SIMULATED_VERIFIED_RULING"
+        ):
+            correct_warnings.add(case_id)
+        elif verify_production_warning(
+            record,
+            trusted_proofs=trusted_ruling_proofs,
+            verified_project_roles=verified_project_roles,
+        ):
             correct_warnings.add(case_id)
 
     tp = len(correct_warnings)
