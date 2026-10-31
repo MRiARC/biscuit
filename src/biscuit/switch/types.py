@@ -18,6 +18,7 @@ and ``docs/STORAGE_AND_RETRIEVAL.md`` sections 12–14:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import uuid
@@ -163,6 +164,9 @@ class HITLApprovalRequest:
     target_commit_sha: str | None = None
     living_draft_id: str | None = None
     decision_alternative_id: str | None = None
+    # Derived from trusted target decision/thread data; mandatory for approval
+    # finalization when no PR repository is present.
+    project_context: str | None = None
     callback_hmac_secret_id: str = "switch-callback-secret-1"
     expires_at: datetime | None = None
     created_at: datetime | None = None
@@ -173,10 +177,14 @@ class HITLApprovalRequest:
             self.created_at = now
         if self.expires_at is None:
             self.expires_at = self.created_at + timedelta(hours=APPROVAL_TTL_HOURS)
+        # Capture the action digest once: callers must never silently change
+        # the authorized body by mutating the card dictionary later.
+        self.card_rendered_payload = copy.deepcopy(self.card_rendered_payload)
+        self._pinned_payload_sha256 = compute_sha256_hex(canonical_json(self.card_rendered_payload))
 
     @property
     def action_payload_sha256(self) -> str:
-        return compute_sha256_hex(canonical_json(self.card_rendered_payload))
+        return self._pinned_payload_sha256
 
     def is_expired(self, now: datetime | None = None) -> bool:
         now = now or datetime.now(UTC)
@@ -194,6 +202,7 @@ class HITLApprovalRequest:
             "target_commit_sha": self.target_commit_sha,
             "living_draft_id": self.living_draft_id,
             "decision_alternative_id": self.decision_alternative_id,
+            "project_context": self.project_context,
             "authorized_roles": list(self.authorized_roles),
             "action_payload_sha256": self.action_payload_sha256,
             "expires_at": self.expires_at.isoformat(),
