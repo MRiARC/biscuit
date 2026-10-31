@@ -234,7 +234,8 @@ CREATE TABLE source_messages (
     canonical_permalink TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT uq_source_message UNIQUE (thread_id, external_message_id),
-    CONSTRAINT uq_source_message_id_thread UNIQUE (id, thread_id)
+    CONSTRAINT uq_source_message_id_thread UNIQUE (id, thread_id),
+    CONSTRAINT uq_source_message_author_thread UNIQUE (id, thread_id, author_id)
 );
 
 CREATE INDEX idx_source_messages_thread ON source_messages(thread_id);
@@ -256,10 +257,13 @@ CREATE TABLE source_message_versions (
     derived_normalized_content TEXT,       -- Optional normalized retrieval view; never used for evidence
     derived_cleaned_content TEXT,          -- Noise-filtered view; never used for evidence
     CONSTRAINT uq_message_version UNIQUE (message_id, version_number),
-    CONSTRAINT uq_message_version_id_message UNIQUE (id, message_id)
+    CONSTRAINT uq_message_version_id_message UNIQUE (id, message_id),
+    CONSTRAINT chk_message_version_number CHECK (version_number >= 1),
+    CONSTRAINT chk_message_content_hash CHECK (content_hash ~ '^[0-9a-fA-F]{64}$')
 );
 
 -- At most one version may be current for a message; rotate it transactionally.
+-- At most one version is current; a deferred trigger below also requires exactly one at commit.
 CREATE UNIQUE INDEX uq_message_single_current ON source_message_versions(message_id) WHERE is_current = TRUE;
 
 -- ─────────────────────────────────────────────────────────────
@@ -312,7 +316,7 @@ CREATE TABLE discussion_edges (
           AND target_decision_id IS NULL AND target_alternative_id IS NULL
         )
     )
-)
+);
 
 CREATE INDEX idx_edges_thread ON discussion_edges(source_thread_id);
 CREATE INDEX idx_edges_nodes ON discussion_edges(from_message_id, to_message_id);
@@ -479,7 +483,7 @@ CREATE TABLE code_anchor_lineage (
     CONSTRAINT chk_lineage_confidence CHECK (confidence_score IS NULL OR (confidence_score >= 0.0 AND confidence_score <= 1.0)),
     CONSTRAINT chk_lineage_evidence_object CHECK (jsonb_typeof(mapping_evidence) = 'object' AND mapping_evidence <> '{}'::jsonb),
     CONSTRAINT uq_anchor_lineage_transition UNIQUE (code_anchor_id, transition_commit_sha, compared_parent_sha, historical_path)
-)
+);
 
 -- ─────────────────────────────────────────────────────────────
 -- 7. EXACT EVIDENCE SPANS (ANTI-HALLUCINATION PROOF)
@@ -516,19 +520,22 @@ CREATE TABLE evidence_spans (
         num_nonnulls(decision_id, alternative_id, argument_id, code_anchor_id) = 1
     ),
     CONSTRAINT chk_char_offsets CHECK (start_char >= 0 AND end_char > start_char),
+    CONSTRAINT chk_evidence_hash CHECK (content_hash ~ '^[0-9a-fA-F]{64}$'),
     CONSTRAINT uq_evidence_id_alternative UNIQUE (id, alternative_id),
+    CONSTRAINT uq_evidence_id_decision UNIQUE (id, decision_id),
+    CONSTRAINT uq_evidence_id_argument UNIQUE (id, argument_id),
     CONSTRAINT uq_evidence_edge_source UNIQUE (id, alternative_id, source_message_version_id)
 );
 
 -- Foreign Key Back-Links for Authoritative Rulings
-ALTER TABLE decisions ADD CONSTRAINT fk_decisions_ruling_evidence 
-FOREIGN KEY (ruling_evidence_id) REFERENCES evidence_spans(id) ON DELETE RESTRICT;
+ALTER TABLE decisions ADD CONSTRAINT fk_decisions_ruling_evidence
+FOREIGN KEY (ruling_evidence_id, id) REFERENCES evidence_spans(id, decision_id) ON DELETE RESTRICT;
 
-ALTER TABLE decision_alternatives ADD CONSTRAINT fk_alternatives_ruling_evidence 
-FOREIGN KEY (ruling_evidence_id) REFERENCES evidence_spans(id) ON DELETE RESTRICT;
+ALTER TABLE decision_alternatives ADD CONSTRAINT fk_alternatives_ruling_evidence
+FOREIGN KEY (ruling_evidence_id, id) REFERENCES evidence_spans(id, alternative_id) ON DELETE RESTRICT;
 
-ALTER TABLE arguments ADD CONSTRAINT fk_arguments_evidence 
-FOREIGN KEY (evidence_span_id) REFERENCES evidence_spans(id) ON DELETE RESTRICT;
+ALTER TABLE arguments ADD CONSTRAINT fk_arguments_evidence
+FOREIGN KEY (evidence_span_id, id) REFERENCES evidence_spans(id, argument_id) ON DELETE RESTRICT;
 
 -- ─────────────────────────────────────────────────────────────
 -- 8. PROPOSAL OCCURRENCE TRACKING (RECURRENCE RECOVERY)
@@ -552,11 +559,11 @@ CREATE TABLE proposal_occurrences (
         REFERENCES source_messages(id, thread_id) ON DELETE RESTRICT,
     CONSTRAINT fk_occurrence_message_version FOREIGN KEY (initiating_message_version_id, initiating_message_id)
         REFERENCES source_message_versions(id, message_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_occurrence_evidence_alternative FOREIGN KEY (linkage_evidence_span_id, alternative_id)
-        REFERENCES evidence_spans(id, alternative_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_occurrence_evidence_alternative FOREIGN KEY (linkage_evidence_span_id, alternative_id, initiating_message_version_id)
+        REFERENCES evidence_spans(id, alternative_id, source_message_version_id) ON DELETE RESTRICT,
     CONSTRAINT chk_occurrence_similarity CHECK (linkage_similarity IS NULL OR (linkage_similarity >= 0.0 AND linkage_similarity <= 1.0)),
     CONSTRAINT uq_occurrence_alt_thread UNIQUE (id, alternative_id, source_thread_id)
-)
+);
 
 CREATE INDEX idx_occurrences_alt ON proposal_occurrences(alternative_id);
 CREATE INDEX idx_occurrences_thread ON proposal_occurrences(source_thread_id);
@@ -588,8 +595,10 @@ CREATE TABLE extraction_runs (
     started_at TIMESTAMPTZ DEFAULT NOW(),
     completed_at TIMESTAMPTZ,
     CONSTRAINT chk_extraction_run_config_object CHECK (jsonb_typeof(run_config) = 'object' AND run_config <> '{}'::jsonb),
-    CONSTRAINT chk_extraction_config_hash CHECK (length(run_config_sha256) = 64),
-    CONSTRAINT chk_extraction_environment_hash CHECK (length(environment_lock_sha256) = 64)
+    CONSTRAINT chk_extraction_config_hash CHECK (run_config_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_extraction_environment_hash CHECK (environment_lock_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_extraction_source_snapshot_hash CHECK (source_thread_snapshot_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_extraction_prompt_hash CHECK (prompt_templates_hash ~ '^[0-9a-fA-F]{64}$')
 );
 
 -- ─────────────────────────────────────────────────────────────
@@ -632,11 +641,13 @@ CREATE TABLE decision_event_log (
         event_type <> 'RECURRENCE_RECORDED'
         OR (proposal_occurrence_id IS NOT NULL AND source_thread_id IS NOT NULL)
     ),
+    CONSTRAINT chk_decision_event_type CHECK (event_type IN ('STATUS_CHANGE', 'RULING_OVERTURNED', 'RECURRENCE_RECORDED', 'RECURRENCE_CONFIRMED')),
+    CONSTRAINT chk_recurrence_number CHECK (recurrence_number >= 1),
     CONSTRAINT fk_decision_event_occurrence FOREIGN KEY (proposal_occurrence_id, alternative_id, source_thread_id)
         REFERENCES proposal_occurrences(id, alternative_id, source_thread_id) ON DELETE RESTRICT,
     CONSTRAINT fk_decision_event_evidence FOREIGN KEY (evidence_span_id, alternative_id)
         REFERENCES evidence_spans(id, alternative_id) ON DELETE RESTRICT
-)
+);
 
 -- ─────────────────────────────────────────────────────────────
 -- 12. DAY 1+ LIVING DECISION DRAFTS (SWITCH INTERCEPTION)
@@ -666,9 +677,11 @@ CREATE TABLE living_decision_drafts (
     resolved_at TIMESTAMPTZ,
     CONSTRAINT fk_living_draft_message_thread FOREIGN KEY (initiating_message_id, source_thread_id)
         REFERENCES source_messages(id, thread_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_living_draft_author FOREIGN KEY (initiating_message_id, source_thread_id, initiating_author_id)
+        REFERENCES source_messages(id, thread_id, author_id) ON DELETE RESTRICT,
     CONSTRAINT fk_living_draft_message_version FOREIGN KEY (initiating_message_version_id, initiating_message_id)
         REFERENCES source_message_versions(id, message_id) ON DELETE RESTRICT
-)
+);
 
 CREATE TABLE living_decision_draft_evidence (
     living_draft_id UUID NOT NULL REFERENCES living_decision_drafts(id) ON DELETE RESTRICT,
@@ -704,12 +717,27 @@ CREATE TABLE hitl_approval_requests (
     target_pr_number INT,
     target_repository TEXT,
     living_draft_id UUID REFERENCES living_decision_drafts(id),
-    decision_alternative_id UUID REFERENCES decision_alternatives(id),
+    decision_alternative_id UUID REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
+    target_commit_sha VARCHAR(64),
     card_rendered_payload JSONB NOT NULL,
+    action_payload_sha256 VARCHAR(64) NOT NULL,
     authorized_roles TEXT[] NOT NULL DEFAULT ARRAY['BDFL', 'Core Maintainer'],
     callback_hmac_secret_id VARCHAR(64) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '72 hours'),
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_hitl_action_target CHECK (
+        (action_type = 'APPROVE_LIVING_DECISION' AND living_draft_id IS NOT NULL
+         AND decision_alternative_id IS NULL AND target_pr_number IS NULL
+         AND target_repository IS NULL AND target_commit_sha IS NULL)
+        OR
+        (action_type IN ('AUTHORIZE_PR_WARNING', 'DISMISS_PR_WARNING')
+         AND living_draft_id IS NULL AND decision_alternative_id IS NOT NULL
+         AND target_pr_number IS NOT NULL AND target_repository IS NOT NULL
+         AND target_commit_sha IS NOT NULL)
+    ),
+    CONSTRAINT chk_hitl_expiry CHECK (expires_at > created_at),
+    CONSTRAINT chk_hitl_action_payload_hash CHECK (action_payload_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_hitl_roles_nonempty CHECK (cardinality(authorized_roles) > 0)
 );
 
 CREATE INDEX idx_hitl_approval_switch ON hitl_approval_requests(switch_approval_id);
@@ -722,10 +750,15 @@ CREATE TABLE hitl_approval_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     approval_request_id UUID NOT NULL REFERENCES hitl_approval_requests(id) ON DELETE RESTRICT,
     actor_platform_id TEXT NOT NULL,
-    actor_contributor_id UUID REFERENCES contributors(id),
-    action_taken VARCHAR(32) NOT NULL,       -- 'APPROVE_DRAFT', 'REJECT_DRAFT', 'AUTHORIZE_PR_COMMENT', 'DISMISS_PR_COMMENT'
-    payload_signature VARCHAR(64) NOT NULL,  -- HMAC-SHA256 signature of callback payload
-    recorded_at TIMESTAMPTZ DEFAULT NOW()    -- Immutable append-only record
+    actor_contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    action_taken VARCHAR(32) NOT NULL,
+    payload_signature VARCHAR(64) NOT NULL,  -- HMAC-SHA256 signature, verified by the callback service before insert
+    callback_body_sha256 VARCHAR(64) NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_hitl_event_per_request UNIQUE (approval_request_id),
+    CONSTRAINT chk_hitl_event_action CHECK (action_taken IN ('APPROVE_DRAFT', 'REJECT_DRAFT', 'AUTHORIZE_PR_COMMENT', 'DISMISS_PR_COMMENT')),
+    CONSTRAINT chk_hitl_signature_format CHECK (payload_signature ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_hitl_callback_hash_format CHECK (callback_body_sha256 ~ '^[0-9a-fA-F]{64}$')
 );
 
 CREATE INDEX idx_hitl_events_request ON hitl_approval_events(approval_request_id);
@@ -825,6 +858,8 @@ CREATE TRIGGER trg_enforce_ruling_signoff
 BEFORE INSERT ON decision_alternative_ruling_signoffs
 FOR EACH ROW EXECUTE FUNCTION enforce_ruling_signoff();
 
+-- The ruling_evidence_id composite FK binds evidence to the same alternative.
+-- This trigger additionally verifies the exact quote, ruling role and human authority.
 CREATE OR REPLACE FUNCTION enforce_authoritative_alternative_rejection()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
@@ -856,8 +891,11 @@ BEGIN
             SELECT COUNT(*) INTO signoff_count FROM decision_alternative_ruling_signoffs s
               JOIN contributors c ON c.id = s.contributor_id
              WHERE s.alternative_id = NEW.id AND c.project_role = 'Core Maintainer';
-            IF signoff_count < 2 THEN
-                RAISE EXCEPTION 'CORE_MAINTAINER_CONSENSUS requires two distinct verified Core Maintainer sign-offs';
+            IF signoff_count < 2 OR NOT EXISTS (
+                SELECT 1 FROM decision_alternative_ruling_signoffs
+                 WHERE alternative_id = NEW.id AND contributor_id = NEW.ruling_actor_id
+            ) THEN
+                RAISE EXCEPTION 'CORE_MAINTAINER_CONSENSUS requires the ruling author and one additional verified Core Maintainer sign-off';
             END IF;
         ELSIF NEW.ruling_authority = 'WORKING_GROUP' THEN
             IF actor_role <> 'Working Group Chair' THEN
@@ -866,8 +904,11 @@ BEGIN
             SELECT COUNT(*) INTO signoff_count FROM decision_alternative_ruling_signoffs s
               JOIN contributors c ON c.id = s.contributor_id
              WHERE s.alternative_id = NEW.id AND c.project_role IN ('Working Group Chair', 'Working Group Member');
-            IF signoff_count < 2 THEN
-                RAISE EXCEPTION 'WORKING_GROUP authority requires two distinct verified group sign-offs';
+            IF signoff_count < 2 OR NOT EXISTS (
+                SELECT 1 FROM decision_alternative_ruling_signoffs
+                 WHERE alternative_id = NEW.id AND contributor_id = NEW.ruling_actor_id
+            ) THEN
+                RAISE EXCEPTION 'WORKING_GROUP authority requires the chair and one additional verified group sign-off';
             END IF;
         ELSE
             RAISE EXCEPTION 'Model-inferred or unknown authority cannot reject an alternative';
@@ -880,6 +921,136 @@ CREATE TRIGGER trg_authoritative_alternative_rejection
 BEFORE INSERT OR UPDATE OF lifecycle_status, ruling_evidence_id, ruling_authority, ruling_actor_id
 ON decision_alternatives
 FOR EACH ROW EXECUTE FUNCTION enforce_authoritative_alternative_rejection();
+
+
+-- Verify the source capture digest over the exact decoded UTF-8 content.
+CREATE OR REPLACE FUNCTION verify_source_message_version_hash()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF encode(digest(convert_to(NEW.raw_content, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.content_hash) THEN
+        RAISE EXCEPTION 'content_hash must be SHA-256 of exact raw_content UTF-8 bytes';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_source_message_version_hash
+BEFORE INSERT OR UPDATE OF raw_content, content_hash ON source_message_versions
+FOR EACH ROW EXECUTE FUNCTION verify_source_message_version_hash();
+
+-- Every source message must have exactly one current version at transaction commit.
+CREATE OR REPLACE FUNCTION enforce_exactly_one_current_message_version()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    target_message_id UUID;
+    current_count INT;
+BEGIN
+    IF TG_TABLE_NAME = 'source_messages' THEN
+        target_message_id := NEW.id;
+    ELSIF TG_OP = 'DELETE' THEN
+        target_message_id := OLD.message_id;
+    ELSE
+        target_message_id := NEW.message_id;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM source_messages WHERE id = target_message_id) THEN
+        RETURN NULL;
+    END IF;
+    SELECT COUNT(*) INTO current_count FROM source_message_versions
+     WHERE message_id = target_message_id AND is_current = TRUE;
+    IF current_count <> 1 THEN
+        RAISE EXCEPTION 'Each source message must have exactly one current version at transaction commit';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER trg_source_message_requires_current_version
+AFTER INSERT ON source_messages DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_exactly_one_current_message_version();
+CREATE CONSTRAINT TRIGGER trg_source_message_version_current_count
+AFTER INSERT OR UPDATE OR DELETE ON source_message_versions DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_exactly_one_current_message_version();
+
+-- Run configuration is hashed using PostgreSQL's canonical JSONB text representation.
+CREATE OR REPLACE FUNCTION verify_extraction_run_config_hash()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF encode(digest(convert_to(NEW.run_config::text, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.run_config_sha256) THEN
+        RAISE EXCEPTION 'run_config_sha256 must hash the PostgreSQL JSONB text representation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_extraction_run_config_hash
+BEFORE INSERT OR UPDATE OF run_config, run_config_sha256 ON extraction_runs
+FOR EACH ROW EXECUTE FUNCTION verify_extraction_run_config_hash();
+
+-- Validate that the exact approvable payload cannot be changed after its hash is recorded.
+CREATE OR REPLACE FUNCTION verify_hitl_action_payload_hash()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF encode(digest(convert_to(NEW.card_rendered_payload::text, 'UTF8'), 'sha256'), 'hex') <> lower(NEW.action_payload_sha256) THEN
+        RAISE EXCEPTION 'action_payload_sha256 must hash the canonical JSONB approval payload';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_verify_hitl_action_payload_hash
+BEFORE INSERT OR UPDATE OF card_rendered_payload, action_payload_sha256 ON hitl_approval_requests
+FOR EACH ROW EXECUTE FUNCTION verify_hitl_action_payload_hash();
+
+-- The HMAC is verified by the application against the raw callback body; this trigger
+-- enforces the remaining request, actor, expiry, and action-binding invariants.
+CREATE OR REPLACE FUNCTION enforce_hitl_approval_event()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    request_row hitl_approval_requests%ROWTYPE;
+    actor_platform_id TEXT;
+    actor_role TEXT;
+BEGIN
+    SELECT * INTO request_row FROM hitl_approval_requests
+     WHERE id = NEW.approval_request_id FOR UPDATE;
+    IF NOT FOUND OR request_row.status <> 'PENDING' OR request_row.expires_at <= NOW() THEN
+        RAISE EXCEPTION 'HITL request is not pending or has expired';
+    END IF;
+    SELECT platform_user_id, project_role INTO actor_platform_id, actor_role
+      FROM contributors WHERE id = NEW.actor_contributor_id;
+    IF NOT FOUND OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id
+       OR NOT (actor_role = ANY(request_row.authorized_roles)) THEN
+        RAISE EXCEPTION 'HITL actor identity or role is not authorized for this request';
+    END IF;
+    IF (request_row.action_type = 'APPROVE_LIVING_DECISION' AND NEW.action_taken NOT IN ('APPROVE_DRAFT', 'REJECT_DRAFT'))
+       OR (request_row.action_type = 'AUTHORIZE_PR_WARNING' AND NEW.action_taken <> 'AUTHORIZE_PR_COMMENT')
+       OR (request_row.action_type = 'DISMISS_PR_WARNING' AND NEW.action_taken <> 'DISMISS_PR_COMMENT') THEN
+        RAISE EXCEPTION 'HITL callback action does not match the requested action type';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_enforce_hitl_approval_event
+BEFORE INSERT ON hitl_approval_events
+FOR EACH ROW EXECUTE FUNCTION enforce_hitl_approval_event();
+
+-- Every evidence span attached to a living draft must come from that draft's source thread.
+CREATE OR REPLACE FUNCTION enforce_living_draft_evidence_thread()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    draft_thread UUID;
+    evidence_thread UUID;
+BEGIN
+    SELECT source_thread_id INTO draft_thread FROM living_decision_drafts WHERE id = NEW.living_draft_id;
+    SELECT sm.thread_id INTO evidence_thread
+      FROM evidence_spans es
+      JOIN source_message_versions smv ON smv.id = es.source_message_version_id
+      JOIN source_messages sm ON sm.id = smv.message_id
+     WHERE es.id = NEW.evidence_span_id;
+    IF draft_thread IS NULL OR evidence_thread IS DISTINCT FROM draft_thread THEN
+        RAISE EXCEPTION 'Living-draft evidence must belong to the same source thread';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_living_draft_evidence_thread
+BEFORE INSERT OR UPDATE ON living_decision_draft_evidence
+FOR EACH ROW EXECUTE FUNCTION enforce_living_draft_evidence_thread();
 
 CREATE OR REPLACE FUNCTION protect_source_message_version()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -930,6 +1101,9 @@ BEGIN
     IF (to_jsonb(NEW) - 'verification_status') IS DISTINCT FROM (to_jsonb(OLD) - 'verification_status') THEN
         RAISE EXCEPTION 'Evidence quote, locator, target and provenance are immutable';
     END IF;
+    IF OLD.verification_status = 'VERIFIED_EXACT' AND NEW.verification_status <> 'VERIFIED_EXACT' THEN
+        RAISE EXCEPTION 'A verified span cannot be downgraded; source versions are immutable';
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -948,6 +1122,9 @@ BEFORE UPDATE OR DELETE ON decision_event_log
 FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
 CREATE TRIGGER trg_hitl_approval_events_append_only
 BEFORE UPDATE OR DELETE ON hitl_approval_events
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+CREATE TRIGGER trg_pr_watchdog_audit_append_only
+BEFORE UPDATE OR DELETE ON pr_watchdog_audit_log
 FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
 CREATE TRIGGER trg_ruling_signoffs_append_only
 BEFORE UPDATE OR DELETE ON decision_alternative_ruling_signoffs
