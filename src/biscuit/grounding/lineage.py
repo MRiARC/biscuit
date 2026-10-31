@@ -333,7 +333,7 @@ def trace_lineage(
                      AnchorState.CURRENT)
             events.append(LineageEvent(
                 transition_commit_sha=commit, compared_parent_sha=parent,
-                parent_index=index, old_path=old_p or (next(iter(prev)) if len(prev) == 1 else None),
+                target_commit_sha=commit, parent_index=index, old_path=old_p or (next(iter(prev)) if len(prev) == 1 else None),
                 new_path=new_p or (next(iter(after)) if len(after) == 1 else None),
                 transition_type=kind, state=state,
                 mapping_evidence={

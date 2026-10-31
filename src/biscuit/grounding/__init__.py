@@ -16,11 +16,20 @@ from .normalizer import (
     normalize_python_ast,
     normalized_python_ast,
 )
-from .types import AnchorState, LineageEvent, LineageResult, MergeResolution, Symbol
+from .types import (
+    AnchorState,
+    CodeSymbolAnchor,
+    LineageEvent,
+    LineageResult,
+    MergeResolution,
+    Symbol,
+    lineage_storage_records,
+)
 
 __all__ = [
     "NORMALIZATION_VERSION",
     "AnchorState",
+    "CodeSymbolAnchor",
     "GitLineageError",
     "LineageEvent",
     "LineageResult",
@@ -33,6 +42,7 @@ __all__ = [
     "extract_symbols",
     "fingerprint_python_ast",
     "forward_commits",
+    "lineage_storage_records",
     "normalize_python_ast",
     "normalized_python_ast",
     "resolve_merge_parents",

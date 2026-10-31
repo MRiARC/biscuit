@@ -347,3 +347,162 @@ def test_only_named_tree_sitter_modules_are_optional() -> None:
             pytest.fail("Tree-sitter integration required but grammar packages are missing")
         pytest.skip("Optional Tree-sitter grammars not installed in minimal CI")
     assert py[0].parser_backend == c[0].parser_backend == "tree-sitter"
+
+
+def test_anchor_contract_serialization_and_authority_scope() -> None:
+    """Stream 2 produces the exact Stream 1 CodeAnchor column contract."""
+    import uuid
+
+    from biscuit.grounding import CodeSymbolAnchor
+
+    symbol = extract_symbols("def f(x):\n    return x\n", "python", "pkg/a.py")[0]
+    alternative = uuid.uuid4()
+    anchor = CodeSymbolAnchor.from_symbol(
+        symbol, alternative_id=alternative,
+        repository_url="https://github.com/owner/repo",
+        historical_commit_sha="a" * 40,
+    )
+    record = anchor.to_storage_record()
+    assert record["alternative_id"] == alternative
+    assert record["symbol_type"] == "function"  # PostgreSQL lowercase enum value
+    assert record["source_locator_type"] in {"AST_NODE_QUERY", "FILE_BYTE_RANGE"}
+    assert record["anchor_state"] == "HISTORICAL"
+    assert record["mapping_confidence"] is None
+    assert record["signature_hash"] == symbol.signature_hash
+    assert record["historical_file_path"] == "pkg/a.py"
+    assert record["parser_version"] and record["grammar_version"]
+    assert record["ast_normalization_version"]
+    assert "verified_parser" not in record
+    with pytest.raises(ValueError, match="canonical symbol type"):
+        from dataclasses import replace
+
+        CodeSymbolAnchor.from_symbol(
+            replace(symbol, symbol_type="FUNCTION"),
+            alternative_id=alternative, repository_url="https://example.com",
+            historical_commit_sha="a" * 40,
+        )
+
+
+def test_lineage_storage_records_cover_canonical_ddl(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+    import uuid
+
+    from biscuit.grounding import CodeSymbolAnchor, lineage_storage_records
+
+    root, past = initialize_repo(tmp_path)
+    extracted = extract_symbols((root / "old/parser.py").read_bytes(), "python", "old/parser.py")[0]
+    anchor = CodeSymbolAnchor.from_symbol(
+        extracted, alternative_id=uuid.uuid4(),
+        repository_url="https://github.com/owner/repo", historical_commit_sha=past,
+    )
+    git(root, "mv", "old/parser.py", "old/renamed.py")
+    commit(root, "rename")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    now = datetime.now(timezone.utc)
+    records = lineage_storage_records(anchor, result, recorded_at=now)
+    assert records
+    required = {
+        "code_anchor_id", "historical_commit_sha", "transition_commit_sha",
+        "compared_parent_sha", "parent_index", "target_commit_sha",
+        "traversal_strategy", "historical_path", "migrated_path",
+        "transition_type", "mapping_evidence", "confidence_score", "recorded_at",
+    }
+    assert set(records[0]) == required
+    assert records[0]["code_anchor_id"] == anchor.id
+    assert records[0]["target_commit_sha"] == records[0]["transition_commit_sha"]
+    assert records[0]["recorded_at"] == now
+    assert records[0]["confidence_score"] is None
+    assert records[0]["mapping_evidence"]["verified_parser"] == result.verified_parser
+    with pytest.raises(ValueError, match="different historical revision"):
+        from dataclasses import replace
+
+        lineage_storage_records(replace(anchor, historical_commit_sha="b" * 40), result)
+
+
+def test_git_similarity_boundary_79_vs_81(tmp_path: Path) -> None:
+    """Git's actual -M80% boundary: 81% is R081; 79% cannot be R status."""
+    root = tmp_path / "score"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Similarity Test")
+    git(root, "config", "user.email", "similarity@example.invalid")
+    before = [f"line_{i:04d} something very repeatable {i}\n" for i in range(100)]
+    write(root, "old.txt", "".join(before))
+    past = commit(root, "original")
+    for edits in (19, 21):
+        (root / "old.txt").unlink(missing_ok=True)
+        after = [f"mutated_{i:04d} truly different {i}!\n" if i < edits else before[i]
+                 for i in range(100)]
+        write(root, "new.txt", "".join(after))
+        new = commit(root, f"change {edits} lines")
+        status = git(root, "diff-tree", "-r", "-M80%", "--name-status", past, new)
+        if edits == 19:
+            assert "R081\told.txt\tnew.txt" in status
+        else:
+            assert "R079" not in status
+            assert "D\told.txt" in status and "A\tnew.txt" in status
+            assert "R079\told.txt\tnew.txt" in git(
+                root, "diff-tree", "-r", "-M1%", "--name-status", past, new)
+        git(root, "reset", "--hard", past)
+
+
+def test_c_symbol_renamed_through_forward_git_lineage(tmp_path: Path) -> None:
+    root, _ = initialize_repo(tmp_path)
+    source = "struct tok_state { int count; };\nint tok_get(struct tok_state *s) { return s->count; }\n"
+    write(root, "Parser/tokenizer.c", source)
+    past = commit(root, "add C parser")
+    git(root, "mv", "Parser/tokenizer.c", "Parser/lexer.c")
+    final = commit(root, "rename C source")
+    result = trace_lineage(root, past, "Parser/tokenizer.c", "tok_get", head=final,
+                           language="c")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "Parser/lexer.c"
+    assert any(e.transition_type == "RENAME_M" for e in result.events)
+    assert result.mapping_confidence is None
+
+
+def test_octopus_merge_inspects_all_three_parents(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    for branch in ("alpha", "beta", "gamma"):
+        git(root, "checkout", "-qb", branch, past)
+        write(root, f"{branch}.txt", f"data for {branch}\n")
+        commit(root, branch)
+    git(root, "checkout", "-q", "main")
+    git(root, "merge", "--no-ff", "-qm", "octopus merge", "alpha", "beta", "gamma")
+    head = git(root, "rev-parse", "HEAD")
+    assert len(git(root, "rev-list", "--parents", "-n", "1", head).split()) == 5
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.resolved_path == "old/parser.py"
+    merge_events = [e for e in result.events if e.transition_commit_sha == head]
+    assert len(merge_events) == 4
+    assert {e.parent_index for e in merge_events} == {0, 1, 2, 3}
+    assert all(e.confidence_score is None for e in merge_events)
+
+
+def test_real_tree_sitter_both_grammars_and_git_lineage(tmp_path: Path) -> None:
+    """Dedicated strict integration; the dependency CI must require both backends."""
+    try:
+        py = extract_symbols("class Parser:\n    def get(self, s):\n        return s\n",
+                             "python", "Parser/parser.py", require_tree_sitter=True)
+        c = extract_symbols(
+            "struct tok_state { int count; };\n"
+            "int tok_get(struct tok_state *s) { return s->count; }\n",
+            "c", "Parser/tokenizer.c", require_tree_sitter=True,
+        )
+    except ParserUnavailable:
+        if os.getenv("BISCUIT_REQUIRE_TREE_SITTER") == "1":
+            pytest.fail("Strict CST integration cannot skip when packages are required")
+        pytest.skip("Tree-sitter optional extra not installed")
+    assert all(s.parser_backend == "tree-sitter" for s in (*py, *c))
+    assert any(s.qualified_name == "parser.Parser.get" for s in py)
+    assert any(s.qualified_name == "tokenizer.c.tok_state.tok_get" for s in c)
+    root, _ = initialize_repo(tmp_path)
+    write(root, "Parser/tokenizer.c", "int tok_get(int x) { return x + 1; }\n")
+    past = commit(root, "C lineage start")
+    git(root, "mv", "Parser/tokenizer.c", "Parser/lexer.c")
+    commit(root, "C rename")
+    result = trace_lineage(root, past, "Parser/tokenizer.c", "tok_get", language="c",
+                           require_tree_sitter=True)
+    assert result.verified_parser
+    assert result.safe_for_automatic_migration
+    assert result.resolved_path == "Parser/lexer.c"
