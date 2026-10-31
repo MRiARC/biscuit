@@ -104,7 +104,7 @@ def _commit_bytes(repo: Path, commit: str, path: str) -> bytes | None:
 
 def _symbol_at(
     repo: Path, commit: str, path: str, language: str,
-    exemplar: Symbol, *, require_tree_sitter: bool,
+    exemplar: Symbol, *, require_tree_sitter: bool, require_identity: bool = False,
 ) -> Symbol | None:
     data = _commit_bytes(repo, commit, path)
     if data is None:
@@ -116,24 +116,36 @@ def _symbol_at(
         return None
     same_name = [s for s in symbols if s.symbol_name == exemplar.symbol_name
                  and s.symbol_type == exemplar.symbol_type]
-    if len(same_name) == 1:
-        return same_name[0]
+    # Candidate discovery in another file needs evidence independent of the
+    # name. A common function name in an unrelated touched file is NOT proof
+    # that the historical function moved there.
     if len(same_name) > 1:
         return None
-    if exemplar.structural_fingerprint:
-        structurally_same = [s for s in symbols if s.structural_fingerprint ==
-                             exemplar.structural_fingerprint and s.symbol_type == exemplar.symbol_type]
-        if len(structurally_same) == 1:
-            return structurally_same[0]
+    if len(same_name) == 1 and not require_identity:
+        return same_name[0]
+    structurally_same = [
+        s for s in symbols
+        if exemplar.structural_fingerprint is not None
+        and s.structural_fingerprint == exemplar.structural_fingerprint
+        and s.symbol_type == exemplar.symbol_type
+    ]
+    if len(structurally_same) == 1:
+        return structurally_same[0]
+    # C parsers may not provide a structural fingerprint for every declaration.
+    # A matching normalized signature is a conservative fallback for that case.
+    if exemplar.structural_fingerprint is None and len(same_name) == 1:
+        if same_name[0].signature_hash == exemplar.signature_hash:
+            return same_name[0]
     return None
 
 
 def _matching_paths(
     repo: Path, commit: str, paths: set[str], language: str,
-    exemplar: Symbol, require_tree_sitter: bool,
+    exemplar: Symbol, require_tree_sitter: bool, *, require_identity: bool = False,
 ) -> set[str]:
     return {p for p in paths if _symbol_at(repo, commit, p, language, exemplar,
-                                          require_tree_sitter=require_tree_sitter) is not None}
+                                          require_tree_sitter=require_tree_sitter,
+                                          require_identity=require_identity) is not None}
 
 
 def _transition(
@@ -158,6 +170,8 @@ def _transition(
                 next_paths = [new]
                 operation, old_file, new_file = "RENAME_M", old, new
             elif status.startswith("C") and old == old_path:
+                # The original and copy both remain plausible only if their
+                # symbols actually match. Treat this as a split, not a move.
                 next_paths.append(new)
                 operation, old_file, new_file = "COPY_C", old, new
             elif status.startswith("D") and new == old_path:
@@ -167,16 +181,23 @@ def _transition(
                 operation, old_file, new_file = "MODIFY", old_path, old_path
             elif status.startswith("B") and new == old_path:
                 operation, old_file, new_file = "REWRITE_SPLIT_B", old_path, old_path
-        candidates |= _matching_paths(repo, commit, set(next_paths), language, exemplar,
-                                      require_tree_sitter)
+        for next_path in set(next_paths):
+            candidates |= _matching_paths(
+                repo, commit, {next_path}, language, exemplar, require_tree_sitter,
+                require_identity=(next_path != old_path and
+                                  not any(status.startswith("R") and old == old_path
+                                          and new == next_path for status, old, new in statuses)),
+            )
     # Symbol moves/splits may not be recognized by Git's file similarity score.
     # Scan only touched source files, including new copies while the source
     # still exists. Otherwise a silent copy would be falsely marked unique.
     extension = ".py" if language == "python" else ".c"
     if touched:
         scan = {p for p in touched if p.endswith(extension)}
-        candidates |= _matching_paths(repo, commit, scan, language, exemplar,
-                                      require_tree_sitter)
+        # This broad scan is strictly fingerprint-based: unrelated same-name
+        # functions are not enough to establish a move/copy.
+        candidates |= _matching_paths(repo, commit, scan - parent_paths, language, exemplar,
+                                      require_tree_sitter, require_identity=True)
     if len(candidates) > 1:
         operation = "COPY_C" if operation == "COPY_C" else "REWRITE_SPLIT_B"
     if not candidates and parent_paths:
@@ -221,12 +242,10 @@ def trace_lineage(
     merged = False
     for commit in commits:
         parents = _parents(root, commit)
-        considered: list[set[str]] = []
         result_sets: list[set[str]] = []
         records: list[tuple[str, int, set[str], set[str], str, str | None, str | None, str]] = []
         for index, parent in enumerate(parents):
             prev = states.get(parent, set())
-            considered.append(prev)
             if not prev:
                 # Parallel branch that did not descend from historical commit.
                 # Still log its diff; it conveys no proven historical lineage.
@@ -240,16 +259,37 @@ def trace_lineage(
             result_sets.append(next_candidates)
             records.append((parent, index, prev, next_candidates, kind, old_p, new_p, digest))
         paths = set().union(*result_sets) if result_sets else set()
+        combined_diff_digest = None
+        merge_reason = None
+        first_parent_selected = False
         if len(parents) > 1:
-            # A clean merge must match one surviving symbol at the merge tree.
+            # Combined diffs reveal conflict-resolution changes against all
+            # parents; per-parent diffs alone are insufficient evidence.
+            combined_diff_digest = hashlib.sha256(
+                _git(root, "diff-tree", "-c", "-p", commit)
+            ).hexdigest()
             final_candidates = _matching_paths(root, commit, paths, language, exemplar,
                                                require_tree_sitter)
             resolution = resolve_merge_parents(result_sets, final_candidates)
+            merge_reason = resolution.reason
             if resolution.state == AnchorState.AMBIGUOUS:
                 ambiguous = True
             elif resolution.state == AnchorState.MERGED:
                 merged = True
             paths = set(resolution.paths)
+            # If a conflict resolution discarded changes from another parent,
+            # we may track the first-parent (mainline) version ONLY when that
+            # exact file exists in the merge tree. Never resurrect a deleted
+            # symbol from a parent that is absent in the merge result.
+            if len(paths) == 1 and len(parents) > 1:
+                selected_path = next(iter(paths))
+                merged_bytes = _commit_bytes(root, commit, selected_path)
+                mainline_bytes = _commit_bytes(root, parents[0], selected_path)
+                first_parent_selected = (
+                    merged_bytes is not None and merged_bytes == mainline_bytes
+                    and any(_commit_bytes(root, p, selected_path) != merged_bytes
+                            for p in parents[1:])
+                )
         if len(paths) > 1:
             ambiguous, split = True, True
         # Once ambiguous, never silently become 'safe' due to a later delete.
@@ -278,6 +318,11 @@ def trace_lineage(
                     "normalization_version": exemplar.normalization_version,
                     "parent_paths": sorted(prev), "result_paths": sorted(after),
                     "parent_count": len(parents),
+                    "combined_diff_sha256": combined_diff_digest,
+                    "merge_resolution_reason": merge_reason,
+                    "first_parent_selected": first_parent_selected,
+                    "all_parent_candidate_paths": [sorted(s) for s in result_sets],
+                    "requires_structural_verification": True,
                 },
             ))
     final = states[current]

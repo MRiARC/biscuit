@@ -42,6 +42,8 @@ def _module(file_path: str) -> str:
 
 
 def _line_at(raw: bytes, offset: int) -> int:
+    # End offsets are exclusive: if they point at the start of the next line,
+    # the symbol still ends on the previous line.
     return raw.count(b"\n", 0, offset) + 1
 
 
@@ -62,12 +64,11 @@ def _python_ast_symbols(source: bytes, file_path: str) -> list[Symbol]:
         raise ParseError(str(exc)) from exc
     result: list[Symbol] = []
 
-    def walk(body: list[ast.stmt], parents: tuple[str, ...]) -> None:
+    def walk(body: list[ast.stmt], parents: tuple[str, ...], parent_is_class: bool) -> None:
         for node in body:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 kind = ("class" if isinstance(node, ast.ClassDef) else
-                        "method" if parents and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and parents[-1][:1].isupper() else "function")
+                        "method" if parent_is_class else "function")
                 start, end = _ast_offsets(node, source)
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     signature = ast.dump(node.args, include_attributes=False)
@@ -83,8 +84,8 @@ def _python_ast_symbols(source: bytes, file_path: str) -> list[Symbol]:
                     parser_backend="stdlib-ast", parser_version="python-stdlib",
                     grammar_version="stdlib-ast", normalization_version=NORMALIZATION_VERSION,
                 ))
-                walk(node.body, (*parents, node.name))
-    walk(tree.body, ())
+                walk(node.body, (*parents, node.name), isinstance(node, ast.ClassDef))
+    walk(tree.body, (), False)
     return result
 
 
@@ -122,10 +123,10 @@ def _python_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
     ast_by_name = { (s.qualified_name, s.start_line): s for s in _python_ast_symbols(source, file_path)}
     result: list[Symbol] = []
 
-    def walk(node, parents: tuple[str, ...]) -> None:
+    def walk(node, parents: tuple[str, ...], parent_is_class: bool) -> None:
         if node.type == "decorated_definition":
             for ch in node.named_children:
-                walk(ch, parents)
+                walk(ch, parents, parent_is_class)
             return
         if node.type in ("class_definition", "function_definition"):
             name_node = node.child_by_field_name("name")
@@ -137,12 +138,13 @@ def _python_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
             ast_symbol = ast_by_name.get((name_qual, node.start_point.row + 1))
             result.append(Symbol(
                 language="python", symbol_type=("class" if node.type == "class_definition"
-                                                else "method" if parents else "function"),
+                                                else "method" if parent_is_class else "function"),
                 qualified_name=name_qual, file_path=file_path,
                 start_byte=node.start_byte, end_byte=node.end_byte,
                 start_line=node.start_point.row + 1,
                 end_line=node.end_point.row + 1,
-                signature_hash=_signature(_node_text(args, source) if args else ""),
+                signature_hash=(ast_symbol.signature_hash if ast_symbol else
+                                _signature(_node_text(args, source) if args else "")),
                 structural_fingerprint=(ast_symbol.structural_fingerprint if ast_symbol else None),
                 parser_backend="tree-sitter", parser_version=version,
                 grammar_version=grammar, normalization_version=NORMALIZATION_VERSION,
@@ -150,12 +152,12 @@ def _python_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
             for ch in node.named_children:
                 if ch.type == "block":
                     for body_ch in ch.named_children:
-                        walk(body_ch, (*parents, name))
+                        walk(body_ch, (*parents, name), node.type == "class_definition")
             return
         for ch in node.named_children:
-            walk(ch, parents)
+            walk(ch, parents, parent_is_class)
 
-    walk(tree.root_node, ())
+    walk(tree.root_node, (), False)
     return result
 
 
@@ -178,7 +180,7 @@ def _c_qualified(file_path: str, name: str, signature: str) -> str:
     # A C struct does not own a function. Include the struct when it is part of
     # the function signature; otherwise qualify by file + function only.
     struct_match = re.search(r"\bstruct\s+(\w+)\s*\*?\s*\w+", signature)
-    return ".".join((_module(file_path), *((struct_match.group(1),) if struct_match else ()), name))
+    return ".".join((PurePosixPath(file_path).name, *((struct_match.group(1),) if struct_match else ()), name))
 
 
 def _c_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
@@ -199,15 +201,16 @@ def _c_tree_sitter_symbols(source: bytes, file_path: str) -> list[Symbol]:
                 "c", "function", _c_qualified(file_path, name, signature), file_path,
                 node.start_byte, node.end_byte,
                 node.start_point.row + 1, node.end_point.row + 1,
-                _signature(signature), parser_backend="tree-sitter",
-                parser_version=version, grammar_version=grammar,
-                normalization_version="c-cst-v1",
+                _signature(signature),
+                structural_fingerprint=_sha(_node_text(node, source).strip()),
+                parser_backend="tree-sitter", parser_version=version,
+                grammar_version=grammar, normalization_version="c-cst-v1",
             ))
         elif node.type == "struct_specifier":
             name = node.child_by_field_name("name")
             if name:
                 out.append(Symbol(
-                    "c", "struct", f"{_module(file_path)}.{_node_text(name, source)}", file_path,
+                    "c", "struct", f"{PurePosixPath(file_path).name}.{_node_text(name, source)}", file_path,
                     node.start_byte, node.end_byte,
                     node.start_point.row + 1, node.end_point.row + 1,
                     _signature(_node_text(name, source)), parser_backend="tree-sitter",
@@ -252,15 +255,17 @@ def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
         result.append(Symbol(
             "c", "function", _c_qualified(file_path, name, signature), file_path,
             start, end, _line_at(source, start), _line_at(source, end),
-            _signature(signature), parser_backend="restricted-c-lexer",
-            parser_version="restricted-v1", grammar_version="none",
+            _signature(signature),
+            structural_fingerprint=_sha(text[match.start():pos].strip()),
+            parser_backend="restricted-c-lexer", parser_version="restricted-v1",
+            grammar_version="none",
             normalization_version="c-lexer-v1",
         ))
     for match in re.finditer(r"\bstruct\s+(\w+)\s*\{", text):
         start = len(text[:match.start()].encode("utf-8"))
         end = len(text[:match.end()].encode("utf-8"))
         result.append(Symbol(
-            "c", "struct", f"{_module(file_path)}.{match.group(1)}", file_path,
+            "c", "struct", f"{PurePosixPath(file_path).name}.{match.group(1)}", file_path,
             start, end, _line_at(source, start), _line_at(source, end),
             _signature(match.group(1)), parser_backend="restricted-c-lexer",
             parser_version="restricted-v1", grammar_version="none",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 from pathlib import Path
 
@@ -69,12 +70,32 @@ def test_python_qualified_symbol_and_byte_offsets() -> None:
 def test_c_qualified_symbol_and_struct() -> None:
     code = "struct tok_state { int next; };\nint tok_get(struct tok_state *tok) { return tok->next; }\n"
     syms = extract_symbols(code, "c", "Parser/tokenizer.c")
-    assert any(x.qualified_name == "tokenizer.tok_state" for x in syms)
+    assert any(x.qualified_name == "tokenizer.c.tok_state" for x in syms)
     function = next(s for s in syms if s.symbol_name == "tok_get")
-    assert function.qualified_name == "tokenizer.tok_state.tok_get"
+    assert function.qualified_name == "tokenizer.c.tok_state.tok_get"
     assert function.start_line == 2
     assert code.encode()[function.start_byte:function.end_byte].endswith(b"}")
     assert len(function.signature_hash) == 64
+
+
+def test_python_lowercase_class_and_nested_functions() -> None:
+    text = "class handler:\n    def run(self):\n        def helper(x):\n            return x\n        return helper(2)\n"
+    symbols = extract_symbols(text, "python", "pkg/handler.py")
+    assert {x.qualified_name: x.symbol_type for x in symbols} == {
+        "handler.handler": "class",
+        "handler.handler.run": "method",
+        "handler.handler.run.helper": "function",
+    }
+    assert all(x.start_byte < x.end_byte for x in symbols)
+
+
+def test_c_filename_qualification_and_structural_hash() -> None:
+    text = "int tok_get(int x) { return x + 1; }\n"
+    sym = next(x for x in extract_symbols(text, "c", "Parser/tokenizer.c")
+               if x.symbol_type == "function")
+    assert sym.qualified_name == "tokenizer.c.tok_get"
+    assert sym.structural_fingerprint is not None
+    assert len(sym.structural_fingerprint) == 64
 
 
 def test_python_ast_variable_and_argument_renames() -> None:
@@ -88,6 +109,14 @@ def test_python_ast_variable_and_argument_renames() -> None:
     before = ast.dump(tree)
     fingerprint_python_ast(tree)
     assert ast.dump(tree) == before  # Caller-owned AST is not mutated.
+
+
+def test_normalizer_nested_scope_and_closure_renames() -> None:
+    original = "def outer(first):\n    local = first + 1\n    def inner(second):\n        return local + second\n    return inner(first)\n"
+    renamed = "def outer(start):\n    value = start + 1\n    def inner(term):\n        return value + term\n    return inner(start)\n"
+    changed = "def outer(start):\n    value = start + 2\n    def inner(term):\n        return value + term\n    return inner(start)\n"
+    assert fingerprint_python_ast(original) == fingerprint_python_ast(renamed)
+    assert fingerprint_python_ast(original) != fingerprint_python_ast(changed)
 
 
 def test_unsupported_language_and_invalid_python() -> None:
@@ -147,6 +176,41 @@ def test_copy_with_original_remaining_requires_abstention(tmp_path: Path) -> Non
     assert result.resolved_path is None
     assert set(result.candidates) == {"old/parser.py", "new/copy.py"}
     assert result.mapping_confidence is None
+
+
+def test_same_name_unrelated_function_does_not_create_false_move(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    (root / "old/parser.py").unlink()
+    write(root, "unrelated/other.py", "def tok_get(stream):\n    return stream * 999\n")
+    commit(root, "delete old function and introduce unrelated same-name function")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.DELETED
+    assert result.resolved_path is None
+    assert not result.safe_for_automatic_migration
+
+
+def test_conflict_mainline_selected_with_combined_diff_evidence(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "old/parser.py", "def unrelated(x):\n    return x * 3\n")
+    commit(root, "replace historical symbol in feature")
+    git(root, "checkout", "-q", "main")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 42\n")
+    commit(root, "change original symbol on mainline")
+    attempted = subprocess.run(["git", "-C", str(root), "merge", "--no-ff", "feature"],
+                               capture_output=True, text=True, check=False)
+    assert attempted.returncode != 0
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 42\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "resolve conflict with first-parent content")
+    merge = git(root, "rev-parse", "HEAD")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.resolved_path == "old/parser.py"
+    assert result.anchor_state == AnchorState.MIGRATED
+    merge_events = [e for e in result.events if e.transition_commit_sha == merge]
+    assert len(merge_events) == 2
+    assert all(e.mapping_evidence["first_parent_selected"] for e in merge_events)
+    assert all(len(e.mapping_evidence["combined_diff_sha256"]) == 64 for e in merge_events)
 
 
 def test_clean_two_parent_merge(tmp_path: Path) -> None:
@@ -227,5 +291,7 @@ def test_only_named_tree_sitter_modules_are_optional() -> None:
         c = extract_symbols("int f(int x) { return x; }", "c", "a.c",
                             require_tree_sitter=True)
     except ParserUnavailable:
+        if os.environ.get("BISCUIT_REQUIRE_TREE_SITTER") == "1":
+            pytest.fail("Tree-sitter integration required but grammar packages are missing")
         pytest.skip("Optional Tree-sitter grammars not installed in minimal CI")
     assert py[0].parser_backend == c[0].parser_backend == "tree-sitter"
