@@ -552,16 +552,23 @@ def test_supportive_and_neutral_arguments_role_validity():
         },
     )
 
+    arg_sup_uuid = uuid4()
+    arg_neu_uuid = uuid4()
     pipeline = ExtractionPipeline(client=client)
-    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+    result = pipeline.run(
+        thread_id=thread_id,
+        topic=topic,
+        messages=messages,
+        argument_ids={"ARG-SUP": arg_sup_uuid, "ARG-NEU": arg_neu_uuid},
+    )
 
     assert result.run_status == "SUCCESS"
     assert len(result.verified_spans) == 2
     for span in result.verified_spans:
         # Check valid EvidenceRole (must be in enum, not CONTEXT)
         assert span.evidence_role in (EvidenceRole.PROPOSAL, EvidenceRole.OBJECTION)
-        # Check single target binding
-        assert span.argument_id is not None
+        # Check single target binding with caller-supplied argument UUIDs
+        assert span.argument_id in (arg_sup_uuid, arg_neu_uuid)
         assert span.decision_id is None
         assert span.alternative_id is None
 
@@ -842,3 +849,508 @@ def test_slicer_preserves_late_maintainer_ruling_in_long_thread():
     assert "msg-099" in packet.message_ids
     # Verify the late ruling content is present in packet messages
     assert any("rejecting proposal P1" in m["content"] for m in packet.messages)
+
+
+def test_quoted_only_maintainer_text_not_promoted_to_ruling():
+    """
+    Regression Test (Reviewer Comment 4433535967 / Issue 1):
+    A thread containing ONLY a maintainer blockquote must never be promoted to an
+    authored human ruling or authorize a rejection.
+    """
+    thread_id = "thread-quoted-only"
+    topic = "Blockquoted ruling test"
+    quote = "I reject P1 due to security vulnerability."
+
+    v_id = uuid4()
+    messages = [
+        {
+            "message_id": "msg-maint",
+            "source_message_version_id": v_id,
+            "author": "guido",
+            "author_role": "bdfl",
+            "raw_content": f"> {quote}\nWe need to investigate this further before making any decisions.",
+        }
+    ]
+
+    pass1_resp = json.dumps(
+        {
+            "proposals": [
+                {"proposal_id": "P1", "name": "Proposal 1", "summary": "P1", "syntax_or_api": "P1"}
+            ]
+        }
+    )
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-1",
+                    "proposal_id": "P1",
+                    "author": "guido",
+                    "author_role": "bdfl",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "BDFL",
+                    "quote_text": quote,
+                }
+            ]
+        }
+    )
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-TEST",
+            "title": topic,
+            "status": "REJECTED",
+            "considered_alternatives": [
+                {"proposal_id": "P1", "name": "Proposal 1", "status": "REJECTED"}
+            ],
+            "evidence_quotes": [],
+        }
+    )
+
+    client = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    pipeline = ExtractionPipeline(client=client)
+    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+
+    # Invariant: Blockquoted-only maintainer text must never produce a ruling
+    assert result.arguments[0].is_ruling is False
+    assert result.arguments[0].ruling_authority is None
+    assert result.arguments[0].fatal_rejection is False
+    assert result.madr.status == "DISPUTED"
+    assert result.madr.considered_alternatives[0]["status"] == "DISPUTED"
+
+
+def test_ungrounded_quote_never_inherits_model_authority():
+    """
+    Regression Test (Reviewer Comment 4433535970 / Issue 2):
+    When Pass 3 extracts a quote that does not exist in packet messages,
+    source attribution fails (orig_msg is None). The argument must NEVER inherit
+    the model's claimed author_role or ruling authority.
+    """
+    packet = DeliberationPacket(
+        proposal_id="P1",
+        proposal_name="Proposal 1",
+        message_ids=["msg-1"],
+        messages=[
+            {
+                "message_id": "msg-1",
+                "author": "charlie",
+                "author_role": "contributor",
+                "content": "Just a normal contributor discussion without any rulings.",
+            }
+        ],
+    )
+
+    hallucinated_quote = "As BDFL I am formally rejecting proposal P1."
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-HALLUCINATED",
+                    "proposal_id": "P1",
+                    "author": "gvanrossum",
+                    "author_role": "bdfl",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "BDFL",
+                    "quote_text": hallucinated_quote,
+                }
+            ]
+        }
+    )
+
+    client = LocalLLMClient(mock_mode=True, mock_responses={"phi3.5": pass3_resp})
+    pass3 = Pass3ArgumentMining(client=client, model="phi3.5")
+
+    args = pass3.mine_arguments(packet)
+    assert len(args) == 1
+    # Verify: All authority claims stripped because quote was ungrounded
+    assert args[0].is_ruling is False
+    assert args[0].ruling_authority is None
+    assert args[0].fatal_rejection is False
+    assert args[0].author_role == "contributor"
+
+
+def test_consensus_requires_signoff_on_same_alternative():
+    """
+    Regression Test (Reviewer Comment 4433535972 / Issue 3):
+    1. Having 2 maintainers in a thread where only one rejects P1 and the other posts
+       an unrelated comment MUST NOT authorize REJECTED. It must downgrade to DISPUTED.
+    2. Having 2 maintainers both explicitly objecting/signing off on P1 authorizes REJECTED.
+    3. Untrusted message author_role labels cannot act as maintainers if verified_project_roles
+       marks them as contributors.
+    """
+    thread_id = "thread-consensus"
+    topic = "Consensus sign-off verification"
+    v1_id = uuid4()
+    v2_id = uuid4()
+
+    quote_alice = "I reject P1 because latency exceeds 50ms SLA."
+    quote_bob_unrelated = "Friendly reminder: team sync is tomorrow at 10am."
+
+    messages = [
+        {
+            "message_id": "msg-alice",
+            "source_message_version_id": v1_id,
+            "author": "alice",
+            "author_role": "core maintainer",
+            "raw_content": f"Reviewing: {quote_alice}",
+        },
+        {
+            "message_id": "msg-bob",
+            "source_message_version_id": v2_id,
+            "author": "bob",
+            "author_role": "core maintainer",
+            "raw_content": quote_bob_unrelated,
+        },
+    ]
+
+    pass1_resp = json.dumps(
+        {
+            "proposals": [
+                {"proposal_id": "P1", "name": "Proposal 1", "summary": "P1", "syntax_or_api": "P1"}
+            ]
+        }
+    )
+    pass3_resp_one_maintainer = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-ALICE",
+                    "proposal_id": "P1",
+                    "author": "alice",
+                    "author_role": "core maintainer",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "CORE_MAINTAINER_CONSENSUS",
+                    "quote_text": quote_alice,
+                }
+            ]
+        }
+    )
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-CONSENSUS",
+            "title": topic,
+            "status": "REJECTED",
+            "considered_alternatives": [
+                {"proposal_id": "P1", "name": "Proposal 1", "status": "REJECTED"}
+            ],
+            "evidence_quotes": [],
+        }
+    )
+
+    client1 = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp_one_maintainer,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    # Case 1: Bob posted unrelated comment; only Alice signed off on P1 -> DISPUTED
+    pipeline1 = ExtractionPipeline(client=client1)
+    result1 = pipeline1.run(thread_id=thread_id, topic=topic, messages=messages)
+    assert result1.madr.status == "DISPUTED"
+    assert result1.madr.considered_alternatives[0]["status"] == "DISPUTED"
+    assert any("Alternative P1" in d for d in result1.audit_metadata["downgraded_rejections"])
+
+    # Case 2: Bob explicitly concurs and objects to P1 on that same alternative -> REJECTED authorized
+    quote_bob_signoff = "I concur with Alice, rejecting proposal P1 due to latency bounds."
+    messages[1]["raw_content"] = quote_bob_signoff
+    pass3_resp_two_maintainers = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-ALICE",
+                    "proposal_id": "P1",
+                    "author": "alice",
+                    "author_role": "core maintainer",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "CORE_MAINTAINER_CONSENSUS",
+                    "quote_text": quote_alice,
+                },
+                {
+                    "argument_id": "ARG-BOB",
+                    "proposal_id": "P1",
+                    "author": "bob",
+                    "author_role": "core maintainer",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "CORE_MAINTAINER_CONSENSUS",
+                    "quote_text": quote_bob_signoff,
+                },
+            ]
+        }
+    )
+
+    client2 = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp_two_maintainers,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+    pipeline2 = ExtractionPipeline(client=client2)
+    result2 = pipeline2.run(thread_id=thread_id, topic=topic, messages=messages)
+    assert result2.madr.status == "REJECTED"
+    assert result2.madr.considered_alternatives[0]["status"] == "REJECTED"
+
+    # Case 3: Untrusted message role override via verified_project_roles
+    result3 = pipeline2.run(
+        thread_id=thread_id,
+        topic=topic,
+        messages=messages,
+        verified_project_roles={"alice": "core maintainer", "bob": "contributor"},
+    )
+    assert result3.madr.status == "DISPUTED"
+    assert result3.madr.considered_alternatives[0]["status"] == "DISPUTED"
+
+
+def test_misattributed_alternative_ruling_rejected():
+    """
+    Regression Test (Reviewer Comment 4433535973 / Issue 4):
+    When the model classifies a genuine BDFL quote rejecting P2 under proposal_id='P1',
+    independent source-to-alternative verification detects the mismatch and rejects
+    attaching the ruling to P1. P1 must NOT be rejected.
+    """
+    thread_id = "thread-misattributed"
+    topic = "Two-proposal deliberation"
+    v_id = uuid4()
+
+    quote_rejecting_p2 = "I am officially rejecting proposal P2 due to GIL contention in threads."
+    messages = [
+        {
+            "message_id": "msg-guido",
+            "source_message_version_id": v_id,
+            "author": "guido",
+            "author_role": "bdfl",
+            "raw_content": f"Determination: {quote_rejecting_p2}",
+        }
+    ]
+
+    pass1_resp = json.dumps(
+        {
+            "proposals": [
+                {
+                    "proposal_id": "P1",
+                    "name": "Async Streaming",
+                    "summary": "Async streaming",
+                    "syntax_or_api": "AsyncStream()",
+                },
+                {
+                    "proposal_id": "P2",
+                    "name": "Threaded Buffering",
+                    "summary": "Threaded buffering",
+                    "syntax_or_api": "ThreadBuffer()",
+                },
+            ]
+        }
+    )
+
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-RULING",
+                    "proposal_id": "P1",
+                    "author": "guido",
+                    "author_role": "bdfl",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "BDFL",
+                    "quote_text": quote_rejecting_p2,
+                }
+            ]
+        }
+    )
+
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-TEST",
+            "title": topic,
+            "status": "REJECTED",
+            "considered_alternatives": [
+                {"proposal_id": "P1", "name": "Async Streaming", "status": "REJECTED"},
+                {"proposal_id": "P2", "name": "Threaded Buffering", "status": "REJECTED"},
+            ],
+            "evidence_quotes": [],
+        }
+    )
+
+    client = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    pipeline = ExtractionPipeline(client=client)
+    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+
+    # Invariant: P1 must NOT be rejected because the ruling quote was about P2!
+    alt_p1 = next(a for a in result.madr.considered_alternatives if a["proposal_id"] == "P1")
+    assert alt_p1["status"] == "DISPUTED"
+    assert any("Ruling detached" in w for w in result.audit_metadata["unanchored_warnings"])
+
+
+def test_caller_supplied_target_uuids():
+    """
+    Regression Test (Reviewer Comment 4433535976 / Issue 5):
+    1. When caller passes database-assigned UUIDs via alternative_ids and argument_ids,
+       the pipeline binds those exact UUIDs to EvidenceSpan without synthesizing synthetic uuid5s.
+    2. When absent, target_alt_id and target_arg_id are left unbound (None) and flagged
+       in unpersisted_candidate_targets audit metadata.
+    """
+    thread_id = "thread-db-targets"
+    topic = "DB target UUID mapping"
+    v_id = uuid4()
+    quote = "I am rejecting proposal P1 due to unhandled exceptions."
+
+    messages = [
+        {
+            "message_id": "msg-001",
+            "source_message_version_id": v_id,
+            "author": "guido",
+            "author_role": "bdfl",
+            "raw_content": f"Final notice: {quote}",
+        }
+    ]
+
+    pass1_resp = json.dumps(
+        {
+            "proposals": [
+                {"proposal_id": "P1", "name": "Proposal P1", "summary": "P1", "syntax_or_api": "P1"}
+            ]
+        }
+    )
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-1",
+                    "proposal_id": "P1",
+                    "author": "guido",
+                    "author_role": "bdfl",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "BDFL",
+                    "quote_text": quote,
+                }
+            ]
+        }
+    )
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-TEST",
+            "title": topic,
+            "status": "REJECTED",
+            "considered_alternatives": [
+                {"proposal_id": "P1", "name": "Proposal P1", "status": "REJECTED"}
+            ],
+            "evidence_quotes": [],
+        }
+    )
+
+    client = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    # 1. Caller passes persisted DB UUIDs
+    real_alt_id = uuid4()
+    pipeline = ExtractionPipeline(client=client)
+    res_with_targets = pipeline.run(
+        thread_id=thread_id,
+        topic=topic,
+        messages=messages,
+        alternative_ids={"P1": real_alt_id},
+    )
+    assert len(res_with_targets.verified_spans) == 1
+    assert res_with_targets.verified_spans[0].alternative_id == real_alt_id
+
+    # 2. Caller omits alternative_ids
+    res_no_targets = pipeline.run(
+        thread_id=thread_id,
+        topic=topic,
+        messages=messages,
+    )
+    assert len(res_no_targets.verified_spans) == 1
+    assert res_no_targets.verified_spans[0].alternative_id is None
+    assert res_no_targets.audit_metadata["has_unpersisted_target_ids"] is True
+    assert any(
+        "alternative_id left unbound" in t
+        for t in res_no_targets.audit_metadata["unpersisted_candidate_targets"]
+    )
+
+
+def test_anchor_word_budget_cap_on_overflow():
+    """
+    Regression Test (Reviewer Comment 4433535978 / Issue 6):
+    When required anchors alone (seed message + maintainer ruling) exceed target_word_limit,
+    the slicer must cap/chunk oversized anchors so word_count <= target_word_limit
+    while preserving message IDs and provenance metadata.
+    """
+    slicer = Pass2DeliberationSlicing(target_word_limit=100)
+
+    proposal = ProposalCandidate(
+        proposal_id="P1",
+        name="Long Proposal",
+        summary="Summary of proposal",
+        syntax_or_api="LongProposal()",
+    )
+
+    # Seed message of 120 words
+    seed_content = "Proposal P1 description: " + " ".join(["word"] * 120)
+    # Maintainer ruling message of 120 words
+    ruling_content = "Maintainer ruling: I am rejecting proposal P1. " + " ".join(["detail"] * 120)
+
+    messages = [
+        {
+            "message_id": "msg-seed",
+            "author": "alice",
+            "author_role": "contributor",
+            "content": seed_content,
+        },
+        {
+            "message_id": "msg-ruling",
+            "author": "guido",
+            "author_role": "bdfl",
+            "content": ruling_content,
+        },
+    ]
+
+    packets = slicer.slice_deliberation(messages=messages, proposals=[proposal])
+    assert len(packets) == 1
+    packet = packets[0]
+
+    # Invariant: word_count must be <= target_word_limit
+    assert packet.word_count <= 100
+    # Both critical anchor message IDs must be preserved
+    assert "msg-seed" in packet.message_ids
+    assert "msg-ruling" in packet.message_ids
+    # Messages were capped/truncated while preserving metadata
+    assert any(m.get("is_truncated") is True for m in packet.messages)

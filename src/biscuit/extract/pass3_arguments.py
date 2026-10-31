@@ -47,12 +47,26 @@ def _format_packet_text(packet: DeliberationPacket) -> str:
     return "\n".join(lines)
 
 
+def _has_unquoted_occurrence(content: str, quote: str) -> bool:
+    """Checks if `quote` appears anywhere in `content` outside of blockquote lines (lines starting with '>')."""
+    if not quote or quote not in content:
+        return False
+    unquoted_lines = [line for line in content.splitlines() if not line.lstrip().startswith(">")]
+    unquoted_text = "\n".join(unquoted_lines)
+    return quote in unquoted_text
+
+
 def find_originating_message(
-    quote: str, messages: list[dict[str, Any]], claimed_author: str | None = None
+    quote: str,
+    messages: list[dict[str, Any]],
+    claimed_author: str | None = None,
+    require_unquoted: bool = True,
 ) -> dict[str, Any] | None:
     """
     Locates the message that originally authored the quote.
     Distinguishes original author text from quoted replies (lines starting with '>').
+    If require_unquoted is True, messages where the quote only appears inside
+    blockquotes (> ...) are never returned as authored speech.
     Prioritizes original text matches where message author matches claimed_author.
     """
     if not quote or not messages:
@@ -64,14 +78,7 @@ def find_originating_message(
         if quote not in content:
             continue
 
-        # Check if quote is inside a blockquote line
-        is_in_blockquote = False
-        for line in content.splitlines():
-            line_str = line.strip()
-            if line_str.startswith(">") and quote in line_str:
-                is_in_blockquote = True
-                break
-
+        has_unquoted = _has_unquoted_occurrence(content, quote)
         author = (m.get("author") or "").strip().lower()
         claimed = (claimed_author or "").strip().lower()
         matches_author = bool(claimed and author == claimed)
@@ -79,7 +86,7 @@ def find_originating_message(
         candidates.append(
             {
                 "message": m,
-                "is_in_blockquote": is_in_blockquote,
+                "has_unquoted": has_unquoted,
                 "matches_author": matches_author,
             }
         )
@@ -87,17 +94,21 @@ def find_originating_message(
     if not candidates:
         return None
 
-    # Priority 1: author matches AND not in a quoted block
-    p1 = [c["message"] for c in candidates if c["matches_author"] and not c["is_in_blockquote"]]
+    # Priority 1: author matches AND has unquoted occurrence
+    p1 = [c["message"] for c in candidates if c["matches_author"] and c["has_unquoted"]]
     if p1:
         return p1[0]
 
-    # Priority 2: not in a blockquote
-    p2 = [c["message"] for c in candidates if not c["is_in_blockquote"]]
+    # Priority 2: has unquoted occurrence
+    p2 = [c["message"] for c in candidates if c["has_unquoted"]]
     if p2:
         return p2[0]
 
-    # Priority 3: author matches
+    # If require_unquoted is True, quoted-only matches must NEVER be treated as authored speech
+    if require_unquoted:
+        return None
+
+    # Priority 3: author matches (in blockquote fallback)
     p3 = [c["message"] for c in candidates if c["matches_author"]]
     if p3:
         return p3[0]
@@ -192,17 +203,19 @@ class Pass3ArgumentMining:
                     .strip()
                     .lower()
                 )
+                mapped_authority = AUTHORIZED_RULING_ROLE_MAP.get(actual_role)
+                is_ruling = bool(arg.get("is_ruling", False)) and (mapped_authority is not None)
             else:
+                # Source attribution failed or quote was ungrounded/absent from packet.
+                # Invariant: An ungrounded quote MUST NEVER inherit the model's authority claim.
                 actual_author = claimed_author
-                actual_role = str(arg.get("author_role", "contributor")).strip().lower()
-
-            # Check if actual role has ruling authority
-            mapped_authority = AUTHORIZED_RULING_ROLE_MAP.get(actual_role)
-            is_ruling = bool(arg.get("is_ruling", False)) and (mapped_authority is not None)
+                actual_role = "contributor"
+                mapped_authority = None
+                is_ruling = False
 
             # Invariant: MODEL_INFERRED can never be a ruling authority
             model_claimed_authority = arg.get("ruling_authority")
-            if model_claimed_authority == "MODEL_INFERRED":
+            if model_claimed_authority == "MODEL_INFERRED" or not is_ruling:
                 is_ruling = False
                 mapped_authority = None
 

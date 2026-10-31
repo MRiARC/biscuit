@@ -5,6 +5,7 @@ Extracts directed subgraphs around each candidate proposal into targeted ~1,000-
 Guarantees late maintainer rulings are preserved during thread truncation.
 """
 
+import re
 from typing import Any
 
 from biscuit.extract.types import DeliberationPacket, ProposalCandidate
@@ -86,14 +87,20 @@ class Pass2DeliberationSlicing:
             # 1. Identify seed messages that mention or introduce the proposal
             seed_ids: list[str] = []
             for mid, m in msg_by_id.items():
-                content_lower = str(m.get("content", "")).lower()
+                content_lower = str(m.get("content") or m.get("raw_content") or "").lower()
+                role = str(m.get("author_role") or m.get("role") or "").strip().lower()
+
                 if prop.proposal_id.lower() in content_lower or any(
                     term in content_lower for term in prop_terms
                 ):
                     seed_ids.append(mid)
 
+                # Maintainer rulings are critical anchors for deliberation
+                if role in RULING_ROLES and any(kw in content_lower for kw in RULING_KEYWORDS):
+                    selected_ids.add(mid)
+
             if not seed_ids and messages:
-                seed_ids.append(str(messages[0].get("message_id", "")))
+                seed_ids.append(str(messages[0].get("message_id") or messages[0].get("id") or ""))
 
             for sid in seed_ids:
                 selected_ids.add(sid)
@@ -113,6 +120,11 @@ class Pass2DeliberationSlicing:
             for mid, m in msg_by_id.items():
                 parent_id = m.get("parent_message_id")
                 if parent_id and parent_id in selected_ids:
+                    selected_ids.add(mid)
+
+            # In linear discussions without edges, all chronological messages are candidate deliberation turns
+            if not edges:
+                for mid in msg_by_id:
                     selected_ids.add(mid)
 
             # 3. Collect candidates in chronological order
@@ -150,71 +162,140 @@ class Pass2DeliberationSlicing:
         self, candidate_msgs: list[dict[str, Any]], seed_ids: list[str]
     ) -> list[dict[str, Any]]:
         """
-        Budgets messages up to target_word_limit while guaranteeing that:
+        Budgets messages strictly up to target_word_limit while guaranteeing that:
         1. Initial proposal seed messages are preserved.
         2. Authoritative ruling / maintainer messages (especially late in the thread) are preserved.
-        3. Intermediate debate fills the remaining budget in chronological order.
+        3. If essential anchors alone exceed target_word_limit, they are capped/chunked
+           to strictly enforce the bounded context while preserving identities and provenance.
+        4. Intermediate debate fills remaining budget in chronological order.
         """
+        if not candidate_msgs:
+            return []
+
         total_words = sum(len(str(m.get("content", "")).split()) for m in candidate_msgs)
         if total_words <= self.target_word_limit:
             return candidate_msgs
 
-        # Identify critical anchors
         seed_set = set(seed_ids)
-        must_include_indices: set[int] = set()
+        seed_indices = [
+            i for i, m in enumerate(candidate_msgs) if str(m.get("message_id", "")) in seed_set
+        ]
+        ruling_indices: list[int] = []
 
         for idx, m in enumerate(candidate_msgs):
-            mid = str(m.get("message_id", ""))
             role = str(m.get("author_role") or m.get("role") or "").strip().lower()
             content_lower = str(m.get("content", "")).lower()
-
-            # Anchor 1: Proposal introducing message
-            if mid in seed_set:
-                must_include_indices.add(idx)
-
-            # Anchor 2: Authoritative maintainer / BDFL ruling message
             if role in RULING_ROLES and any(kw in content_lower for kw in RULING_KEYWORDS):
-                must_include_indices.add(idx)
+                ruling_indices.append(idx)
 
-        # Always include the very last message if authored by an authorized maintainer
-        if candidate_msgs:
-            last_role = (
-                str(candidate_msgs[-1].get("author_role") or candidate_msgs[-1].get("role") or "")
-                .strip()
-                .lower()
-            )
-            if last_role in RULING_ROLES:
-                must_include_indices.add(len(candidate_msgs) - 1)
-
-        # Calculate word cost of must-include anchors
-        anchors_words = sum(
-            len(str(candidate_msgs[i].get("content", "")).split()) for i in must_include_indices
+        # Always consider the very last message as an anchor candidate if authored by an authorized maintainer
+        last_role = (
+            str(candidate_msgs[-1].get("author_role") or candidate_msgs[-1].get("role") or "")
+            .strip()
+            .lower()
         )
+        if last_role in RULING_ROLES and (len(candidate_msgs) - 1) not in ruling_indices:
+            ruling_indices.append(len(candidate_msgs) - 1)
 
-        selected_indices = set(must_include_indices)
-        current_words = anchors_words
+        # Determine primary seed anchor and latest ruling anchor
+        primary_seed_idx = seed_indices[0] if seed_indices else 0
+        latest_ruling_idx = ruling_indices[-1] if ruling_indices else None
+
+        essential_indices: list[int] = [primary_seed_idx]
+        if latest_ruling_idx is not None and latest_ruling_idx != primary_seed_idx:
+            essential_indices.append(latest_ruling_idx)
+        essential_indices.sort()
+
+        # Calculate word count of essential anchors
+        essential_words = [
+            len(str(candidate_msgs[i].get("content", "")).split()) for i in essential_indices
+        ]
+        total_essential_words = sum(essential_words)
+
+        # Case 1: Essential anchors alone exceed the target_word_limit
+        if total_essential_words > self.target_word_limit:
+            budget = max(1, self.target_word_limit)
+            if len(essential_indices) == 1:
+                capped = self._cap_message(candidate_msgs[essential_indices[0]], budget)
+                return [capped]
+
+            idx1, idx2 = essential_indices[0], essential_indices[1]
+            w1 = essential_words[0]
+            w2 = essential_words[1]
+
+            if w1 <= budget // 2:
+                alloc1 = w1
+                alloc2 = budget - alloc1
+            elif w2 <= budget // 2:
+                alloc2 = w2
+                alloc1 = budget - alloc2
+            else:
+                alloc1 = budget // 2
+                alloc2 = budget - alloc1
+
+            capped1 = self._cap_message(candidate_msgs[idx1], alloc1)
+            capped2 = self._cap_message(candidate_msgs[idx2], alloc2)
+            return [capped1, capped2]
+
+        # Case 2: Essential anchors fit. Fill remaining budget with other anchors, then chronological debate.
+        selected_map: dict[int, dict[str, Any]] = {i: candidate_msgs[i] for i in essential_indices}
+        current_words = total_essential_words
+
+        # Secondary anchors: other rulings (reverse chron) and other seeds
+        secondary_anchors: list[int] = []
+        for r_idx in reversed(ruling_indices):
+            if r_idx not in selected_map and r_idx not in secondary_anchors:
+                secondary_anchors.append(r_idx)
+        for s_idx in seed_indices:
+            if s_idx not in selected_map and s_idx not in secondary_anchors:
+                secondary_anchors.append(s_idx)
+
+        for a_idx in secondary_anchors:
+            w = len(str(candidate_msgs[a_idx].get("content", "")).split())
+            if current_words + w <= self.target_word_limit:
+                selected_map[a_idx] = candidate_msgs[a_idx]
+                current_words += w
 
         # Fill remaining budget with intermediate messages in chronological order
         for idx, m in enumerate(candidate_msgs):
-            if idx in selected_indices:
+            if idx in selected_map:
                 continue
-            msg_words = len(str(m.get("content", "")).split())
-            if current_words + msg_words <= self.target_word_limit:
-                selected_indices.add(idx)
-                current_words += msg_words
-            elif len(selected_indices) == len(must_include_indices) and not must_include_indices:
-                # If budget is extremely small, ensure at least one message is included
-                selected_indices.add(idx)
-                break
+            w = len(str(m.get("content", "")).split())
+            if current_words + w <= self.target_word_limit:
+                selected_map[idx] = m
+                current_words += w
 
-        # Return selected messages in strictly preserved chronological order
-        return [candidate_msgs[i] for i in sorted(selected_indices)]
+        return [selected_map[i] for i in sorted(selected_map.keys())]
+
+    @staticmethod
+    def _cap_message(msg: dict[str, Any], max_words: int) -> dict[str, Any]:
+        """Truncates a message's content to max_words while preserving its metadata and provenance."""
+        capped = dict(msg)
+        words = str(msg.get("content", "")).split()
+        if len(words) > max_words:
+            capped["content"] = " ".join(words[:max_words])
+            capped["raw_content"] = capped["content"]
+            capped["is_truncated"] = True
+        return capped
 
     def _extract_proposal_search_terms(self, prop: ProposalCandidate) -> list[str]:
         """Extracts distinctive lowercase search keywords from a proposal candidate."""
-        terms = []
+        terms: list[str] = []
         if prop.name:
+            clean_name = re.sub(r"[^\w\s]", " ", prop.name).strip()
+            terms.append(clean_name.lower())
             terms.append(prop.name.lower())
+            for word in clean_name.split():
+                if len(word) >= 3:
+                    terms.append(word.lower())
         if prop.syntax_or_api:
-            terms.append(prop.syntax_or_api.lower())
-        return [t for t in terms if len(t) >= 3]
+            clean_syntax = prop.syntax_or_api.strip()
+            if len(clean_syntax) >= 1:
+                terms.append(clean_syntax.lower())
+        seen: set[str] = set()
+        out: list[str] = []
+        for t in terms:
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
+        return out
