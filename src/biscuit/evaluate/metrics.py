@@ -221,17 +221,33 @@ def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
 def causal_rationale_alignment(
     predicted: Mapping[str, Sequence[float]],
     expected: Mapping[str, Sequence[float]],
+    *,
+    expected_count: int | None = None,
 ) -> dict[str, Any]:
-    """Compute cosine locally from provided embeddings; never invent model vectors."""
+    """Score observed cosine and independently enforce complete annotation coverage.
+
+    A high mean on one proposal cannot mask missing predicted rationales or
+    missing model-matched reference vectors. No reference vectors means
+    NOT_MEASURED, not a fabricated zero similarity score.
+    """
+    required = len(expected) if expected_count is None else expected_count
+    if required < len(expected) or required < 0:
+        raise ValueError("Rationale expected_count is smaller than provided references")
     similarities: dict[str, float] = {}
     for proposal_id, truth in expected.items():
-        if proposal_id not in predicted:
-            continue
-        similarities[proposal_id] = cosine_similarity(predicted[proposal_id], truth)
+        if proposal_id in predicted:
+            similarities[proposal_id] = cosine_similarity(predicted[proposal_id], truth)
+    evaluated = len(similarities)
     return {
-        "cra": sum(similarities.values()) / len(similarities) if similarities else None,
-        "evaluated": len(similarities),
-        "expected": len(expected),
+        "cra": sum(similarities.values()) / evaluated if evaluated else None,
+        "coverage": (
+            evaluated / required if expected and required
+            else None
+        ),
+        "evaluated": evaluated,
+        "expected": required,
+        "reference_vectors_available": len(expected),
+        "missing_proposal_ids": sorted(set(expected) - set(similarities)),
         "per_proposal": similarities,
     }
 
