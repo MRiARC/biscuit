@@ -31,6 +31,7 @@ if typer is not None:
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
         fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
+        audit_db: Path | None = typer.Option(None, "--audit-db"),  # noqa: B008
         output_format: str = typer.Option("rich", "--format"),
         strict_offsets: bool = typer.Option(False, "--strict-offsets"),
         verbose: bool = typer.Option(False, "--verbose"),
@@ -66,6 +67,7 @@ if typer is not None:
                         if all_benchmarks and predictions is not None else predictions
                     ),
                     fixtures_root=root,
+                    audit_db=audit_db,
                 )
                 for name in names
             ]
