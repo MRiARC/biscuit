@@ -32,7 +32,6 @@ from biscuit.evaluate.metrics import (
     pr_warning_metrics,
     proposal_recovery,
 )
-
 from biscuit.evaluate.runner import run_benchmark
 
 
