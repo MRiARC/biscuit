@@ -22,7 +22,7 @@ from biscuit.db.session import (
     init_db,
     split_sql_statements,
 )
-from biscuit.models import Contributor, SourceThread
+from biscuit.models import Contributor, Decision, DecisionAlternative, SourceThread
 
 
 def test_database_url_resolution(monkeypatch):
@@ -228,17 +228,44 @@ def test_postgres_sync_and_async_bootstrap_live():
     if not pg_url:
         pytest.skip("Live PostgreSQL URL not provided via TEST_POSTGRES_URL")
 
-    # 1. Test synchronous bootstrap
+    # 1. Test synchronous bootstrap and schema creation
     engine = get_engine(pg_url)
     init_db(engine)
 
     with get_session(engine) as session:
-        # Verify extensions are created
-        res = session.connection().execute(
+        # Verify vector extension exists
+        res = session.exec(
             text("SELECT extname FROM pg_extension WHERE extname = 'vector';")
-        ).fetchone()
+        ).first()
         assert res is not None
         assert res[0] == "vector"
+
+        # Verify writing vector column in PostgreSQL table succeeds
+        thread = SourceThread(
+            source_platform="discourse",
+            project_context="python/cpython",
+            external_thread_id="test_pg_thread_live",
+            title="PostgreSQL Integration Thread",
+            canonical_url="https://example.com/pg",
+        )
+        session.add(thread)
+        session.flush()
+
+        decision = Decision(
+            source_thread_id=thread.id,
+            primary_subject="Postgres test decision",
+        )
+        session.add(decision)
+        session.flush()
+
+        alt = DecisionAlternative(
+            decision_id=decision.id,
+            title="Live Postgres Vector Alternative",
+            embedding=[0.05] * 768,
+        )
+        session.add(alt)
+        session.flush()
+        assert alt.id is not None
 
     # 2. Test asynchronous bootstrap (statement-by-statement through asyncpg)
     async_url = get_async_database_url(pg_url)
@@ -249,11 +276,10 @@ def test_postgres_sync_and_async_bootstrap_live():
     async def _test_async():
         await init_async_db(async_engine)
         async with get_async_session(async_engine) as session:
-            conn = await session.connection()
-            res = await conn.execute(
+            res = await session.exec(
                 text("SELECT extname FROM pg_extension WHERE extname = 'vector';")
             )
-            row = res.fetchone()
+            row = res.first()
             assert row is not None
             assert row[0] == "vector"
 

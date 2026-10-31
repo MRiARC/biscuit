@@ -159,6 +159,14 @@ def get_engine(db_url: str | None = None, echo: bool = False):
     connect_args = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+    elif url.startswith(("postgresql://", "postgres://")):
+        try:
+            import psycopg  # noqa: F401
+        except ImportError:
+            if url.startswith("postgresql://"):
+                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+            elif url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+psycopg2://", 1)
     return create_engine(url, echo=echo, connect_args=connect_args)
 
 
