@@ -180,6 +180,11 @@ Full-Stack Memory Profile (Peak Execution Budget):
 * **Features:**
   * Auto-generated shell completion (`biscuit --install-completion`).
   * Rich terminal scorecards, benchmark execution tables, and colored diff outputs.
+* **Proposed Command Surface (Stream 5, per issue #21):**
+  * `biscuit evaluate --benchmark pep-505 [--verbose] [--strict-offsets] [--output json]` — runs the offline benchmark and renders the Rich scorecard (the module-level runner interface from `EVALUATION_AND_BENCHMARKS.md` §5, `python -m biscuit.evaluate`, is exposed as this subcommand).
+  * `biscuit ingest --platform discourse|mbox|github --url <url>` — ingests a thread into the local database.
+  * `biscuit decisions list --status REJECTED` — interactive table of recovered decisions.
+  * `biscuit export --output docs/decisions/` — exports MADR 3.0 markdown files to disk.
 
 ---
 
