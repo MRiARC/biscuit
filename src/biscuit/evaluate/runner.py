@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,7 @@ def run_benchmark(
     output_path: Path | None = None,
     audit_db: Path | None = None,
     recorded_replay: bool = False,
+    semantic_embedder: Callable[[str], Sequence[float]] | None = None,
 ) -> BenchmarkOutcome:
     """Score supplied predictions without passing labels or official PEP text to extraction.
 
@@ -128,14 +129,25 @@ def run_benchmark(
     gt_proposals = truth["proposals"]
     truth_states = {p["proposal_id"]: p["ground_truth_status"] for p in gt_proposals}
     truth_anchors = [anchor for p in gt_proposals for anchor in p.get("code_anchors", [])]
-    truth_vectors = {
-        p["proposal_id"]: (
-            hashed_text_embedding(p["rationale_text"])
-            if "rationale_text" in p else p["rationale_embedding"]
-        )
-        for p in gt_proposals
-        if "rationale_text" in p or "rationale_embedding" in p
-    }
+    if semantic_embedder is not None:
+        # The withheld oracle's text is NEVER sent to an inference/embedding endpoint.
+        # Independent, model-matched reference vectors must already be pinned in GT.
+        model_id = str(getattr(semantic_embedder, "model", ""))
+        truth_vectors = {
+            p["proposal_id"]: p["rationale_embedding"]
+            for p in gt_proposals
+            if model_id and p.get("rationale_embedding_model") == model_id
+            and "rationale_embedding" in p
+        }
+    else:
+        truth_vectors = {
+            p["proposal_id"]: (
+                hashed_text_embedding(p["rationale_text"])
+                if "rationale_text" in p else p["rationale_embedding"]
+            )
+            for p in gt_proposals
+            if "rationale_text" in p or "rationale_embedding" in p
+        }
     raw = {msg["message_id"]: msg["raw_text"] for msg in thread["messages"]}
 
     if predictions is None:
@@ -175,14 +187,21 @@ def run_benchmark(
             }
             for p in recovered for anchor in p.get("code_anchors", [])
         ]
-        found_vectors = {
-            p["proposal_id"]: (
-                hashed_text_embedding(p["rationale_text"])
-                if "rationale_text" in p else p["rationale_embedding"]
-            )
-            for p in recovered
-            if "rationale_text" in p or "rationale_embedding" in p
-        }
+        if semantic_embedder is not None:
+            found_vectors = {
+                p["proposal_id"]: list(semantic_embedder(p["rationale_text"]))
+                for p in recovered
+                if truth_vectors and "rationale_text" in p
+            }
+        else:
+            found_vectors = {
+                p["proposal_id"]: (
+                    hashed_text_embedding(p["rationale_text"])
+                    if "rationale_text" in p else p["rationale_embedding"]
+                )
+                for p in recovered
+                if "rationale_text" in p or "rationale_embedding" in p
+            }
         recovery = proposal_recovery(recovered_ids, list(truth_states))
         state = lifecycle_accuracy(recovered_states, truth_states)
         evidence = exact_evidence_match(predictions.get("evidence", []), raw)
@@ -236,9 +255,16 @@ def run_benchmark(
             "alternative_disambiguation": disambiguation,
             "rationale": {
                 **rationale, "embedding_method": (
-                    "DETERMINISTIC_HASHED_TEXT_LEXICAL_PROXY_NOT_SEMANTIC"
+                    "LOCAL_SEMANTIC_MODEL_PREDICTIONS_PRECOMPUTED_WITHHELD_GT"
+                    if semantic_embedder is not None and truth_vectors
+                    else "NOT_MEASURED_GT_MODEL_VECTORS_MISSING"
+                    if semantic_embedder is not None
+                    else "DETERMINISTIC_HASHED_TEXT_LEXICAL_PROXY_NOT_SEMANTIC"
                     if any("rationale_text" in p for p in gt_proposals)
                     else "EXTERNALLY_SUPPLIED_VECTORS"
+                ), "embedding_model": (
+                    str(getattr(semantic_embedder, "model", ""))
+                    if semantic_embedder is not None else None
                 )
             },
             "watchdog": watchdog,
