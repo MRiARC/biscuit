@@ -221,7 +221,7 @@ def pr_warning_metrics(
     if warning_records is not None:
         for record in warning_records:
             if not isinstance(record, Mapping):
-                raise ValueError("Warning audit record must be an object")
+                raise TypeError("Warning audit record must be an object")
             case_id = str(record.get("case_id", ""))
             if case_id not in labels or case_id in supplied_records:
                 raise ValueError("Unknown or duplicate warning audit case ID")

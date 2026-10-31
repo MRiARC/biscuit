@@ -13,9 +13,9 @@ from .audit import write_pr_audit
 from .fixtures import (
     DEFAULT_FIXTURE_ROOT,
     load_ground_truth,
-    load_simulated_predictions,
     load_pr_expected_alternatives,
     load_pr_labels,
+    load_simulated_predictions,
     load_thread,
     predictor_input,
 )

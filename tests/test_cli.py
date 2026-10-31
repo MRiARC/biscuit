@@ -242,6 +242,7 @@ def test_cli_all_uses_three_synthetic_fixtures_without_false_history(tmp_path) -
 
 def test_typer_cli_no_simulate_remains_unmeasured(tmp_path) -> None:
     from typer.testing import CliRunner
+
     from biscuit.cli.main import app
 
     response = CliRunner().invoke(
