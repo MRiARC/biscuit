@@ -402,10 +402,12 @@ Per **PR #7 Review (6)**:
 
 1. **Human Annotation Protocol:**  
    Ground truth was annotated directly from final, accepted PEP texts (e.g. `pep-0505.rst` under `python/peps`). For each proposal, the annotator recorded: (1) proposal syntax variant, (2) final resolution status, (3) exact quotation of author/BDFL ruling in the discussion thread with post number, and (4) affected source code files and AST node types.
-2. **Source Thread Snapshots & Checksums:**  
-   Each raw discussion thread is preserved as an immutable JSON fixture with a recorded SHA-256 digest (`thread_sha256`).
-3. **Dataset Licensing & Fair Use:**  
-   The deliberation archives (`discuss.python.org`, `python-ideas@python.org`) are published publicly under the **Python Software Foundation (PSF) License** and **Creative Commons CC-BY-SA 4.0**. Used for benchmark evaluation under fair use.
+2. **Source Thread Snapshots & Canonical Checksums:**  
+   The `thread_sha256` value shown in the fixture example is a documented placeholder digest. For benchmark execution, each raw discussion fixture is serialized to canonical JSON (UTF-8, `sort_keys=True`, separators `(',', ':')`) and hashed via `hashlib.sha256(canonical_bytes).hexdigest()` to guarantee tamper-proof reproducibility.
+3. **Source-Specific Licensing & Compliance:**  
+   - **`discuss.python.org` (PEP 505, PEP 557):** Content is contributed under **Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported (CC BY-NC-SA 3.0)** per PSF Discourse Terms of Service.
+   - **`python-ideas@python.org` (PEP 572):** Public mailing list archives maintained by the Python Software Foundation, distributed under the **Python Software Foundation (PSF) License** and public archival fair use.
+   - All evaluation benchmarks operate strictly on publicly archived, non-confidential discussions.
 4. **Held-Out Split & Contamination Prevention:**  
    - The final PEP document text is strictly excluded from all model prompts and context windows.
    - The 20 simulated PR diff test cases are authored independently as synthetic diffs against modern CPython to ensure zero test-set leakage.

@@ -58,9 +58,9 @@ flowchart TD
 
     subgraph GateCriteria["Mandatory Gate Invariants"]
         I1["1. Alternative status == 'REJECTED' (Authoritative ruling)"]
-        I2["2. Ruling evidence is 'VERIFIED_EXACT'"]
+        I2["2. Ruling evidence is 'VERIFIED_EXACT' (Human maintainer/consensus)"]
         I3["3. PR diff touches code_anchor bound to THIS alternative"]
-        I4["4. Provisional cosine >= 0.82 (Pending calibrated validation)"]
+        I4["4. AST structural equivalence verified (matches rejected construct)"]
     end
 
     Gate --> AllPass{"Do ALL 4 Invariants Pass?"}
@@ -185,9 +185,9 @@ Per **PR #7 Review (5)**:
 | Invariant | Requirement | Failure Action |
 |---|---|---|
 | **1. Decision State** | `decision_alternatives.lifecycle_status == 'REJECTED'` | **ABSTAIN.** (Never warn on `DISPUTED`, `UNRESOLVED`, or `PROPOSED` items). |
-| **2. Authoritative Ruling** | `ruling_evidence_id` has `verification_status == 'VERIFIED_EXACT'` signed by an authority or consensus. `MODEL_INFERRED` alone cannot authorize a warning. | **ABSTAIN.** (Never warn based on unverified evidence or speculative inference). |
+| **2. Authoritative Ruling** | `ruling_evidence_id` has `verification_status == 'VERIFIED_EXACT'` signed by an authority or consensus (`BDFL`, `CORE_MAINTAINER_CONSENSUS`). `MODEL_INFERRED` alone cannot authorize a warning. | **ABSTAIN.** (Never warn based on unverified evidence or speculative inference). |
 | **3. Alternative Code Anchor** | Modified PR code touches an active `code_anchor` bound directly to THIS alternative. | **ABSTAIN.** (Never warn based on semantic similarity to unrelated code). |
-| **4. Semantic Confidence** | Semantic diff cosine similarity $\ge 0.82$ against the specific rejection rationale. | **ABSTAIN.** (If match is borderline or ambiguous, stay silent). |
+| **4. AST Structural Equivalence** | AST/CST subtree comparison confirms PR introduces the rejected syntax/construct (not an accepted or refactored pattern). | **ABSTAIN.** (Never warn on semantic embedding similarity alone). |
 
 ### Hard Negatives and Threshold Recalibration:
 - **Hard Negative Filtering:** If a PR modifies syntax for an accepted language feature (e.g. ternary operator `a if b else c`) in the same file where unary `?` was rejected, the AST classifier detects that the node is a conditional expression and **ABSTAINS**.

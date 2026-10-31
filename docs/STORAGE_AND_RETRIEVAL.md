@@ -244,18 +244,20 @@ CREATE TABLE source_message_versions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     message_id UUID NOT NULL REFERENCES source_messages(id) ON DELETE CASCADE,
     version_number INT NOT NULL DEFAULT 1,
-    raw_content TEXT NOT NULL,             -- IMMUTABLE CAPTURE: Never overwritten
-    content_hash VARCHAR(64) NOT NULL,     -- SHA-256 of raw_content
+    raw_content TEXT NOT NULL,             -- IMMUTABLE RAW CAPTURE: Exactly as received over the wire (no CRLF normalization)
+    content_hash VARCHAR(64) NOT NULL,     -- SHA-256 of raw_content byte-for-byte
     captured_at TIMESTAMPTZ DEFAULT NOW(),
     is_current BOOLEAN NOT NULL DEFAULT TRUE,
     edit_state message_edit_state NOT NULL DEFAULT 'ORIGINAL',
     edit_reason TEXT,
     deleted_at TIMESTAMPTZ,                -- Non-null if tombstoned/deleted remotely
-    derived_cleaned_content TEXT,          -- Derived text post-noise-filtering
+    derived_cleaned_content TEXT,          -- Derived text post-noise-filtering and CRLF normalization
     CONSTRAINT uq_message_version UNIQUE (message_id, version_number)
 );
 
 CREATE INDEX idx_message_versions_current ON source_message_versions(message_id) WHERE is_current = TRUE;
+-- Enforce exactly one current active version per message
+CREATE UNIQUE INDEX uq_message_single_current ON source_message_versions(message_id) WHERE is_current = TRUE;
 
 -- ─────────────────────────────────────────────────────────────
 -- 3. TYPED DELIBERATION EDGES (GRAPH MODEL)
@@ -284,6 +286,9 @@ CREATE TABLE discussion_edges (
     source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE CASCADE,
     from_message_id UUID NOT NULL REFERENCES source_messages(id) ON DELETE CASCADE,
     to_message_id UUID NOT NULL REFERENCES source_messages(id) ON DELETE CASCADE,
+    target_decision_id UUID REFERENCES decisions(id) ON DELETE CASCADE,
+    target_alternative_id UUID REFERENCES decision_alternatives(id) ON DELETE CASCADE,
+    evidence_span_id UUID,                 -- Back-link to evidence span substantiating the edge
     edge_type discussion_edge_type NOT NULL,
     edge_provenance edge_provenance NOT NULL,
     confidence_score FLOAT NOT NULL DEFAULT 1.0,
@@ -293,6 +298,7 @@ CREATE TABLE discussion_edges (
 
 CREATE INDEX idx_edges_thread ON discussion_edges(source_thread_id);
 CREATE INDEX idx_edges_nodes ON discussion_edges(from_message_id, to_message_id);
+CREATE INDEX idx_edges_alt ON discussion_edges(target_alternative_id);
 
 -- ─────────────────────────────────────────────────────────────
 -- 4. DECISIONS & ALTERNATIVE LIFECYCLES
@@ -300,7 +306,7 @@ CREATE INDEX idx_edges_nodes ON discussion_edges(from_message_id, to_message_id)
 
 CREATE TYPE decision_resolution AS ENUM ('RESOLVED', 'UNRESOLVED', 'DISPUTED');
 CREATE TYPE resolution_type AS ENUM ('ACCEPTED', 'REJECTED', 'DEFERRED', 'WITHDRAWN', 'SUPERSEDED');
-CREATE TYPE ruling_authority AS ENUM ('BDFL', 'CORE_MAINTAINER_CONSENSUS', 'WORKING_GROUP', 'MODEL_INFERRED');
+CREATE TYPE ruling_authority AS ENUM ('BDFL', 'CORE_MAINTAINER_CONSENSUS', 'WORKING_GROUP');
 
 CREATE TABLE decisions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -348,7 +354,9 @@ CREATE TABLE decision_alternatives (
     ruling_evidence_id UUID,               -- Foreign key linked below
     embedding vector(768),                 -- nomic-embed-text-v1.5
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT uq_alt_proposal UNIQUE (decision_id, proposal_text)
+    CONSTRAINT uq_alt_proposal UNIQUE (decision_id, proposal_text),
+    -- Non-negotiable invariant: REJECTED requires an authoritative non-null ruling_evidence_id
+    CONSTRAINT chk_rejected_requires_ruling CHECK (lifecycle_status != 'REJECTED' OR ruling_evidence_id IS NOT NULL)
 );
 
 -- HNSW Vector Index for Instant Semantic Matching
@@ -412,16 +420,19 @@ CREATE TABLE code_anchors (
     start_byte INT,
     end_byte INT,
     parser_name VARCHAR(64) NOT NULL DEFAULT 'tree-sitter-python',
+    parser_version VARCHAR(32) NOT NULL DEFAULT '0.22.0',
     grammar_version VARCHAR(32) NOT NULL DEFAULT 'v0.22.0',
     fingerprint_algorithm VARCHAR(32) NOT NULL DEFAULT 'ast-canonical-hash-v1',
+    ast_normalization_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     ast_structural_fingerprint VARCHAR(64),
     signature_hash VARCHAR(64),
     anchor_state anchor_state NOT NULL DEFAULT 'HISTORICAL',
     historical_file_path TEXT NOT NULL,
     historical_commit_sha VARCHAR(64) NOT NULL,
     head_commit_sha VARCHAR(64),
-    mapping_confidence FLOAT NOT NULL DEFAULT 1.0,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    mapping_confidence FLOAT,              -- Explicitly computed; never defaulted to 1.0
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_anchor_confidence CHECK (mapping_confidence IS NULL OR (mapping_confidence >= 0.0 AND mapping_confidence <= 1.0))
 );
 
 CREATE INDEX idx_code_anchors_alt ON code_anchors(alternative_id);
@@ -437,7 +448,9 @@ CREATE TABLE code_anchor_lineage (
     migrated_path TEXT,
     transition_type VARCHAR(32) NOT NULL,   -- 'EXACT_MATCH', 'RENAME_M', 'COPY_C', 'REWRITE_SPLIT_B', 'SYMBOL_MOVED', 'DELETED', 'AMBIGUOUS'
     confidence_score FLOAT NOT NULL,
-    recorded_at TIMESTAMPTZ DEFAULT NOW()
+    mapping_evidence_span_id UUID,          -- Linked evidence span if mapping is documented in commit message/PR
+    recorded_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_lineage_confidence CHECK (confidence_score >= 0.0 AND confidence_score <= 1.0)
 );
 
 -- ─────────────────────────────────────────────────────────────
@@ -561,6 +574,7 @@ CREATE TABLE decision_event_log (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE CASCADE,
     source_thread_id UUID REFERENCES source_threads(id),
+    occurrence_id UUID REFERENCES proposal_occurrences(id) ON DELETE SET NULL,
     recurrence_number INT NOT NULL DEFAULT 1,
     event_type VARCHAR(32) NOT NULL,        -- 'STATUS_CHANGE', 'RULING_OVERTURNED', 'RECURRENCE_RECORDED'
     previous_status proposal_lifecycle,
