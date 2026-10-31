@@ -32,6 +32,7 @@ if typer is not None:
         simulate: bool = typer.Option(True, "--simulate/--no-simulate"),
         stream3: bool = typer.Option(False, "--stream3"),
         semantic_embeddings: bool = typer.Option(False, "--semantic-embeddings"),
+        profile_memory: bool = typer.Option(False, "--profile-memory"),
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
         fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
@@ -94,6 +95,7 @@ if typer is not None:
                     fixtures_root=root,
                     predictor=predictor,
                     semantic_embedder=embedder,
+                    profile_host_memory=profile_memory and predictor is not None,
                     audit_db=audit_db or _default_db(),
                     recorded_replay=predictions is None and simulate and not stream3,
                 )
