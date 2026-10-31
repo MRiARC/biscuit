@@ -179,6 +179,7 @@ During the pitch and judging:
 ---
 
 ## 7. Specifications Map
+- [`docs/TWO_PILLAR_ARCHITECTURE.md`](./TWO_PILLAR_ARCHITECTURE.md): Authoritative Master Two-Way Architecture Specification (Pillar 1 + Pillar 2).
 - [`docs/TECH_STACK_AND_ARCHITECTURE.md`](./TECH_STACK_AND_ARCHITECTURE.md): Complete tech stack justifications and module architecture.
 - [`docs/LIVING_DECISION_INTELLIGENCE.md`](./LIVING_DECISION_INTELLIGENCE.md): Day 1+ live CNCF Slack/Discord interception, Switch FastMCP, and HITL approval cards.
 - [`docs/STORAGE_AND_RETRIEVAL.md`](./STORAGE_AND_RETRIEVAL.md): Relational DDL, message versions, typed edges, and vector schema.

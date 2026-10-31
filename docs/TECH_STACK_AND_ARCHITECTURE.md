@@ -98,9 +98,13 @@ Time-Sliced Model Execution Schedule:
 
 ## 4. Upgraded Core Implementation Architecture
 
+> [!IMPORTANT]
+> The complete, end-to-end blueprint detailing both **Pillar 1: The Past (Historical Knowledge Recovery)** and **Pillar 2: Day 1+ (Living Decision Intelligence & Switch FastMCP)** is documented in [`docs/TWO_PILLAR_ARCHITECTURE.md`](./TWO_PILLAR_ARCHITECTURE.md).
+
 ```mermaid
 flowchart TD
-    subgraph S1["1. UNIVERSAL INGESTION & IMMUTABLE PROVENANCE"]
+    %% Historical Stream
+    subgraph S1["1. PILLAR 1: UNIVERSAL INGESTION & IMMUTABLE PROVENANCE"]
         Raw["Raw Discussion Threads<br/>(Discourse, GitHub, Mailing Lists)"] --> Ingest["Universal Adapters"]
         Ingest --> DB_Msg[("source_threads<br/>source_messages")]
         DB_Msg --> DB_Ver[("source_message_versions<br/>(Monotonic v1..vN, SHA-256,<br/>raw_content BYTE-FOR-BYTE EXACT)")]
@@ -130,6 +134,16 @@ flowchart TD
         RelStore --> ASTGround["Tree-sitter CST + Python AST Linker<br/>(Maps alternative to code symbols)"]
         ASTGround --> FwdGit["Forward Commit-DAG Lineage Engine<br/>(git diff-tree -M80% -C -B + AST tracking)"]
         FwdGit --> Anchors[("code_anchors + code_anchor_lineage<br/>(HISTORICAL ➔ MIGRATED / CURRENT)")]
+    end
+
+    %% Day 1+ Live Stream
+    subgraph S6["6. PILLAR 2: DAY 1+ LIVING INTELLIGENCE (SWITCH FASTMCP)"]
+        LiveChat["Live Chat (CNCF Slack, Discord)"] --> SwitchHook["Switch FastMCP Gateway"]
+        SwitchHook --> LiveBuffer["Live Deliberation Window Buffer"]
+        LiveBuffer --> ConsensusDetect{"Consensus Heuristic or<br/>@biscuit record-decision"}
+        ConsensusDetect --> LiveDraft["Synthesize living_decision_drafts"]
+        LiveDraft --> SwitchHITL["Switch Block Kit Approval Card"]
+        SwitchHITL -- Maintainer Approves --> RelStore
     end
 
     subgraph S5["5. PR DIFF WATCHDOG & GUARDRAIL GATE"]
