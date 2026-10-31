@@ -744,17 +744,10 @@ def test_discussion_edge_evidence_mismatch_composite_fk_negative(test_db_session
 def test_alternative_ruling_evidence_backlink_negative(test_db_session):
     """Negative: an alternative cannot cite evidence bound to another alternative.
 
-    The composite back-link FK (ruling_evidence_id, id) → evidence_spans
-    (id, alternative_id) participates in the decisions ↔ evidence_spans DDL
-    cycle, so SQLAlchemy emits it as a post-create ALTER TABLE on PostgreSQL
-    (matching canonical DDL §7) but cannot apply it inside SQLite's CREATE
-    TABLE. The assertion therefore runs on PostgreSQL; on SQLite the
-    equivalent is covered by the raw-SQL tests in the live-PG suite.
+    _bootstrap_sqlite_schema emits the cyclic §7 composite FK inline so SQLite
+    enforces it exactly as PostgreSQL does via post-create ALTER TABLE.
     """
     from sqlalchemy.exc import IntegrityError
-
-    if test_db_session.get_bind().dialect.name != "postgresql":
-        pytest.skip("cyclic back-link FK is emitted as ALTER TABLE (PostgreSQL only)")
 
     graph = _build_discussion_graph(test_db_session)
 
@@ -806,13 +799,10 @@ def test_alternative_ruling_evidence_backlink_negative(test_db_session):
 def test_decision_ruling_evidence_backlink_negative(test_db_session):
     """Negative: a decision cannot cite evidence not bound to that decision.
 
-    PostgreSQL-only for the same cyclic ALTER TABLE reason as the alternative
-    back-link test above.
+    _bootstrap_sqlite_schema emits the cyclic §7 composite FK inline so SQLite
+    enforces it exactly as PostgreSQL does via post-create ALTER TABLE.
     """
     from sqlalchemy.exc import IntegrityError
-
-    if test_db_session.get_bind().dialect.name != "postgresql":
-        pytest.skip("cyclic back-link FK is emitted as ALTER TABLE (PostgreSQL only)")
 
     graph = _build_discussion_graph(test_db_session)
 

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlmodel import select
 
 from biscuit.db.session import (
@@ -488,17 +488,6 @@ def _seed_verified_ruling_graph(session):
     }
 
 
-def _pg_rejection():
-    """Exception tuple covering DB rejections across PG drivers.
-
-    CHECK/FK violations surface as IntegrityError, but PL/pgSQL RAISE EXCEPTION
-    surfaces as ProgrammingError (psycopg3) or InternalError (psycopg2/asyncpg).
-    """
-    from sqlalchemy.exc import IntegrityError, InternalError, ProgrammingError
-
-    return (IntegrityError, ProgrammingError, InternalError)
-
-
 def test_postgres_negative_trigger_enforcement_live():
     """Live PG: triggers reject forbidden writes and audits lifecycle changes."""
 
@@ -514,7 +503,7 @@ def test_postgres_negative_trigger_enforcement_live():
         graph = _seed_verified_ruling_graph(session)
 
         # 1. Hash forgery: raw_content with a wrong digest is rejected.
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "INSERT INTO source_message_versions "
@@ -528,7 +517,7 @@ def test_postgres_negative_trigger_enforcement_live():
         session.rollback()
 
         # 2. Version immutability: UPDATE of raw_content is rejected.
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "UPDATE source_message_versions SET raw_content = 'rewritten' "
@@ -540,7 +529,7 @@ def test_postgres_negative_trigger_enforcement_live():
         session.rollback()
 
         # 3. Non-exact VERIFIED_EXACT: wrong quote is rejected.
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "INSERT INTO evidence_spans "
@@ -561,7 +550,7 @@ def test_postgres_negative_trigger_enforcement_live():
         session.rollback()
 
         # 4. Unauthorized REJECTED ruling: model-inferred authority is rejected.
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "UPDATE decision_alternatives SET lifecycle_status = 'REJECTED', "
@@ -584,7 +573,7 @@ def test_postgres_negative_trigger_enforcement_live():
         # rejected. These FKs are ALTER TABLE constraints, so only PostgreSQL
         # enforces them.
         other_alt_id = str(uuid.uuid4())
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "INSERT INTO decision_alternatives "
@@ -604,7 +593,7 @@ def test_postgres_negative_trigger_enforcement_live():
         session.rollback()
 
         other_decision_id = str(uuid.uuid4())
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "INSERT INTO decisions "
@@ -633,7 +622,7 @@ def test_postgres_negative_trigger_enforcement_live():
             )
         ).first()
         assert seeded_log is not None
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text("UPDATE decision_event_log SET reason = 'tampered' WHERE id = :lid"),
                 {"lid": str(seeded_log.id)},
@@ -642,7 +631,7 @@ def test_postgres_negative_trigger_enforcement_live():
         session.rollback()
 
         # 6. Direct lifecycle UPDATE without actor/reason GUCs is rejected.
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "UPDATE decision_alternatives SET lifecycle_status = 'ACCEPTED' "
@@ -683,7 +672,7 @@ def test_postgres_negative_trigger_enforcement_live():
         assert "ruling_actor_id" in audited.authority_snapshot
 
         # 8. Repeat transition to the same status fails (idempotence guard).
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text("SELECT transition_alternative_lifecycle(:alt, 'REJECTED', "
                      ":actor, :reason)"),
@@ -697,7 +686,7 @@ def test_postgres_negative_trigger_enforcement_live():
         session.rollback()
 
         # 9. Rollback semantics: a failing transition leaves no audit row.
-        with pytest.raises(_pg_rejection()):
+        with pytest.raises(DBAPIError):
             session.execute(
                 text(
                     "UPDATE decision_alternatives SET lifecycle_status = 'ACCEPTED' "
@@ -715,6 +704,57 @@ def test_postgres_negative_trigger_enforcement_live():
             )
         ).all()
         assert accepted_events == []
+
+
+def test_postgres_lifecycle_transition_privileges_live():
+    """Untrusted DB roles must not execute the SECURITY DEFINER transition function."""
+    engine = get_engine(_pg_url())
+    init_db(engine)
+
+    signature = (
+        "public.transition_alternative_lifecycle("
+        "uuid,text,uuid,text,uuid,text,uuid,uuid)"
+    )
+    with get_session(engine) as session:
+        executor_allowed = session.execute(
+            text("SELECT has_function_privilege('biscuit_transition_executor', :fn, 'EXECUTE')"),
+            {"fn": signature},
+        ).scalar_one()
+        untrusted_allowed = session.execute(
+            text("SELECT has_function_privilege('pg_monitor', :fn, 'EXECUTE')"),
+            {"fn": signature},
+        ).scalar_one()
+        assert executor_allowed is True
+        assert untrusted_allowed is False
+
+        # PostgreSQL ships pg_monitor as an unprivileged role. Attempt a
+        # real unauthorized call, including a forged actor UUID.
+        session.execute(text("SET LOCAL ROLE pg_monitor"))
+        with pytest.raises(DBAPIError, match="permission denied"):
+            session.execute(
+                text(
+                    "SELECT public.transition_alternative_lifecycle("
+                    ":alt, 'ACCEPTED', :actor, :reason)"
+                ),
+                {
+                    "alt": str(uuid.uuid4()),
+                    "actor": str(uuid.uuid4()),
+                    "reason": "forged actor",
+                },
+            )
+        session.rollback()
+
+    with get_session(engine) as session:
+        session.execute(text("SET LOCAL ROLE pg_monitor"))
+        with pytest.raises(DBAPIError, match="permission denied"):
+            session.execute(
+                text(
+                    "UPDATE decision_alternatives "
+                    "SET lifecycle_status = 'ACCEPTED' WHERE id = :alt"
+                ),
+                {"alt": str(uuid.uuid4())},
+            )
+        session.rollback()
 
 
 @pytest.mark.anyio
