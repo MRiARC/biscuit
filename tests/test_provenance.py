@@ -25,6 +25,7 @@ def test_exact_verification_success():
 
     span = EvidenceSpan(
         source_message_version_id=uuid4(),
+        decision_id=uuid4(),
         exact_quote=quote,
         start_char=start,
         end_char=end,
@@ -53,6 +54,7 @@ def test_unicode_and_multiline_codepoint_offsets():
 
     span = EvidenceSpan(
         source_message_version_id=uuid4(),
+        decision_id=uuid4(),
         exact_quote=quote,
         start_char=start,
         end_char=end,
@@ -73,6 +75,7 @@ def test_single_character_drift_remains_unverified():
     # Intentionally shift start offset by 1
     span = EvidenceSpan(
         source_message_version_id=uuid4(),
+        decision_id=uuid4(),
         exact_quote=quote,
         start_char=start + 1,
         end_char=start + 1 + len(quote),
@@ -94,6 +97,7 @@ def test_zero_fuzzy_matching_rejects_subtle_differences():
 
     span = EvidenceSpan(
         source_message_version_id=uuid4(),
+        decision_id=uuid4(),
         exact_quote=quote,
         start_char=start,
         end_char=end,
@@ -115,6 +119,7 @@ def test_hash_mismatch_remains_unverified():
 
     span = EvidenceSpan(
         source_message_version_id=uuid4(),
+        decision_id=uuid4(),
         exact_quote=quote,
         start_char=start,
         end_char=end,
@@ -133,6 +138,7 @@ def test_edited_message_marks_stale_edited():
     quote = "Initial comment about approach."
     span = EvidenceSpan(
         source_message_version_id=uuid4(),
+        decision_id=uuid4(),
         exact_quote=quote,
         start_char=0,
         end_char=len(quote),
@@ -157,6 +163,7 @@ def test_candidate_span_matcher_creation():
     msg_id = uuid4()
     span1 = CandidateSpanMatcher.create_evidence_span(
         source_message_version_id=msg_id,
+        decision_id=uuid4(),
         message_content=content,
         quote=quote,
         evidence_role=EvidenceRole.OBJECTION,
