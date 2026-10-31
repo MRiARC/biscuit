@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Python/bltinmodule.c",
-      "diff": "+# Proposed rejected special form\n+assign(NAME, EXPR)"
+      "diff": "diff --git a/Python/bltinmodule.c b/Python/bltinmodule.c\n--- a/Python/bltinmodule.c\n+++ b/Python/bltinmodule.c\n@@ -0,0 +1,2 @@\n+# Proposed rejected special form\n+assign(NAME, EXPR)"
     }
   ],
   "fixture_origin": "SYNTHETIC"
