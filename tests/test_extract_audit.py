@@ -2,7 +2,9 @@
 
 import io
 import json
+import threading
 import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import UUID, uuid4
 
 import pytest
@@ -228,3 +230,63 @@ def test_postgres_writer_uses_parameterized_extraction_runs_upsert():
     assert args[4] == '{"mock_mode":true}'
     assert args[5] == "e" * 64
     assert record["run_config_sha256"] == "e" * 64
+
+
+def test_full_pipeline_through_local_http_ollama_protocol():
+    """A real loopback HTTP server exercises the live client, unload order and JSON."""
+    observed = []
+
+    class OllamaHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers["Content-Length"])
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            observed.append((self.path, payload))
+            if "prompt" not in payload:
+                body = {}
+            elif payload["model"] == "llama3.2:3b":
+                body = {"response": json.dumps({"proposals": [
+                    {"proposal_id": "P1", "name": "Backend", "summary": "REST API"},
+                ]})}
+            elif payload["model"] == "phi3.5":
+                body = {"response": '{"arguments":[]}'}
+            else:
+                body = {"response": '{"status":"UNRESOLVED","considered_alternatives":[]}'}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+
+        def do_GET(self):
+            observed.append((self.path, {}))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"models":[]}')
+
+        def log_message(self, fmt, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OllamaHandler)
+    runner = threading.Thread(target=server.serve_forever, daemon=True)
+    runner.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        result = ExtractionPipeline(LocalLLMClient(base_url=url, mock_mode=False)).run(
+            thread_id="local-http", topic="Backend", messages=[
+                {"message_id": "m1", "source_message_version_id": uuid4(),
+                 "author": "alice", "content": "Proposal P1 introduces a REST API."},
+            ]
+        )
+        assert result.run_status == "SUCCESS"
+        assert len(result.proposals) == 1
+        assert [payload["model"] for path, payload in observed
+                if path == "/api/generate" and "prompt" in payload] == [
+                    "llama3.2:3b", "phi3.5", "qwen2.5-coder:7b"
+                ]
+        assert sum(path == "/api/ps" for path, _ in observed) == 3
+        assert all(payload["keep_alive"] == 0 for path, payload in observed
+                   if path == "/api/generate")
+    finally:
+        server.shutdown()
+        server.server_close()
+        runner.join(timeout=3)
