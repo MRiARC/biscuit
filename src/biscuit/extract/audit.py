@@ -43,6 +43,17 @@ class PostgresExtractionAuditWriter:
         try:
             cursor = self.connection.cursor()
             try:
+                # PostgreSQL's ::jsonb::text canonical representation is not
+                # byte-identical to Python's sorted compact JSON encoding.
+                # Compute the authoritative digest in PostgreSQL per the DDL contract.
+                cursor.execute(
+                    "SELECT encode(digest((%s::jsonb)::text, 'sha256'), 'hex')",
+                    (canonical_json(record["run_config"]),),
+                )
+                db_hash_row = cursor.fetchone()
+                if not db_hash_row or not isinstance(db_hash_row[0], str):
+                    raise RuntimeError("Cannot compute canonical PostgreSQL run_config hash")
+                record["run_config_sha256"] = db_hash_row[0]
                 cursor.execute(
                     """
                     INSERT INTO extraction_runs (
