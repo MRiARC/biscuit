@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Python/ast.c",
-      "diff": "-return (left+right);\n+return (left + right);"
+      "diff": "diff --git a/Python/ast.c b/Python/ast.c\n--- a/Python/ast.c\n+++ b/Python/ast.c\n@@ -1,1 +1,1 @@\n-return (left+right);\n+return (left + right);"
     }
   ],
   "fixture_origin": "SYNTHETIC"
