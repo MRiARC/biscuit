@@ -418,7 +418,12 @@ def test_extraction_pipeline_end_to_end_with_exact_verification():
 
     pipeline = ExtractionPipeline(client=client)
     result: ExtractionRunResult = pipeline.run(
-        thread_id=thread_id, topic=topic, messages=messages, decision_id="DEC-PEP505"
+        thread_id=thread_id,
+        topic=topic,
+        messages=messages,
+        decision_id=str(uuid4()),
+        alternative_ids={"P1": uuid4()},
+        verified_project_roles={"gvanrossum": "bdfl", "steve_dower": "contributor"},
     )
 
     # 1. Assert overall pipeline execution status
@@ -1061,7 +1066,11 @@ def test_consensus_requires_signoff_on_same_alternative():
 
     # Case 1: Bob posted unrelated comment; only Alice signed off on P1 -> DISPUTED
     pipeline1 = ExtractionPipeline(client=client1)
-    result1 = pipeline1.run(thread_id=thread_id, topic=topic, messages=messages)
+    result1 = pipeline1.run(
+        thread_id=thread_id, topic=topic, messages=messages,
+        alternative_ids={"P1": uuid4()},
+        verified_project_roles={"alice": "core maintainer", "bob": "core maintainer"},
+    )
     assert result1.madr.status == "DISPUTED"
     assert result1.madr.considered_alternatives[0]["status"] == "DISPUTED"
     assert any("Alternative P1" in d for d in result1.audit_metadata["downgraded_rejections"])
@@ -1107,7 +1116,11 @@ def test_consensus_requires_signoff_on_same_alternative():
         },
     )
     pipeline2 = ExtractionPipeline(client=client2)
-    result2 = pipeline2.run(thread_id=thread_id, topic=topic, messages=messages)
+    result2 = pipeline2.run(
+        thread_id=thread_id, topic=topic, messages=messages,
+        alternative_ids={"P1": uuid4()},
+        verified_project_roles={"alice": "core maintainer", "bob": "core maintainer"},
+    )
     assert result2.madr.status == "REJECTED"
     assert result2.madr.considered_alternatives[0]["status"] == "REJECTED"
 
@@ -1117,6 +1130,7 @@ def test_consensus_requires_signoff_on_same_alternative():
         topic=topic,
         messages=messages,
         verified_project_roles={"alice": "core maintainer", "bob": "contributor"},
+        alternative_ids={"P1": uuid4()},
     )
     assert result3.madr.status == "DISPUTED"
     assert result3.madr.considered_alternatives[0]["status"] == "DISPUTED"
@@ -1204,7 +1218,11 @@ def test_misattributed_alternative_ruling_rejected():
     )
 
     pipeline = ExtractionPipeline(client=client)
-    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+    result = pipeline.run(
+        thread_id=thread_id, topic=topic, messages=messages,
+        alternative_ids={"P1": uuid4()},
+        verified_project_roles={"guido": "bdfl"},
+    )
 
     # Invariant: P1 must NOT be rejected because the ruling quote was about P2!
     alt_p1 = next(a for a in result.madr.considered_alternatives if a["proposal_id"] == "P1")
@@ -1288,6 +1306,7 @@ def test_caller_supplied_target_uuids():
         topic=topic,
         messages=messages,
         alternative_ids={"P1": real_alt_id},
+        verified_project_roles={"guido": "bdfl"},
     )
     assert len(res_with_targets.verified_spans) == 1
     assert res_with_targets.verified_spans[0].alternative_id == real_alt_id
@@ -1298,8 +1317,8 @@ def test_caller_supplied_target_uuids():
         topic=topic,
         messages=messages,
     )
-    assert len(res_no_targets.verified_spans) == 1
-    assert res_no_targets.verified_spans[0].alternative_id is None
+    assert len(res_no_targets.verified_spans) == 0
+    assert len(res_no_targets.evidence_spans) == 0
     assert res_no_targets.audit_metadata["has_unpersisted_target_ids"] is True
     assert any(
         "alternative_id left unbound" in t
