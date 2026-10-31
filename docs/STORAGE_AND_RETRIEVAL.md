@@ -243,10 +243,13 @@ erDiagram
     HITL_APPROVAL_EVENTS {
         uuid id PK
         uuid approval_request_id FK
+        varchar actor_source_platform
+        text actor_platform_id
         uuid actor_contributor_id FK
         varchar action_taken
         varchar payload_signature
         varchar callback_body_sha256
+        timestamptz recorded_at
     }
 ```
 
