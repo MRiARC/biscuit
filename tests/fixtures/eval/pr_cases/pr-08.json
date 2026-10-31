@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Lib/dataclasses.py",
-      "diff": "-\"\"\"A helper\"\"\"\n+\"\"\"A typed helper\"\"\""
+      "diff": "diff --git a/Lib/dataclasses.py b/Lib/dataclasses.py\n--- a/Lib/dataclasses.py\n+++ b/Lib/dataclasses.py\n@@ -1,1 +1,1 @@\n-\"\"\"A helper\"\"\"\n+\"\"\"A typed helper\"\"\""
     }
   ],
   "fixture_origin": "SYNTHETIC"
