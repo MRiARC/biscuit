@@ -269,37 +269,34 @@ def _bootstrap_sqlite_schema(conn) -> None:
     ALTER TABLE; SQLite does not support ALTER ADD CONSTRAINT, so those FKs
     are otherwise silently missing. SQLite permits forward FK references in
     CREATE TABLE, allowing us to emit the complete table DDL up front.
-    Keep this path idempotent and create all SQLModel secondary indexes.
+
+    A create_all() on another dialect (PostgreSQL) permanently marks deferred
+    constraints with ``_create_rule = AddConstraint._create_rule_disable`` to
+    suppress their inline emission; include_foreign_key_constraints does NOT
+    bypass that compile-time check, so a PostgreSQL bootstrap earlier in the
+    process would otherwise leave later SQLite schemas with no FKs at all.
+    The marker is reset for the duration of the SQLite emission and restored
+    afterwards, keeping PostgreSQL ALTER-based behavior unchanged.
     """
-    # A preceding PostgreSQL metadata.create_all() can set FK._create_rule to
-    # AddConstraint._create_rule_disable when breaking DDL cycles. That private
-    # rule remains attached to the shared global metadata, even in subsequent
-    # SQLite boots, and suppresses all FK clauses. Temporarily reset these
-    # rules only while compiling SQLite CREATE TABLE with complete inline FKs.
-    # Restore the original rules afterward for PostgreSQL's ALTER-based path.
-    foreign_keys = [
-        fk
-        for table in SQLModel.metadata.tables.values()
-        for fk in table.foreign_key_constraints
-    ]
-    saved_rules = [(fk, fk._create_rule) for fk in foreign_keys]
-    try:
-        for fk in foreign_keys:
-            fk._create_rule = None
-        for table in SQLModel.metadata.tables.values():
+    for table in SQLModel.metadata.tables.values():
+        fks = list(table.foreign_key_constraints)
+        saved_rules = [(fk, fk._create_rule) for fk in fks if fk._create_rule is not None]
+        try:
+            for fk, _rule in saved_rules:
+                fk._create_rule = None
             conn.execute(
                 CreateTable(
                     table,
                     if_not_exists=True,
-                    include_foreign_key_constraints=list(table.foreign_key_constraints),
+                    include_foreign_key_constraints=fks,
                 )
             )
-        for table in SQLModel.metadata.tables.values():
-            for index in table.indexes:
-                conn.execute(CreateIndex(index, if_not_exists=True))
-    finally:
-        for fk, rule in saved_rules:
-            fk._create_rule = rule
+        finally:
+            for fk, rule in saved_rules:
+                fk._create_rule = rule
+    for table in SQLModel.metadata.tables.values():
+        for index in table.indexes:
+            conn.execute(CreateIndex(index, if_not_exists=True))
 
 
 def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:

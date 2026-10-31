@@ -788,3 +788,44 @@ async def test_postgres_async_negative_trigger_enforcement_live():
             session.add(bad)
             await session.commit()
         await session.rollback()
+
+
+def test_sqlite_fk_emission_survives_postgres_bootstrap():
+    """SQLite schema bootstrap emits all FKs even after a PostgreSQL create_all.
+
+    Regression test: metadata.create_all() on the PostgreSQL dialect marks
+    deferred FK constraints with a disable rule that suppresses their inline
+    CREATE TABLE emission permanently. On CI the live-PG tests run before the
+    SQLite test session, so the SQLite bootstrap must explicitly reset that
+    marker or every FK (including the cyclic §7 ruling back-links) silently
+    disappears from the SQLite schema. A mock PG engine reproduces the
+    poisoning deterministically without a live database.
+    """
+    from sqlalchemy import create_engine
+    from sqlmodel import SQLModel
+
+    import biscuit.models  # noqa: F401
+
+    def _noop(sql, *args, **kwargs):
+        return None
+
+    pg_engine = create_engine("postgresql://", strategy="mock", executor=_noop)
+    SQLModel.metadata.create_all(pg_engine, checkfirst=False)
+
+    engine = get_engine("sqlite:///:memory:")
+    init_db(engine, apply_postgres_triggers=False)
+
+    with engine.connect() as conn:
+        alt_fks = conn.execute(
+            text("PRAGMA foreign_key_list(decision_alternatives)")
+        ).all()
+        decision_fks = conn.execute(
+            text("PRAGMA foreign_key_list(decisions)")
+        ).all()
+
+    alt_columns = {row[3] for row in alt_fks}
+    assert "ruling_evidence_id" in alt_columns
+    assert "decision_id" in alt_columns
+    decision_columns = {row[3] for row in decision_fks}
+    assert "ruling_evidence_id" in decision_columns
+    assert "source_thread_id" in decision_columns
