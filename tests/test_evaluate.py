@@ -244,3 +244,26 @@ def test_issue_21_thresholds_and_audit_rows() -> None:
     assert targets["Lifecycle state accuracy"] == 0.80
     assert targets["AST grounding precision"] == 0.75
     assert targets["PR warning precision"] == 0.90
+
+
+def test_audit_database_stores_20_case_abstentions_idempotently(tmp_path) -> None:
+    import sqlite3
+
+    db = tmp_path / "audit.sqlite3"
+    predictions = _synthetic_predictions()
+    first = run_benchmark("pep-505", predictor=lambda _: predictions, audit_db=db)
+    assert first.verdict == "PASSED"
+    run_benchmark("pep-505", predictor=lambda _: predictions, audit_db=db)
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT ground_truth_class, action FROM pr_watchdog_audit_log"
+        ).fetchall()
+    assert len(rows) == 20
+    assert sum(cls == "benign" and action == "ABSTAIN" for cls, action in rows) == 10
+    assert sum(cls == "ambiguous" and action == "ABSTAIN" for cls, action in rows) == 5
+    modified = {**predictions, "warned_pr_ids": [*predictions["warned_pr_ids"], "pr-06"]}
+    run_benchmark("pep-505", predictor=lambda _: modified, audit_db=db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM pr_watchdog_audit_log"
+        ).fetchone()[0] == 40
