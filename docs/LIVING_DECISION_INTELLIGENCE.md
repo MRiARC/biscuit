@@ -141,16 +141,17 @@ When Switch streams chat messages for decision drafting:
    - `external_thread_id = f"{params.channel_id}:{params.thread_ts}"`
    - `canonical_url = f"https://slack.com/archives/{params.channel_id}/p{params.thread_ts.replace('.', '')}"`
 2. **Versioned Message Persistence:** Each message in `params.messages` is persisted into `source_messages` and `source_message_versions`:
-   - Monotonic `version_number = 1`, `is_current = TRUE`.
-   - Raw content undergoes CRLF normalization (`\r\n` $\rightarrow$ `\n`).
-   - `content_hash` is computed via SHA-256 over normalized `raw_content`.
+   - Assign a monotonic `version_number`; rotate `is_current` transactionally so at most one version is current for a message.
+   - Persist the exact decoded message-content string without line-ending, whitespace, punctuation, or Unicode normalization.
+   - Compute `content_hash` as SHA-256 over UTF-8 bytes of exact `raw_content`. Normalized/cleaned data belongs only in derived fields and never supplies evidence offsets.
 3. **Exact Evidence Spans:** All quotes cited in the drafted decision are stored in `evidence_spans` referencing `source_message_version_id` with exact zero-based character offsets `[start_char, end_char)`:
    - Default status: `UNVERIFIED`.
    - Promoted to `VERIFIED_EXACT` upon 100% byte-for-byte substring verification.
 4. **Draft Linkage:** The record in `living_decision_drafts` stores:
    - `source_thread_id`: Foreign key to `source_threads(id)`.
-   - `initiating_message_version_id`: Foreign key to `source_message_versions(id)`.
-   - `draft_evidence_span_ids`: Array of UUIDs in `evidence_spans` backing every claim.
+   - `initiating_message_id` and `initiating_message_version_id`: Composite foreign keys prove the version belongs to the initiating message and that message belongs to the declared thread.
+   - `initiating_author_id`: Resolved contributor identity for the initiating message.
+   - Claim evidence is stored one row per span in `living_decision_draft_evidence`, with foreign keys rather than an unenforced JSON UUID array.
 
 > [!IMPORTANT]
 > **Evidentiary Parity Invariant:** A living decision drafted from Slack or Discord possesses the exact same tamper-proof, auditable provenance as a historical decision mined from a PEP mailing list.
@@ -193,8 +194,9 @@ stateDiagram-v2
 2. **Transition B: Alternative Lifecycle Assignment (`decision_alternatives`):**
    - Maintainers explicitly confirm the outcome for each alternative: `ACCEPTED`, `UNDER_DISCUSSION`, `DISPUTED`, `REJECTED`, or `DEFERRED`.
    - If maintainers express differing views without consensus, the alternative is assigned `DISPUTED` or `UNRESOLVED`.
+   - Draft publication approval does not create a ruling sign-off and cannot change an alternative's lifecycle state.
 3. **Transition C: Authoritative Ruling & Rejection Anchor Authorization:**
-   - An alternative is marked `REJECTED` **if and only if** a maintainer explicitly records a ruling reason backed by an exact evidence span (`evidence_role = 'RULING'`) signed by an authorized maintainer (`ruling_authority = 'CORE_MAINTAINER_CONSENSUS'`).
+   - An alternative is marked `REJECTED` only when a `VERIFIED_EXACT` `RULING` span is linked to that exact alternative and authored by the identified authorized ruling actor. Core Maintainer consensus requires two distinct verified Core Maintainer sign-offs; Working Group authority requires its defined chair plus two distinct verified group sign-offs.
    - Only alternatives reaching `lifecycle_status = 'REJECTED'` with a `VERIFIED_EXACT` ruling authorize PR watchdog warnings.
 
 ---
@@ -236,9 +238,10 @@ Before Biscuit generates a living decision suggestion card:
 ## 7. Canonical Database Schema (Single Source of Truth)
 
 All database DDL for Day 1+ is consolidated in [**`docs/STORAGE_AND_RETRIEVAL.md`**](./STORAGE_AND_RETRIEVAL.md):
-* **Section 12:** `living_decision_drafts` (captures live sessions, threads, message versions, and evidence span arrays).
+* **Section 12:** `living_decision_drafts` (captures live sessions, thread/message identities and versions, and normalized evidence-span links).
 * **Section 13:** `hitl_approval_requests` (captures Switch approval IDs, idempotency keys, role checks, and 72h expiry).
 * **Section 14:** `hitl_approval_events` (immutable, append-only audit trail of all maintainer approvals).
+* **Section 15:** Cross-table provenance, ruling-authority, edge-evidence, and append-only audit triggers. `living_decision_draft_evidence` is the normalized draft-claim evidence relation.
 
 ---
 
