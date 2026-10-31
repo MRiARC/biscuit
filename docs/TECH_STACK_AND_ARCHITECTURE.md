@@ -194,7 +194,7 @@ flowchart TD
 * **When:** Triggered on pull request opening or commit update.
 * **How:** Inspects PR diffs, extracts modified AST symbols and hunks, and queries candidates. Authorizes a warning **if and only if all 4 invariants hold**:
   1. `lifecycle_status == 'REJECTED'`
-  2. `ruling_evidence_id` status is `VERIFIED_EXACT` from an authorized human authority (`BDFL`, `CORE_MAINTAINER_CONSENSUS`).
+  2. `ruling_evidence_id` is a `VERIFIED_EXACT` `RULING` span for this alternative, authored by an authorized human (`BDFL`, `CORE_MAINTAINER_CONSENSUS`, or `WORKING_GROUP` with the required sign-offs).
   3. PR diff modifies the active `code_anchor` bound directly to that specific alternative.
   4. AST structural equivalence confirms the modified code matches the rejected pattern (not an accepted language construct).
   * Operates in `AUDIT_DRY_RUN` mode by default, logging to `pr_watchdog_audit_log`.
