@@ -268,6 +268,7 @@ def trace_lineage(
             records.append((parent, index, prev, next_candidates, kind, old_p, new_p, digest))
         paths = set().union(*result_sets) if result_sets else set()
         combined_diff_digest = None
+        combined_changed_paths: tuple[str, ...] = ()
         merge_reason = None
         first_parent_selected = False
         if len(parents) > 1:
@@ -276,10 +277,28 @@ def trace_lineage(
             combined_diff_digest = hashlib.sha256(
                 _git(root, "diff-tree", "-c", "-p", commit)
             ).hexdigest()
+            # Only files modified relative to *all* merge parents appear in
+            # combined diff output. Such conflict-resolution rewrites demand
+            # structural proof, never merely a familiar symbol name.
+            combined_names = _git(root, "diff-tree", "-c", "--name-only", "-z", commit)
+            combined_changed_paths = tuple(sorted({
+                p.decode("utf-8", "surrogateescape")
+                for p in combined_names.split(b"\0") if p
+            }))
             final_candidates = _matching_paths(root, commit, paths, language, exemplar,
                                                require_tree_sitter)
             resolution = resolve_merge_parents(result_sets, final_candidates)
             merge_reason = resolution.reason
+            if (set(combined_changed_paths) & set(final_candidates)
+                    and len([x for x in result_sets if x]) > 1
+                    and any(_symbol_at(root, commit, p, language, exemplar,
+                                       require_tree_sitter=require_tree_sitter,
+                                       require_identity=True) is None
+                            for p in final_candidates)):
+                # The human-created merge result differs structurally from
+                # the historical anchor. Without verification, abstain.
+                ambiguous = True
+                merge_reason = "Combined merge diff rewrote symbol without structural match"
             if resolution.state == AnchorState.AMBIGUOUS:
                 ambiguous = True
             elif resolution.state == AnchorState.MERGED:
@@ -327,6 +346,7 @@ def trace_lineage(
                     "parent_paths": sorted(prev), "result_paths": sorted(after),
                     "parent_count": len(parents),
                     "combined_diff_sha256": combined_diff_digest,
+                    "combined_changed_paths": list(combined_changed_paths),
                     "merge_resolution_reason": merge_reason,
                     "first_parent_selected": first_parent_selected,
                     "all_parent_candidate_paths": [sorted(s) for s in result_sets],

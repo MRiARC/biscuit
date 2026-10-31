@@ -238,6 +238,33 @@ def test_conflict_mainline_selected_with_combined_diff_evidence(tmp_path: Path) 
     assert all(len(e.mapping_evidence["combined_diff_sha256"]) == 64 for e in merge_events)
 
 
+def test_combined_diff_conflict_rewrite_abstains(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 5\n")
+    commit(root, "feature edits historical function")
+    git(root, "checkout", "-q", "main")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 7\n")
+    commit(root, "mainline edits historical function")
+    attempted = subprocess.run(["git", "-C", str(root), "merge", "--no-ff", "feature"],
+                               capture_output=True, text=True, check=False)
+    assert attempted.returncode != 0
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream * 99\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "conflict resolved to third implementation")
+    merge = git(root, "rev-parse", "HEAD")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert result.resolved_path is None
+    merge_events = [e for e in result.events if e.transition_commit_sha == merge]
+    assert len(merge_events) == 2
+    assert all("old/parser.py" in e.mapping_evidence["combined_changed_paths"]
+               for e in merge_events)
+    assert all("structural match" in e.mapping_evidence["merge_resolution_reason"]
+               for e in merge_events)
+    assert not result.safe_for_automatic_migration
+
+
 def test_clean_two_parent_merge(tmp_path: Path) -> None:
     root, past = initialize_repo(tmp_path)
     git(root, "checkout", "-qb", "feature")
