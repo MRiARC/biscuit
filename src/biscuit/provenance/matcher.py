@@ -4,8 +4,8 @@ Locates exact zero-based Unicode code-point offsets for quotes in message texts.
 """
 
 from uuid import UUID
-from typing import List, Tuple, Optional
-from .types import EvidenceSpan, EvidenceRole, EvidenceStance, VerificationStatus, compute_sha256
+
+from .types import EvidenceRole, EvidenceSpan, EvidenceStance, VerificationStatus, compute_sha256
 
 
 class CandidateSpanMatcher:
@@ -15,7 +15,7 @@ class CandidateSpanMatcher:
     """
 
     @staticmethod
-    def find_all_occurrences(text: str, quote: str) -> List[Tuple[int, int]]:
+    def find_all_occurrences(text: str, quote: str) -> list[tuple[int, int]]:
         """
         Locates all exact occurrences of quote within text using Unicode code-points.
         Returns list of (start_char, end_char) zero-based offsets.
@@ -23,7 +23,7 @@ class CandidateSpanMatcher:
         if not quote or not text:
             return []
 
-        occurrences: List[Tuple[int, int]] = []
+        occurrences: list[tuple[int, int]] = []
         start = 0
         quote_len = len(quote)
 
@@ -44,12 +44,12 @@ class CandidateSpanMatcher:
         quote: str,
         evidence_role: EvidenceRole,
         stance: EvidenceStance,
-        decision_id: Optional[UUID] = None,
-        alternative_id: Optional[UUID] = None,
-        argument_id: Optional[UUID] = None,
-        code_anchor_id: Optional[UUID] = None,
+        decision_id: UUID | None = None,
+        alternative_id: UUID | None = None,
+        argument_id: UUID | None = None,
+        code_anchor_id: UUID | None = None,
         occurrence_index: int = 0,
-    ) -> Optional[EvidenceSpan]:
+    ) -> EvidenceSpan | None:
         """
         Locates the quote in message_content and constructs an EvidenceSpan.
         Returns None if quote does not exist in message_content.

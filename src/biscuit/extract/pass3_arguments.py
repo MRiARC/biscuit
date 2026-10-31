@@ -6,10 +6,10 @@ Enforces the invariant that MODEL_INFERRED cannot act as a ruling authority.
 
 import json
 import re
-from typing import List
+
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.prompts import PASS3_ARGUMENT_MINING_PROMPT
-from biscuit.extract.types import DeliberationPacket, ArgumentClassification
+from biscuit.extract.types import ArgumentClassification, DeliberationPacket
 from biscuit.provenance.types import EvidenceStance
 
 
@@ -45,7 +45,7 @@ class Pass3ArgumentMining:
         self.client = client
         self.model = model
 
-    def mine_arguments(self, packet: DeliberationPacket) -> List[ArgumentClassification]:
+    def mine_arguments(self, packet: DeliberationPacket) -> list[ArgumentClassification]:
         """
         Mines technical arguments and rulings for a specific proposal's deliberation packet.
 
@@ -89,7 +89,7 @@ class Pass3ArgumentMining:
         if not isinstance(raw_args, list):
             return []
 
-        results: List[ArgumentClassification] = []
+        results: list[ArgumentClassification] = []
         for idx, arg in enumerate(raw_args):
             if not isinstance(arg, dict):
                 continue

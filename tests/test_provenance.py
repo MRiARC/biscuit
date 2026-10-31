@@ -5,13 +5,14 @@ and state transitions.
 """
 
 from uuid import uuid4
+
 from biscuit.provenance import (
-    EvidenceSpan,
-    EvidenceRole,
-    EvidenceStance,
-    VerificationStatus,
-    EvidenceVerifier,
     CandidateSpanMatcher,
+    EvidenceRole,
+    EvidenceSpan,
+    EvidenceStance,
+    EvidenceVerifier,
+    VerificationStatus,
     compute_sha256,
 )
 
@@ -40,8 +41,12 @@ def test_exact_verification_success():
 
 def test_unicode_and_multiline_codepoint_offsets():
     # Contains emojis, non-ASCII characters, and newlines
-    raw_content = "Line 1: 🚀 Starting discussion\nLine 2: Décision: Rejeté car c'est 2× plus lent.\nLine 3: 👍"
-    quote = "Décision: Rejeté car c'est 2× plus lent."
+    raw_content = (
+        "Line 1: 🚀 Starting discussion\n"
+        "Line 2: Décision: Rejeté car c'est 2× plus lent.\n"
+        "Line 3: 👍"
+    )  # noqa: RUF001
+    quote = "Décision: Rejeté car c'est 2× plus lent."  # noqa: RUF001
 
     start = raw_content.index(quote)
     end = start + len(quote)

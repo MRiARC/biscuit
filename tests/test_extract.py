@@ -5,23 +5,25 @@ Runs completely offline in mock mode (BISCUIT_MOCK_LLM=1) with zero cloud depend
 """
 
 import json
+
 import pytest
+
 from biscuit.extract.client import LocalLLMClient
-from biscuit.extract.prompts import (
-    get_prompt_templates_hash,
-)
-from biscuit.extract.types import (
-    ProposalCandidate,
-    DeliberationPacket,
-    ArgumentClassification,
-    ExtractedMADR,
-    ExtractionRunResult,
-)
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
 from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
 from biscuit.extract.pass3_arguments import Pass3ArgumentMining
 from biscuit.extract.pass4_synthesis import Pass4SchemaSynthesis
 from biscuit.extract.pipeline import ExtractionPipeline
+from biscuit.extract.prompts import (
+    get_prompt_templates_hash,
+)
+from biscuit.extract.types import (
+    ArgumentClassification,
+    DeliberationPacket,
+    ExtractedMADR,
+    ExtractionRunResult,
+    ProposalCandidate,
+)
 from biscuit.provenance.types import (
     EvidenceStance,
     VerificationStatus,
@@ -442,7 +444,7 @@ def test_extraction_pipeline_end_to_end_with_exact_verification():
         assert v_span.content_hash == compute_sha256(v_span.exact_quote)
 
     # Check specific quote offsets
-    ruling_span = [s for s in result.verified_spans if s.exact_quote == quote1][0]
+    ruling_span = next(s for s in result.verified_spans if s.exact_quote == quote1)
     assert ruling_span.start_char == msg2_content.find(quote1)
     assert ruling_span.end_char == ruling_span.start_char + len(quote1)
     assert msg2_content[ruling_span.start_char : ruling_span.end_char] == quote1

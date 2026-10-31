@@ -3,11 +3,11 @@ Data types and schemas for evidence spans and provenance tracking.
 Conforms strictly to docs/STORAGE_AND_RETRIEVAL.md Section 7.
 """
 
+import hashlib
+from datetime import UTC, datetime
 from enum import Enum
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
-import hashlib
-from typing import Optional
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -46,10 +46,10 @@ class EvidenceSpan(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     source_message_version_id: UUID
-    decision_id: Optional[UUID] = None
-    alternative_id: Optional[UUID] = None
-    argument_id: Optional[UUID] = None
-    code_anchor_id: Optional[UUID] = None
+    decision_id: UUID | None = None
+    alternative_id: UUID | None = None
+    argument_id: UUID | None = None
+    code_anchor_id: UUID | None = None
     exact_quote: str
     start_char: int
     end_char: int
@@ -57,7 +57,7 @@ class EvidenceSpan(BaseModel):
     evidence_role: EvidenceRole
     stance: EvidenceStance
     verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="before")
     @classmethod

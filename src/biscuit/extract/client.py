@@ -4,11 +4,10 @@ Implements the HTTP interface to Ollama / llama.cpp with strict keep_alive: 0 of
 Includes mock replay mode for deterministic CI testing without GPU/daemon.
 """
 
-import os
 import json
-import urllib.request
+import os
 import urllib.error
-from typing import Dict, Optional
+import urllib.request
 
 
 class LocalLLMClient:
@@ -20,8 +19,8 @@ class LocalLLMClient:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        mock_mode: Optional[bool] = None,
-        mock_responses: Optional[Dict[str, str]] = None,
+        mock_mode: bool | None = None,
+        mock_responses: dict[str, str] | None = None,
         timeout_seconds: float = 60.0,
     ):
         self.base_url = base_url.rstrip("/")
@@ -30,7 +29,7 @@ class LocalLLMClient:
         self.mock_mode = env_mock if mock_mode is None else mock_mode
         self.mock_responses = mock_responses or {}
         self.timeout_seconds = timeout_seconds
-        self.loaded_model: Optional[str] = None
+        self.loaded_model: str | None = None
         self.call_history: list = []
 
     def set_mock_response(self, key: str, response_json: str):
@@ -120,5 +119,5 @@ class LocalLLMClient:
             with urllib.request.urlopen(req, timeout=5.0):
                 self.loaded_model = None
                 return True
-        except Exception:
+        except (urllib.error.URLError, TimeoutError, OSError):
             return False

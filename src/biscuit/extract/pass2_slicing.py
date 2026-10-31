@@ -4,8 +4,9 @@ Operates purely deterministically with 0 GB model memory.
 Extracts directed subgraphs around each candidate proposal into targeted ~1,000-word packets.
 """
 
-from typing import List, Dict, Any, Optional, Set
-from biscuit.extract.types import ProposalCandidate, DeliberationPacket
+from typing import Any
+
+from biscuit.extract.types import DeliberationPacket, ProposalCandidate
 
 
 class Pass2DeliberationSlicing:
@@ -20,10 +21,10 @@ class Pass2DeliberationSlicing:
 
     def slice_deliberation(
         self,
-        messages: List[Dict[str, Any]],
-        proposals: List[ProposalCandidate],
-        edges: Optional[List[Dict[str, Any]]] = None,
-    ) -> List[DeliberationPacket]:
+        messages: list[dict[str, Any]],
+        proposals: list[ProposalCandidate],
+        edges: list[dict[str, Any]] | None = None,
+    ) -> list[DeliberationPacket]:
         """
         Slices the thread messages into targeted deliberation packets for each proposal.
 
@@ -42,7 +43,7 @@ class Pass2DeliberationSlicing:
             return []
 
         # Index messages by ID for fast graph lookup
-        msg_by_id: Dict[str, Dict[str, Any]] = {}
+        msg_by_id: dict[str, dict[str, Any]] = {}
         for idx, m in enumerate(messages):
             mid = str(m.get("message_id") or m.get("id") or f"msg-{idx}")
             # Ensure message_id is consistently populated
@@ -56,8 +57,8 @@ class Pass2DeliberationSlicing:
             msg_by_id[mid] = m_copy
 
         # Build adjacency graph if edges provided
-        outgoing_edges: Dict[str, List[Dict[str, Any]]] = {}
-        incoming_edges: Dict[str, List[Dict[str, Any]]] = {}
+        outgoing_edges: dict[str, list[dict[str, Any]]] = {}
+        incoming_edges: dict[str, list[dict[str, Any]]] = {}
         for edge in edges or []:
             src = str(edge.get("source_message_id", ""))
             tgt = str(edge.get("target_message_id", ""))
@@ -65,20 +66,20 @@ class Pass2DeliberationSlicing:
                 outgoing_edges.setdefault(src, []).append(edge)
                 incoming_edges.setdefault(tgt, []).append(edge)
 
-        packets: List[DeliberationPacket] = []
+        packets: list[DeliberationPacket] = []
 
         for prop in proposals:
-            selected_ids: Set[str] = set()
+            selected_ids: set[str] = set()
             prop_terms = self._extract_proposal_search_terms(prop)
 
             # 1. Identify primary/seed messages that mention or introduce the proposal
-            seed_ids: List[str] = []
+            seed_ids: list[str] = []
             for mid, m in msg_by_id.items():
                 content_lower = str(m.get("content", "")).lower()
                 # Check for direct proposal ID match (e.g. "P1", "proposal 1") or term match
-                if prop.proposal_id.lower() in content_lower:
-                    seed_ids.append(mid)
-                elif any(term in content_lower for term in prop_terms):
+                if prop.proposal_id.lower() in content_lower or any(
+                    term in content_lower for term in prop_terms
+                ):
                     seed_ids.append(mid)
 
             # If no seed message found by terms, include the first message (often the thread OP)
@@ -109,7 +110,7 @@ class Pass2DeliberationSlicing:
                     selected_ids.add(mid)
 
             # 3. Preserve chronological message order
-            ordered_packet_msgs: List[Dict[str, Any]] = []
+            ordered_packet_msgs: list[dict[str, Any]] = []
             total_words = 0
 
             for m in messages:
@@ -117,7 +118,7 @@ class Pass2DeliberationSlicing:
                 if mid in selected_ids:
                     content = str(msg_by_id[mid].get("content", ""))
                     msg_words = len(content.split())
-                    # If adding this message exceeds the word limit and we already have some messages, stop
+                    # If adding this message exceeds the word limit, stop
                     if total_words + msg_words > self.target_word_limit and ordered_packet_msgs:
                         break
                     ordered_packet_msgs.append(msg_by_id[mid])
@@ -149,7 +150,7 @@ class Pass2DeliberationSlicing:
 
         return packets
 
-    def _extract_proposal_search_terms(self, prop: ProposalCandidate) -> List[str]:
+    def _extract_proposal_search_terms(self, prop: ProposalCandidate) -> list[str]:
         """Extracts distinctive lowercase search keywords from a proposal candidate."""
         terms = []
         if prop.name:

@@ -1,32 +1,33 @@
 """
 4-Pass Deliberation Extraction Pipeline Orchestrator.
-Sequences Pass 1 (Discovery) -> Pass 2 (Slicing) -> Pass 3 (Argument Mining) -> Pass 4 (MADR Synthesis),
+Sequences Pass 1 (Discovery) -> Pass 2 (Slicing) -> Pass 3 (Arguments) -> Pass 4 (MADR),
 followed by zero-based exact evidence verification.
 Strictly adheres to sequential memory offloading (<=8 GB RAM budget) and auditability.
 """
 
-from uuid import uuid4, uuid5, NAMESPACE_DNS, UUID
-from typing import List, Dict, Any, Optional
+from typing import Any
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
+
 from biscuit.extract.client import LocalLLMClient
-from biscuit.extract.types import (
-    ProposalCandidate,
-    DeliberationPacket,
-    ArgumentClassification,
-    ExtractedMADR,
-    ExtractionRunResult,
-)
-from biscuit.extract.prompts import get_prompt_templates_hash
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
 from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
 from biscuit.extract.pass3_arguments import Pass3ArgumentMining
 from biscuit.extract.pass4_synthesis import Pass4SchemaSynthesis
+from biscuit.extract.prompts import get_prompt_templates_hash
+from biscuit.extract.types import (
+    ArgumentClassification,
+    DeliberationPacket,
+    ExtractedMADR,
+    ExtractionRunResult,
+    ProposalCandidate,
+)
+from biscuit.provenance.matcher import CandidateSpanMatcher
 from biscuit.provenance.types import (
-    EvidenceSpan,
     EvidenceRole,
+    EvidenceSpan,
     EvidenceStance,
     VerificationStatus,
 )
-from biscuit.provenance.matcher import CandidateSpanMatcher
 from biscuit.provenance.verifier import EvidenceVerifier
 
 
@@ -51,7 +52,7 @@ class ExtractionPipeline:
 
     def __init__(
         self,
-        client: Optional[LocalLLMClient] = None,
+        client: LocalLLMClient | None = None,
         pass1_model: str = "llama3.2:3b",
         pass3_model: str = "phi3.5",
         pass4_model: str = "qwen2.5-coder:7b",
@@ -68,9 +69,9 @@ class ExtractionPipeline:
         self,
         thread_id: str,
         topic: str,
-        messages: List[Dict[str, Any]],
-        edges: Optional[List[Dict[str, Any]]] = None,
-        decision_id: Optional[str] = None,
+        messages: list[dict[str, Any]],
+        edges: list[dict[str, Any]] | None = None,
+        decision_id: str | None = None,
     ) -> ExtractionRunResult:
         """
         Executes the full 4-pass extraction and provenance verification workflow.
@@ -103,19 +104,19 @@ class ExtractionPipeline:
         # -------------------------------------------------------------
         # PASS 1: Candidate Proposal Discovery (Llama 3.2 3B)
         # -------------------------------------------------------------
-        proposals: List[ProposalCandidate] = self.pass1.discover(thread_text)
+        proposals: list[ProposalCandidate] = self.pass1.discover(thread_text)
 
         # -------------------------------------------------------------
         # PASS 2: Deliberation Slicing (Deterministic DAG, 0 GB RAM)
         # -------------------------------------------------------------
-        packets: List[DeliberationPacket] = self.pass2.slice_deliberation(
+        packets: list[DeliberationPacket] = self.pass2.slice_deliberation(
             messages=messages, proposals=proposals, edges=edges
         )
 
         # -------------------------------------------------------------
         # PASS 3: Argument & Stance Mining (Phi-3.5-mini)
         # -------------------------------------------------------------
-        arguments: List[ArgumentClassification] = []
+        arguments: list[ArgumentClassification] = []
         for packet in packets:
             packet_args = self.pass3.mine_arguments(packet)
             arguments.extend(packet_args)
@@ -130,11 +131,11 @@ class ExtractionPipeline:
         # -------------------------------------------------------------
         # STEP 5: Exact Evidence Verification & Span Matching
         # -------------------------------------------------------------
-        evidence_spans: List[EvidenceSpan] = []
-        verified_spans: List[EvidenceSpan] = []
+        evidence_spans: list[EvidenceSpan] = []
+        verified_spans: list[EvidenceSpan] = []
 
         # Index messages for exact substring matching
-        msg_lookup: List[Dict[str, Any]] = []
+        msg_lookup: list[dict[str, Any]] = []
         for idx, m in enumerate(messages):
             mid = m.get("message_id") or m.get("id") or f"msg-{idx}"
             content = m.get("raw_content") or m.get("content") or ""

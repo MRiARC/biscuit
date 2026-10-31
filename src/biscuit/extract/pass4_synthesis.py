@@ -5,10 +5,11 @@ Synthesizes structured MADR 3.0 records and extracts candidate verbatim evidence
 
 import json
 import re
-from typing import List, Dict, Any
+from typing import Any
+
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.prompts import PASS4_SCHEMA_SYNTHESIS_PROMPT
-from biscuit.extract.types import ProposalCandidate, ArgumentClassification, ExtractedMADR
+from biscuit.extract.types import ArgumentClassification, ExtractedMADR, ProposalCandidate
 
 
 def _clean_json_response(raw_text: str) -> str:
@@ -35,8 +36,8 @@ class Pass4SchemaSynthesis:
         self,
         topic: str,
         decision_id: str,
-        proposals: List[ProposalCandidate],
-        arguments: List[ArgumentClassification],
+        proposals: list[ProposalCandidate],
+        arguments: list[ArgumentClassification],
     ) -> ExtractedMADR:
         """
         Synthesizes formal MADR 3.0 output from the extracted proposals and arguments.
@@ -68,7 +69,7 @@ class Pass4SchemaSynthesis:
             self.client.unload_model(self.model)
 
         cleaned = _clean_json_response(raw_response)
-        data: Dict[str, Any] = {}
+        data: dict[str, Any] = {}
         if cleaned:
             try:
                 data = json.loads(cleaned)

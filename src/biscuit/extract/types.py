@@ -3,9 +3,11 @@ Data schemas for the 4-Pass Local LLM Deliberation Extraction Pipeline.
 Conforms to docs/INGESTION_AND_EXTRACTION.md and docs/STORAGE_AND_RETRIEVAL.md.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
-from biscuit.provenance.types import EvidenceStance, EvidenceSpan
+
+from biscuit.provenance.types import EvidenceSpan, EvidenceStance
 
 
 class ProposalCandidate(BaseModel):
@@ -14,8 +16,8 @@ class ProposalCandidate(BaseModel):
     proposal_id: str = Field(description="Unique identifier e.g. P1, P2")
     name: str = Field(description="Short technical name of proposal")
     summary: str = Field(description="Technical summary of proposed change")
-    proponent: Optional[str] = Field(default=None, description="Author handle who proposed it")
-    syntax_or_api: Optional[str] = Field(
+    proponent: str | None = Field(default=None, description="Author handle who proposed it")
+    syntax_or_api: str | None = Field(
         default=None, description="Specific syntax, code, or API flag"
     )
 
@@ -25,8 +27,8 @@ class DeliberationPacket(BaseModel):
 
     proposal_id: str
     proposal_name: str
-    message_ids: List[str] = Field(default_factory=list)
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    message_ids: list[str] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     word_count: int = 0
 
 
@@ -44,16 +46,14 @@ class ArgumentClassification(BaseModel):
     fatal_rejection: bool = Field(
         default=False, description="Whether this is a fatal rejection ruling"
     )
-    fatal_reason: Optional[str] = Field(
-        default=None, description="Fatal flaw or rejection rationale"
-    )
-    rejection_category: Optional[str] = Field(
+    fatal_reason: str | None = Field(default=None, description="Fatal flaw or rejection rationale")
+    rejection_category: str | None = Field(
         default=None, description="Category: PERFORMANCE, SYNTAX_AMBIGUITY, etc."
     )
     is_ruling: bool = Field(
         default=False, description="True if made by an authorized ruling authority"
     )
-    ruling_authority: Optional[str] = Field(
+    ruling_authority: str | None = Field(
         default=None, description="BDFL, CORE_MAINTAINER_CONSENSUS, WORKING_GROUP"
     )
     quote_text: str = Field(description="Verbatim citation quote from the message")
@@ -63,7 +63,7 @@ class ArgumentClassification(BaseModel):
         # INVARIANT: MODEL_INFERRED can NEVER act as ruling authority or assign fatal rejection
         if self.ruling_authority == "MODEL_INFERRED":
             raise ValueError(
-                "MODEL_INFERRED can never act as an authoritative ruling authority (Issue #5 / Stream 3 Invariant)."
+                "MODEL_INFERRED can never act as an authoritative ruling authority."
             )
         if self.fatal_rejection and self.is_ruling and not self.ruling_authority:
             raise ValueError(
@@ -79,9 +79,9 @@ class ExtractedMADR(BaseModel):
     title: str
     status: str = Field(description="ACCEPTED, REJECTED, DISPUTED, or UNRESOLVED")
     context_and_problem: str
-    considered_alternatives: List[Dict[str, Any]] = Field(default_factory=list)
-    decision_outcome: Optional[Dict[str, Any]] = None
-    evidence_quotes: List[Dict[str, Any]] = Field(default_factory=list)
+    considered_alternatives: list[dict[str, Any]] = Field(default_factory=list)
+    decision_outcome: dict[str, Any] | None = None
+    evidence_quotes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExtractionRunResult(BaseModel):
@@ -89,12 +89,12 @@ class ExtractionRunResult(BaseModel):
 
     run_id: str
     thread_id: str
-    proposals: List[ProposalCandidate]
-    deliberation_packets: List[DeliberationPacket]
-    arguments: List[ArgumentClassification]
+    proposals: list[ProposalCandidate]
+    deliberation_packets: list[DeliberationPacket]
+    arguments: list[ArgumentClassification]
     madr: ExtractedMADR
-    evidence_spans: List[EvidenceSpan] = Field(default_factory=list)
-    verified_spans: List[EvidenceSpan] = Field(default_factory=list)
+    evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
+    verified_spans: list[EvidenceSpan] = Field(default_factory=list)
     prompt_templates_hash: str
     run_status: str = "SUCCESS"
-    audit_metadata: Dict[str, Any] = Field(default_factory=dict)
+    audit_metadata: dict[str, Any] = Field(default_factory=dict)

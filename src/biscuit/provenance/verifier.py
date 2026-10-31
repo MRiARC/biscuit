@@ -1,9 +1,8 @@
 """
 Zero-Based Exact Evidence Verifier.
-Implements the anti-hallucination verification contract from docs/STORAGE_AND_RETRIEVAL.md Section 7.
+Anti-hallucination verification contract from docs/STORAGE_AND_RETRIEVAL.md Section 7.
 """
 
-from typing import List, Tuple
 from .types import EvidenceSpan, VerificationStatus, compute_sha256
 
 
@@ -17,7 +16,7 @@ class EvidenceVerifier:
     @staticmethod
     def verify_span(
         span: EvidenceSpan, message_content: str, is_edited: bool = False
-    ) -> Tuple[bool, EvidenceSpan]:
+    ) -> tuple[bool, EvidenceSpan]:
         """
         Verifies an individual evidence span against source message text.
 
@@ -58,8 +57,8 @@ class EvidenceVerifier:
 
     @classmethod
     def verify_spans(
-        cls, spans: List[EvidenceSpan], message_content: str, is_edited: bool = False
-    ) -> List[EvidenceSpan]:
+        cls, spans: list[EvidenceSpan], message_content: str, is_edited: bool = False
+    ) -> list[EvidenceSpan]:
         """Batch-verifies multiple evidence spans against a message version."""
         results = []
         for span in spans:

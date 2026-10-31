@@ -5,7 +5,7 @@ Extracts distinct technical proposals from open-source discussion threads.
 
 import json
 import re
-from typing import List
+
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.prompts import PASS1_PROPOSAL_DISCOVERY_PROMPT
 from biscuit.extract.types import ProposalCandidate
@@ -31,7 +31,7 @@ class Pass1ProposalDiscovery:
         self.client = client
         self.model = model
 
-    def discover(self, thread_text: str) -> List[ProposalCandidate]:
+    def discover(self, thread_text: str) -> list[ProposalCandidate]:
         """
         Discovers candidate proposals from the given thread text.
 
@@ -70,7 +70,7 @@ class Pass1ProposalDiscovery:
         if not isinstance(proposals_raw, list):
             return []
 
-        candidates: List[ProposalCandidate] = []
+        candidates: list[ProposalCandidate] = []
         for p in proposals_raw:
             if isinstance(p, dict) and "proposal_id" in p and "name" in p:
                 candidates.append(
