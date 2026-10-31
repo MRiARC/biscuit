@@ -45,8 +45,8 @@ def test_unicode_and_multiline_codepoint_offsets():
         "Line 1: 🚀 Starting discussion\n"
         "Line 2: Décision: Rejeté car c'est 2× plus lent.\n"
         "Line 3: 👍"
-    )  # noqa: RUF001
-    quote = "Décision: Rejeté car c'est 2× plus lent."  # noqa: RUF001
+    )
+    quote = "Décision: Rejeté car c'est 2× plus lent."
 
     start = raw_content.index(quote)
     end = start + len(quote)
