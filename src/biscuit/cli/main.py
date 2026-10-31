@@ -123,13 +123,14 @@ if typer is not None:
         platform: str = typer.Option(..., "--platform"),
         url: str = typer.Option(..., "--url"),
         db: Path | None = typer.Option(None, "--db"),  # noqa: B008
+        output_thread: Path | None = typer.Option(None, "--output-thread"),  # noqa: B008
     ) -> None:
         """Ingest a complete Discourse topic snapshot into the local SQLite cache."""
         if platform.lower() != "discourse":
             typer.echo("Only Discourse ingestion is supported in this workstream", err=True)
             raise typer.Exit(2)
         try:
-            count = ingest_discourse(url, db or _default_db())
+            count = ingest_discourse(url, db or _default_db(), output_thread=output_thread)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             typer.echo(f"Ingestion failed: {exc}", err=True)
             raise typer.Exit(1) from exc
