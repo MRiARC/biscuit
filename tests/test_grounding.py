@@ -174,7 +174,7 @@ def test_exact_git_copy_is_classified_copy_c(tmp_path: Path) -> None:
     original = (root / "old/parser.py").read_text(encoding="utf-8")
     write(root, "copied/parser.py", original)
     commit(root, "copy complete original source file")
-    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get", find_copies_harder=True)
     assert result.anchor_state == AnchorState.AMBIGUOUS
     assert set(result.candidates) == {"old/parser.py", "copied/parser.py"}
     assert any(e.transition_type == "COPY_C" for e in result.events)
@@ -678,3 +678,29 @@ def test_storage_transition_labels_match_stream_one_enum(tmp_path: Path) -> None
         events=(replace(lineage.events[0], transition_type="DELETE"),),
     )
     assert lineage_storage_records(anchor, deleted)[0]["transition_type"] == "DELETED"
+
+
+
+def test_noop_history_compacts_lineage_events_but_preserves_replay_digest(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    root, past = initialize_repo(tmp_path)
+    commits = []
+    for index in range(8):
+        write(root, f"docs/{index}.md", f"unrelated change {index}\n")
+        commits.append(commit(root, f"documentation {index}"))
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.CURRENT
+    assert result.resolved_path == "old/parser.py"
+    assert result.events == ()
+    git(root, "mv", "old/parser.py", "old/lexer.py")
+    commit(root, "real rename")
+    changed = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert len(changed.events) == 1
+    assert changed.events[0].mapping_evidence["traversed_commit_count"] == 9
+    all_commits = forward_commits(root, past)
+    expected = hashlib.sha256("\n".join(all_commits).encode("ascii")).hexdigest()
+    assert changed.events[0].mapping_evidence["traversed_commit_sha256"] == expected
+    assert changed.events[0].mapping_evidence["find_copies_harder"] is False
