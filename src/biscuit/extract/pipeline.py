@@ -65,7 +65,7 @@ def _proposal_ids_in_clause(clause: str, proposals: list[ProposalCandidate]) -> 
             patterns.append(rf"\b(?:proposal|alternative|option)\s*{re.escape(digits)}\b")
         if proposal.name and len(proposal.name) >= 4:
             patterns.append(rf"\b{re.escape(proposal.name)}\b")
-        if any(re.search(pattern, clause, flags=re.IGNORECASEGNORECASE) for pattern in patterns):
+        if any(re.search(pattern, clause, flags=re.IGNORECASE) for pattern in patterns):
             found.add(pid)
     return found
 
