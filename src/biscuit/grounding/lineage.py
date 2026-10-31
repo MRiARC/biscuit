@@ -68,9 +68,12 @@ def _parents(repo: Path, commit: str) -> tuple[str, ...]:
     return tuple(fields[1:])
 
 
-def _name_status(repo: Path, parent: str, commit: str) -> tuple[tuple[str, str | None, str], ...]:
+def _name_status(
+    repo: Path, parent: str, commit: str, *, find_copies_harder: bool = False,
+) -> tuple[tuple[str, str | None, str], ...]:
     # -z ensures paths with whitespace and tabs are unambiguous.
-    raw = _git(repo, "diff-tree", "-r", "-M80%", "-C", "--find-copies-harder", "-B",
+    copy_flags = ("--find-copies-harder",) if find_copies_harder else ()
+    raw = _git(repo, "diff-tree", "-r", "-M80%", "-C", *copy_flags, "-B",
                "--name-status", "-z", parent, commit)
     fields = raw.decode("utf-8", "surrogateescape").split("\0")
     changes: list[tuple[str, str | None, str]] = []
@@ -148,9 +151,10 @@ def _matching_paths(
 
 def _transition(
     repo: Path, parent: str, commit: str, parent_paths: set[str], language: str,
-    exemplar: Symbol, require_tree_sitter: bool,
+    exemplar: Symbol, require_tree_sitter: bool, find_copies_harder: bool = False,
 ) -> tuple[set[str], str, str | None, str | None, str]:
-    statuses = _name_status(repo, parent, commit)
+    statuses = _name_status(repo, parent, commit,
+                            find_copies_harder=find_copies_harder)
     touched = set()
     for _, old, new in statuses:
         touched.add(new)
@@ -198,7 +202,9 @@ def _transition(
         candidates |= _matching_paths(repo, commit, scan - parent_paths, language, exemplar,
                                       require_tree_sitter, require_identity=True)
     if len(candidates) > 1:
-        operation = "COPY_C" if operation == "COPY_C" else "REWRITE_SPLIT_B"
+        operation = ("COPY_C" if operation == "COPY_C"
+                     or any(p in candidates for p in parent_paths)
+                     else "REWRITE_SPLIT_B")
     if not candidates and parent_paths:
         # A modified file may survive while its historical symbol is rewritten
         # away. This is a conservative -B-style rewrite *candidate*; the event
@@ -210,14 +216,15 @@ def _transition(
         elif operation == "UNCHANGED":
             operation = "DELETE"
     return candidates, operation, old_file, new_file, hashlib.sha256(
-        _git(repo, "diff-tree", "-r", "-M80%", "-C", "--find-copies-harder", "-B",
-             "-p", parent, commit)).hexdigest()
+        _git(repo, "diff-tree", "-r", "-M80%", "-C",
+             *(("--find-copies-harder",) if find_copies_harder else ()),
+             "-B", "-p", parent, commit)).hexdigest()
 
 
 def trace_lineage(
     repo: str | Path, historical_commit: str, historical_path: str,
     symbol_name: str, *, head: str = "HEAD", language: str = "python",
-    require_tree_sitter: bool = False,
+    require_tree_sitter: bool = False, find_copies_harder: bool = False,
 ) -> LineageResult:
     """Follow a named symbol across the commit DAG; abstain on uncertain moves.
 
@@ -241,6 +248,7 @@ def trace_lineage(
         raise GitLineageError("Historical symbol not found uniquely; refusing to invent an anchor")
     exemplar = matches[0]
     commits = forward_commits(root, past, current)
+    traversal_digest = hashlib.sha256("\n".join(commits).encode("ascii")).hexdigest()
     states: dict[str, set[str]] = {past: {historical_path}}
     # Per-commit identity exemplars must evolve with verified same-path edits:
     # a later relocation is compared against the *latest* confirmed shape.
@@ -259,13 +267,17 @@ def trace_lineage(
             if not prev:
                 # Parallel branch that did not descend from historical commit.
                 # Still log its diff; it conveys no proven historical lineage.
-                digest = hashlib.sha256(_git(root, "diff-tree", "-r", "-M80%", "-C",
-                    "--find-copies-harder", "-B", "-p", parent, commit)).hexdigest()
+                digest = hashlib.sha256(_git(
+                    root, "diff-tree", "-r", "-M80%", "-C",
+                    *(("--find-copies-harder",) if find_copies_harder else ()),
+                    "-B", "-p", parent, commit,
+                )).hexdigest()
                 next_candidates, kind, old_p, new_p = set(), "UNRELATED_PARENT", None, None
             else:
                 next_candidates, kind, old_p, new_p, digest = _transition(
                     root, parent, commit, prev, language,
-                    exemplars.get(parent, exemplar), require_tree_sitter
+                    exemplars.get(parent, exemplar), require_tree_sitter,
+                    find_copies_harder=find_copies_harder,
                 )
             result_sets.append(next_candidates)
             records.append((parent, index, prev, next_candidates, kind, old_p, new_p, digest))
@@ -380,6 +392,9 @@ def trace_lineage(
                 mapping_evidence={
                     "diff_patch_sha256": digest, "symbol_name": exemplar.qualified_name,
                     "historical_commit_sha": past,
+                    "traversed_commit_sha256": traversal_digest,
+                    "traversed_commit_count": len(commits),
+                    "find_copies_harder": find_copies_harder,
                     "parser_backend": exemplar.parser_backend,
                     "parser_version": exemplars.get(parent, exemplar).parser_version,
                     "grammar_version": exemplars.get(parent, exemplar).grammar_version,
