@@ -120,9 +120,42 @@ def verify_manifest(
     return manifest
 
 
+def _validate_unified_diff(file: dict[str, Any]) -> None:
+    """Reject malformed synthetic patches before passing them to a watchdog."""
+    path = file.get("path")
+    if not isinstance(path, str) or path.startswith("/") or ".." in Path(path).parts:
+        raise ValueError("PR diff path must be a safe relative repository path")
+    diff = file.get("diff")
+    if not isinstance(diff, str):
+        raise ValueError("PR patch must be a unified diff string")
+    lines = diff.splitlines()
+    if len(lines) < 5 or lines[:3] != [
+        f"diff --git a/{path} b/{path}",
+        f"--- a/{path}",
+        f"+++ b/{path}",
+    ]:
+        raise ValueError("PR patch must have matching unified-diff file headers")
+    hunk = re.fullmatch(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@", lines[3])
+    if hunk is None:
+        raise ValueError("PR patch must have a standard hunk header")
+    old_count = int(hunk.group(2))
+    new_count = int(hunk.group(4))
+    body = lines[4:]
+    if not all(line and line[0] in ("+", "-", " ") for line in body):
+        raise ValueError("Malformed unified-diff hunk line")
+    if sum(line[0] in ("-", " ") for line in body) != old_count or sum(
+        line[0] in ("+", " ") for line in body
+    ) != new_count:
+        raise ValueError("Unified-diff hunk line counts do not match header")
+
+
 def load_pr_cases(root: Path | None = None) -> list[dict[str, Any]]:
     case_root = (root or DEFAULT_FIXTURE_ROOT) / "pr_cases"
-    return [_json_file(path) for path in sorted(case_root.glob("pr-*.json"))]
+    cases = [_json_file(path) for path in sorted(case_root.glob("pr-*.json"))]
+    for case in cases:
+        for file in case["files"]:
+            _validate_unified_diff(file)
+    return cases
 
 
 def load_pr_labels(root: Path | None = None) -> dict[str, str]:
