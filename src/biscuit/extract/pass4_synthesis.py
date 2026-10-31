@@ -76,7 +76,7 @@ class Pass4SchemaSynthesis:
             try:
                 parsed: Any = json.loads(cleaned)
             except json.JSONDecodeError:
-                match = re.search(r"(\\{[\\s\\S]*\\})", cleaned)
+                match = re.search(r"(\{[\s\S]*\})", cleaned)
                 try:
                     parsed = json.loads(match.group(1)) if match else None
                 except json.JSONDecodeError:
