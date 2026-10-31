@@ -7,7 +7,6 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-
 JUDGED_STATES = frozenset({
     "ACCEPTED", "REJECTED", "UNRESOLVED", "DISPUTED",
     "WITHDRAWN", "DEFERRED", "SUPERSEDED", "ACCEPTED_WITH_MODIFICATION",
