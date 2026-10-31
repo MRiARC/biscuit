@@ -263,3 +263,16 @@ def test_stream3_adapter_into_runner_with_production_watchdog_contract() -> None
     assert "trusted_ruling_proofs" not in observed
     assert "verified_project_roles" in observed  # Optional Stream 3 role argument, no grants.
     assert observed["verified_project_roles"] is None
+
+
+def test_direct_production_scorer_never_implicitly_trusts_synthetic_marker() -> None:
+    data = load_simulated_predictions("pep-505")
+    result = pr_warning_metrics(
+        load_pr_labels(), data["warned_pr_ids"],
+        warning_records=data["warning_records"],
+        expected_alternatives=load_pr_expected_alternatives(),
+        expected_rulings=load_pr_authorization_oracle(),
+    )
+    assert result["tp"] == 0
+    assert result["fp"] == 5
+    assert result["fn"] == 5
