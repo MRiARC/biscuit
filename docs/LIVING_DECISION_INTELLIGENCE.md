@@ -196,7 +196,7 @@ stateDiagram-v2
    - If maintainers express differing views without consensus, the alternative is assigned `DISPUTED` or `UNRESOLVED`.
    - Draft publication approval does not create a ruling sign-off and cannot change an alternative's lifecycle state.
 3. **Transition C: Authoritative Ruling & Rejection Anchor Authorization:**
-   - An alternative is marked `REJECTED` only when a `VERIFIED_EXACT` `RULING` span is linked to that exact alternative and authored by the identified authorized ruling actor. Core Maintainer consensus requires two distinct verified Core Maintainer sign-offs; Working Group authority requires its defined chair plus two distinct verified group sign-offs.
+   - An alternative is marked `REJECTED` only when a `VERIFIED_EXACT` `RULING` span is linked to that exact alternative and authored by the identified authorized ruling actor. Core Maintainer consensus requires the ruling author plus at least one other distinct verified Core Maintainer sign-off; Working Group authority requires a Working Group Chair ruling plus at least one other distinct verified group-member sign-off.
    - Only alternatives reaching `lifecycle_status = 'REJECTED'` with a `VERIFIED_EXACT` ruling authorize PR watchdog warnings.
 
 ---
