@@ -150,7 +150,8 @@ class Pass3ArgumentMining:
                 model=self.model, prompt=prompt, temperature=0.0, keep_alive=0
             )
         finally:
-            self.client.unload_model(self.model)
+            if not self.client.unload_model(self.model):
+                raise RuntimeError(f"Model {self.model} could not be unloaded before the next pass")
 
         cleaned = _clean_json_response(raw_response)
         if not cleaned:
