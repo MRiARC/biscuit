@@ -1,113 +1,129 @@
-# Code Grounding and AST Tracking Specification
+# Code Grounding, AST Symbol Anchors, and Warning Authorization
 
 **Project:** Biscuit — Open Source Decision Intelligence and Knowledge Recovery  
 **Team:** Chole Bhature (`@mriarc-08`, `@daksheshsharma2409`, `@utksh1`)  
-**Scope:** AST Symbol Anchoring, Git History Lineage Traversal, Structural Subtree Fingerprinting, and Semantic Diff Retrieval.
+**Scope:** Alternative-Specific Code Anchoring, AST Parsing, Git Lineage Traversal, and Warning Authorization Gate.  
+**Specification Level:** Implementation Contract (Consolidated with Issue #5 fixes).
 
 ---
 
-## 1. The Core Problem: Why Filepaths Break
+## 1. Architectural Invariant: Anchoring to Specific Alternatives
 
-In long-running open-source projects, anchoring an architectural decision to a fragile string like:
-`cpython/Parser/tokenizer.c#L140-L160` fails rapidly over time:
+Per **Issue #5 (E1)**:
+> *Two alternatives in one decision can have completely different code anchors.*
 
-1. **Line Drift (Weeks):** Adding imports or comments shifts line numbers.
-2. **Path Moves & Subdirectory Restructuring (Months):** Files are reorganized (e.g. `Parser/tokenizer.c` $\rightarrow$ `Parser/lexer/tokenizer.c`).
-3. **Monolith Splitting & Refactoring (Years):** A 3,000-line monolithic file is split into separate modules.
-4. **Architectural Rewrites:** A subsystem is completely rewritten (e.g. Python replacing its LL(1) parser with a PEG parser, or rewriting Python modules into C/Rust).
+In our canonical data model, **code anchors attach directly to `decision_alternatives.id`**, not the top-level decision:
 
-To preserve decision-to-code traceability across decades, Biscuit implements a **4-Tier Code Grounding Engine**.
+```
+  [Decision: PEP-505 (None-aware operators)]
+      │
+      ├── Alternative 1: Unary '?' Syntax (a?b) [REJECTED]
+      │      └── Code Anchor: Grammar / Parser / Tokenizer (`Parser/tokenizer.c`)
+      │
+      └── Alternative 2: Functional coalesce() [REJECTED]
+             └── Code Anchor: Runtime Built-ins (`Python/bltinmodule.c`)
+```
+
+When a pull request modifies `Python/bltinmodule.c`, Biscuit evaluates *only* Alternative 2 (`coalesce()`). It does **not** evaluate Alternative 1 (the parser change), eliminating false cross-alternative associations.
+
+---
+
+## 2. The 4-Tier Code Grounding Engine
 
 ```mermaid
 flowchart TD
-    PR["Incoming Code Diff / Pull Request"] --> T1
+    Diff["Incoming Pull Request Diff"] --> Extract
 
-    subgraph T1["Tier 1: AST Symbol Anchors (Tree-sitter)"]
-        T1Action["Extract modified functions, classes, and grammar rules.<br/>Matches canonical qualified symbol identities."]
+    subgraph Extract["1. Code Feature Extraction (Tree-sitter)"]
+        Tree["AST Parser"] --> ModSymbols["Modified Symbol Names & Signatures"]
+        Tree --> ModTrees["Normalized AST Subtrees"]
+        Tree --> DiffHunk["Added/Modified Code Lines"]
     end
 
-    T1 --> Match1{"Symbol Match Found?"}
-    Match1 -- Yes --> Confirmed["Anchor Confirmed"]
-    Match1 -- No --> T2
+    Extract --> Tiers
 
-    subgraph T2["Tier 2: Git Lineage & Rename Tracking"]
-        T2Action["Traverse git log -M --follow from historical commit to HEAD.<br/>Resolves historical file movements and renames."]
+    subgraph Tiers["2. 4-Tier Grounding Sequence"]
+        T1["Tier 1: AST Qualified Symbol Lookup<br/>Queries code_anchors by qualified_symbol_name"]
+        T2["Tier 2: Git Lineage Traversal<br/>Traces git log -M --follow from historical_commit_sha to HEAD"]
+        T3["Tier 3: Normalized AST Subtree Hashing<br/>Matches grammar shape with masked variable identifiers"]
+        T4["Tier 4: Semantic Diff Embedding (nomic-embed-text)<br/>Embeds code hunk & computes cosine distance"]
     end
 
-    T2 --> Match2{"File Lineage Found?"}
-    Match2 -- Yes --> Confirmed
-    Match2 -- No --> T3
+    Tiers --> Candidates["Candidate Rejection Matches"]
+    Candidates --> Gate{"3. Warning Authorization & Abstention Gate<br/>(Issue #5 F1, F2)"}
 
-    subgraph T3["Tier 3: Normalized AST Subtree Hashing"]
-        T3Action["Compare AST grammar structure with masked variable names.<br/>Detects identical code patterns under different variable names."]
+    subgraph GateCriteria["Mandatory Gate Invariants"]
+        I1["1. Alternative status == 'REJECTED'"]
+        I2["2. Ruling evidence is 'VERIFIED_EXACT'"]
+        I3["3. Code anchor matches THIS alternative"]
+        I4["4. Semantic diff cosine >= 0.82 on rejection rationale"]
     end
 
-    T3 --> Match3{"Subtree Hash Match?"}
-    Match3 -- Yes --> Confirmed
-    Match3 -- No --> T4
-
-    subgraph T4["Tier 4: Semantic Diff Embedding (nomic-embed-text)"]
-        T4Action["Embed PR diff chunk and compute cosine similarity<br/>against rejected alternative embeddings.<br/>Catches conceptual intent even after complete rewrites."]
-    end
-
-    T4 --> Match4{"Cosine Similarity >= 0.82?"}
-    Match4 -- Yes --> Confirmed
-    Match4 -- No --> Safe["No Historical Decision Conflict"]
+    Gate --> AllPass{"Do ALL 4 Invariants Pass?"}
+    AllPass -- No --> Abstain["ABSTAIN (Silent Log)"]
+    AllPass -- Yes --> ModeCheck{"Dry-Run Mode Enabled?"}
+    
+    ModeCheck -- Yes --> AuditLog["Log to Internal Audit Table"]
+    ModeCheck -- No --> PostPR["Post In-Line PR Warning Comment"]
 ```
 
 ---
 
-## 2. Tier 1: AST Symbol Identity Anchoring
+## 3. Tier 1: Concrete AST Symbol Anchors
 
-Instead of binding decisions to line numbers or file paths, Biscuit binds decisions to **Concrete Syntax Tree (CST) and Abstract Syntax Tree (AST) symbol identities** using language-agnostic parsing (Tree-sitter).
+Per **Issue #5 (E2)**, code anchors store unambiguous, language-agnostic symbols parsed with Tree-sitter:
 
-### Canonical Symbol Anchor Schema
 ```
 Structure: CodeSymbolAnchor
-    anchor_id          : UUID
-    decision_id        : UUID
-    symbol_kind        : Enum (FUNCTION, CLASS, METHOD, GRAMMAR_RULE, INTERFACE, MACRO)
-    qualified_name     : String (e.g. "cpython.Parser.Tokenizer.get_next_token")
-    symbol_signature   : String (e.g. "get_next_token(stream: Stream) -> Token")
-    defining_scope     : String (e.g. "module:cpython.parser.tokenizer")
-    historical_commit  : String (40-char Git SHA at time of debate)
-    historical_file    : String (Path at time of debate)
+    anchor_id                  : UUID
+    alternative_id             : UUID REFERENCES decision_alternatives(id)
+    language                   : Enum (PYTHON, C, RUST, GO, JAVASCRIPT)
+    symbol_type                : Enum (FUNCTION, CLASS, METHOD, GRAMMAR_RULE, INTERFACE, AST_NODE)
+    qualified_symbol_name      : String (e.g. "cpython.Parser.Tokenizer.get_next_token")
+    signature_hash             : String (SHA-256 of normalized parameter/type signature)
+    ast_structural_fingerprint : String (SHA-256 of identifier-masked AST subtree)
+    historical_file_path       : String (Relative path at time of debate)
+    historical_commit_sha      : String (40-char Git SHA at time of debate)
 ```
 
-### Why Symbols Survive Edits:
-- Line offsets shift whenever code above or below is touched.
-- However, the qualified symbol name `Parser.Tokenizer.get_next_token` remains identical across minor and major releases, allowing instant lookup in `<1ms`.
+### Reproducibility:
+- Even when line offsets shift by thousands of lines due to edits, the AST qualified symbol name (`cpython.Parser.Tokenizer.get_next_token`) resolves unambiguously in $<1\text{ms}$.
 
 ---
 
-## 3. Tier 2: Git Lineage & Rename Tracking (`git log --follow`)
+## 4. Tier 2: Git Lineage & Rename Traversal (`git log --follow`)
 
-When an open-source project runs `git mv old_path.py new_path.py` or moves files across folders:
+Per **Issue #5 (E3)**, when a file path changes between the historical decision commit ($C_{\text{past}}$) and modern `HEAD`:
 
-### Lineage Traversal Algorithm:
-1. Biscuit stores the `historical_commit_sha` with every code anchor.
-2. When evaluating modern code at `HEAD`:
-   - If `historical_file` no longer exists, Biscuit runs an automated Git commit traversal:
-     ```bash
-     git log --follow --name-only --format="" <historical_commit>..HEAD -- <historical_file>
-     ```
-3. Git's internal similarity heuristics (`-M80%`) trace the rename chain forward across commits:
-   $$\text{Commit } C_{\text{past}} \xrightarrow{\text{rename}} \text{Commit } C_{\text{split}} \xrightarrow{\text{move}} \text{Commit } C_{\text{HEAD}}$$
-4. The system updates its live index with the modern resolved path without altering the immutable historical record.
+```mermaid
+flowchart LR
+    C1["Commit C_past (2019)<br/>File: /Parser/tokenizer.c<br/>Decision PEP-505 Anchor"] --> C2["Commit C_rename (2022)<br/>git mv Parser/tokenizer.c<br/>➔ /Parser/lexer/tokenizer.c"]
+    C2 --> C3["Commit C_head (2026)<br/>Modern Repository State"]
+
+    TraversalEngine["Biscuit Git Traversal Engine<br/>Executes git log -M --follow from C_past to C_head"]
+    
+    C1 -.-> TraversalEngine
+    C3 -.-> TraversalEngine
+    TraversalEngine ==> ModernPath["Resolved Active Path:<br/>/Parser/lexer/tokenizer.c"]
+```
+
+### Traversal Algorithm:
+1. If `historical_file_path` is not present at `HEAD`, query the local Git DAG:
+   ```bash
+   git log --follow --name-only --format="" <historical_commit_sha>..HEAD -- <historical_file_path>
+   ```
+2. Git's internal similarity heuristics (`-M80%`) trace the rename forward across commits.
+3. If the file was **deleted without rename**, mark anchor status as `CODE_PATH_DELETED` and abstain from path-based matching.
 
 ---
 
-## 4. Tier 3: Normalized AST Subtree Hashing (Surviving Refactors)
+## 5. Tier 3: Normalized AST Subtree Hashing (Surviving Refactors)
 
-When a developer refactors code by:
-- Renaming local variables (`buf` $\rightarrow$ `stream_buffer`).
-- Reformatting whitespace, brackets, or type annotations.
-
-String hashing and line diffs fail. Biscuit generates a **Normalized AST Subtree Fingerprint**:
+When a developer refactors code by renaming local variables or reformatting syntax:
 
 ```
-Raw Code Snippet:
-    def parse_optional(stream):
+Developer's Modified Code:
+    def check_value(stream):
         if stream.peek() == '?':
             return parse_chain()
         return None
@@ -122,68 +138,48 @@ Normalized AST (Masked Identifiers):
         ]
     )
 
-➔ AST Structural Hash: SHA-256 of Canonical Tree
+➔ AST Structural Fingerprint: SHA-256 of Normalized Subtree
 ```
 
-### Structural Pattern Detection:
-If a contributor opens a pull request that re-implements an approach whose AST structure matches a previously rejected proposal, Tier 3 flags the structural equivalence even if all variable and parameter names were completely altered!
+If a pull request introduces an AST subtree whose structural fingerprint matches a known rejected proposal's prototype, Tier 3 flags the structural match even if all variable names are completely novel.
 
 ---
 
-## 5. Tier 4: Semantic Diff Embedding Alignment (Surviving Rewrites)
+## 6. Tier 4: Semantic Diff Embedding Alignment (Surviving Rewrites)
 
-When a subsystem undergoes a **complete ground-up rewrite** (e.g., Python moving from its C-based LL(1) parser to a Python/C PEG parser):
-- Historical AST symbols may no longer exist.
-- Git rename tracking breaks because the old file was deleted and a new file created from scratch.
+When a subsystem is **completely rewritten from scratch** (e.g., Python moving from its C-based LL(1) parser to a PEG parser):
+- AST symbol names may change.
+- Git rename tracking breaks because the old file was deleted and a new file created.
 
-### How Semantic Diff Embeddings Catch It:
-1. When a PR is opened, Biscuit extracts the **PR diff hunk** (the added lines, syntax rules, and docstrings).
-2. It generates a 768-dimensional embedding using `nomic-embed-text-v1.5` with prefix `search_query:`.
-3. It performs cosine similarity search against the vector index of `decision_alternatives`.
-
-```
-PR Diff:
-+  # Safe navigation operator rule
-+  safe_chain: atom '?.' NAME
-
-Decision Alternative in Vector Store:
-   "Proposal to introduce ?. safe navigation operator into grammar.
-    Rejected due to ambiguity with ternary expression syntax."
-
-➔ Cosine Similarity: 0.865 (Exceeds 0.82 threshold!)
-```
-
-Even after a complete architectural rewrite, the **semantic intent of the code change** matches the historical rejection, and the author is alerted!
+### Alignment Logic:
+1. Extract the PR diff hunk (added code lines, grammar rules, docstrings).
+2. Generate an embedding using `nomic-embed-text-v1.5` with prefix `search_query:`.
+3. Compute cosine distance against `decision_alternatives.embedding`.
+4. If cosine similarity $\ge 0.82$, it triggers as a candidate match.
 
 ---
 
-## 6. The PR Diff Watchdog Workflow
+## 7. Warning Authorization & Abstention Gate
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Dev as Contributor
-    participant GH as GitHub Pull Request
-    participant Bot as Biscuit Watchdog Bot
-    participant Engine as Code Grounding Engine
-    participant DB as Knowledge Base (PostgreSQL)
+Per **Issue #5 (F1, F2)**:
+> *A retrieval match alone is NOT proof of a violation. Biscuit must distinguish between candidate discovery and warning authorization.*
 
-    Dev->>GH: Opens PR modifying syntax/parser
-    GH->>Bot: Webhook: pull_request.opened
-    Bot->>Engine: Send raw git diff
-    Engine->>Engine: Run Tier 1 (Symbol check) & Tier 4 (Semantic diff embedding)
-    Engine->>DB: Query code_anchors & decision_alternatives
-    DB->>Engine: Return match: Proposal PEP-505 rejected by Guido van Rossum
-    Engine->>Bot: Format alert with exact quotes & permalinks
-    Bot->>GH: Post inline review comment on diff line:
-    Note over GH: "🛑 Warning: This pattern was rejected in PEP-505 due to syntax collision..."
-```
+### Strict Warning Authorization Invariants:
+An automated PR warning comment is **authorized if and only if ALL four invariants hold**:
+
+| Invariant | Requirement | Failure Action |
+|---|---|---|
+| **1. Decision State** | `decision_alternatives.lifecycle_status == 'REJECTED'` | **ABSTAIN.** (Do not warn on `DISPUTED`, `UNRESOLVED`, or `PROPOSED` items). |
+| **2. Evidence Veracity** | `ruling_evidence_id` has `verification_status == 'VERIFIED_EXACT'` | **ABSTAIN.** (Never warn based on unverified or stale evidence). |
+| **3. Code Grounding** | Modified PR code touches an active `code_anchor` bound directly to THIS alternative (Tier 1/2/3 match) | **ABSTAIN.** (Never warn based on semantic similarity to unrelated code). |
+| **4. Semantic Confidence** | Semantic diff cosine similarity $\ge 0.82$ against the specific rejection rationale | **ABSTAIN.** (If match is borderline or ambiguous, stay silent). |
 
 ---
 
-## 7. Verifiable Traceability Guarantees
+## 8. Dry-Run & Audit Mode Enforcement
 
-Every code grounding match surfaces three verifiable proofs to developers:
-1. **The Code Anchor:** Identifies the historical symbol name and commit SHA where the debate originated.
-2. **The Causal Rejection:** Cites the exact reason, the maintainer who objected, and the verbatim quote.
-3. **The Ground Truth Link:** Provides a direct URL back to the original discussion (Discourse, GitHub, or CNCF Slack).
+Per **Issue #5 (F3, H6)**:
+- **Default Execution Mode:** Automatic GitHub PR warning comments are **DISABLED by default**.
+- Biscuit runs in **Audit/Dry-Run Mode**:
+  - Potential warnings are recorded in an internal `pr_watchdog_audit_log` table.
+  - No automated comments are posted to public GitHub PRs until held-out evaluation benchmarks demonstrate **0.0% false rejections** and **$\ge 85\%$ recall**.
