@@ -26,9 +26,9 @@ if typer is not None:
 
     @app.command()
     def evaluate(
-        benchmark: str = typer.Option("pep-505", "--benchmark"),
-        predictions: Path | None = typer.Option(None, "--predictions"),
-        output: Path = typer.Option(Path("scorecard.json"), "--output"),
+        benchmark: str = typer.Option("pep-505", "--benchmark"),  # noqa: B008
+        predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
+        output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
     ) -> None:
         """Score predictions against withheld fixture labels (no live models needed)."""
         try:
@@ -47,9 +47,9 @@ if typer is not None:
 
     @app.command()
     def ingest(
-        platform: str = typer.Option(..., "--platform"),
-        url: str = typer.Option(..., "--url"),
-        db: Path = typer.Option(None, "--db"),
+        platform: str = typer.Option(..., "--platform"),  # noqa: B008
+        url: str = typer.Option(..., "--url"),  # noqa: B008
+        db: Path | None = typer.Option(None, "--db"),  # noqa: B008
     ) -> None:
         """Ingest a complete Discourse topic snapshot into the local SQLite cache."""
         if platform.lower() != "discourse":
@@ -64,8 +64,8 @@ if typer is not None:
 
     @decisions_app.command("list")
     def decisions_list(
-        status: str | None = typer.Option(None, "--status"),
-        db: Path = typer.Option(None, "--db"),
+        status: str | None = typer.Option(None, "--status"),  # noqa: B008
+        db: Path | None = typer.Option(None, "--db"),  # noqa: B008
     ) -> None:
         """Display the local decision index, optionally filtered by lifecycle state."""
         try:
@@ -92,21 +92,21 @@ if typer is not None:
 
     @decisions_app.command("import")
     def decisions_import(
-        source: Path = typer.Option(..., "--file"),
-        db: Path = typer.Option(None, "--db"),
+        source: Path = typer.Option(..., "--file"),  # noqa: B008
+        db: Path | None = typer.Option(None, "--db"),  # noqa: B008
     ) -> None:
         """Import already verified decision records; no automatic LLM extraction."""
         try:
             count = import_decisions(source, db or _default_db())
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             typer.echo(f"Import failed: {exc}", err=True)
             raise typer.Exit(1) from exc
         typer.echo(f"Imported {count} decisions")
 
     @app.command("export")
     def export(
-        output: Path = typer.Option(Path("docs/decisions"), "--output"),
-        db: Path = typer.Option(None, "--db"),
+        output: Path = typer.Option(Path("docs/decisions"), "--output"),  # noqa: B008
+        db: Path | None = typer.Option(None, "--db"),  # noqa: B008
     ) -> None:
         """Export locally verified decision records as MADR-style markdown files."""
         try:

@@ -114,7 +114,7 @@ def import_decisions(json_path: Path, db_path: Path) -> int:
     """Load explicitly supplied, human-reviewed decision records; never infer from raw posts."""
     records = json.loads(json_path.read_text(encoding="utf-8"))
     if not isinstance(records, list):
-        raise ValueError("Expected a JSON list of decisions")
+        raise TypeError("Expected a JSON list of decisions")
     validated = []
     for item in records:
         decision_id = str(item["decision_id"])

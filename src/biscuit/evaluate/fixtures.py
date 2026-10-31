@@ -1,5 +1,7 @@
 """Canonical thread integrity and strict separation of withheld benchmark labels."""
 
+# ruff: noqa: I001
+
 from __future__ import annotations
 
 import hashlib
@@ -48,7 +50,7 @@ def verify_thread(thread: dict[str, Any]) -> str:
         ids.add(mid)
         raw = message["raw_text"]
         if not isinstance(raw, str):
-            raise ValueError("Raw text must be Unicode")
+            raise TypeError("Raw text must be Unicode")
         actual = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         checksum = message.get("content_sha256")
         if not isinstance(checksum, str) or not hmac.compare_digest(actual, checksum):
