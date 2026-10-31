@@ -760,10 +760,20 @@ def test_alternative_ruling_evidence_backlink_negative(test_db_session):
     # Raw SQLite UUID parameters must use the 32-character hexadecimal form.
     assert test_db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
     fk_rows = test_db_session.execute(text("PRAGMA foreign_key_list(decision_alternatives)")).all()
+    from sqlalchemy.schema import CreateTable
+
+    declared = list(DecisionAlternative.__table__.foreign_key_constraints)
+    compiled = str(
+        CreateTable(
+            DecisionAlternative.__table__,
+            include_foreign_key_constraints=declared,
+        ).compile(dialect=test_db_session.get_bind().dialect)
+    )
     assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), (
         fk_rows,
-        [(fk.name, fk.use_alter, [(e.parent.name, str(e.column)) for e in fk.elements])
-         for fk in DecisionAlternative.__table__.foreign_key_constraints],
+        [(fk.name, [(e.parent.table.schema, e.column.table.schema) for e in fk.elements])
+         for fk in declared],
+        compiled,
     )
     good = test_db_session.execute(
         text("UPDATE decision_alternatives SET ruling_evidence_id=:eid WHERE id=:aid"),
@@ -802,10 +812,20 @@ def test_decision_ruling_evidence_backlink_negative(test_db_session):
 
     assert test_db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
     fk_rows = test_db_session.execute(text("PRAGMA foreign_key_list(decisions)")).all()
+    from sqlalchemy.schema import CreateTable
+
+    declared = list(Decision.__table__.foreign_key_constraints)
+    compiled = str(
+        CreateTable(
+            Decision.__table__,
+            include_foreign_key_constraints=declared,
+        ).compile(dialect=test_db_session.get_bind().dialect)
+    )
     assert any(r[2] == "evidence_spans" and r[3] == "ruling_evidence_id" for r in fk_rows), (
         fk_rows,
-        [(fk.name, fk.use_alter, [(e.parent.name, str(e.column)) for e in fk.elements])
-         for fk in Decision.__table__.foreign_key_constraints],
+        [(fk.name, [(e.parent.table.schema, e.column.table.schema) for e in fk.elements])
+         for fk in declared],
+        compiled,
     )
     with pytest.raises(IntegrityError):
         updated = test_db_session.execute(
