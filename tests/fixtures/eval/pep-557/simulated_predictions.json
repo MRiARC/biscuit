@@ -68,31 +68,41 @@
       "case_id": "pr-01",
       "alternative_id": "pep-505:S1",
       "authorization": "SIMULATED_VERIFIED_RULING",
-      "source": "synthetic-fixture"
+      "source": "synthetic-fixture",
+      "ruling_source_message_id": "post-s1",
+      "ruling_quote_sha256": "e4ffc907d6fd43337ee3ff2432088ae1fa3ca2a82019baeaca0d7c8b34c25b29"
     },
     {
       "case_id": "pr-02",
       "alternative_id": "pep-572:P1",
       "authorization": "SIMULATED_VERIFIED_RULING",
-      "source": "synthetic-fixture"
+      "source": "synthetic-fixture",
+      "ruling_source_message_id": "pep572-s1",
+      "ruling_quote_sha256": "ef8b240df8718333af57c9f1dd74b545e970f3a0b02ffb27ab5b937f424e3924"
     },
     {
       "case_id": "pr-03",
       "alternative_id": "pep-572:P2",
       "authorization": "SIMULATED_VERIFIED_RULING",
-      "source": "synthetic-fixture"
+      "source": "synthetic-fixture",
+      "ruling_source_message_id": "pep572-s2",
+      "ruling_quote_sha256": "06e4dfe2ccb69c52b94fdc6eb2eedb5adf0ce9015e027483cb6ba2b8f6e4215f"
     },
     {
       "case_id": "pr-04",
       "alternative_id": "pep-572:P3",
       "authorization": "SIMULATED_VERIFIED_RULING",
-      "source": "synthetic-fixture"
+      "source": "synthetic-fixture",
+      "ruling_source_message_id": "pep572-s3",
+      "ruling_quote_sha256": "83c6cb021c0551e9ebfefc5921121d9e558019229991270645156e8bdf3e119f"
     },
     {
       "case_id": "pr-05",
       "alternative_id": "pep-557:M1",
       "authorization": "SIMULATED_VERIFIED_RULING",
-      "source": "synthetic-fixture"
+      "source": "synthetic-fixture",
+      "ruling_source_message_id": "pep557-m1",
+      "ruling_quote_sha256": "4be57fadc16081b325d6a6e5a3357ad98df4a131d0f9c98b14b93810dcb3f598"
     }
   ]
 }
