@@ -224,9 +224,9 @@ def test_issue_21_thresholds_and_audit_rows() -> None:
     assert sum(row["action"] == "ABSTAIN" for row in scored["audit_rows"]) == 15
     outcome = run_benchmark("pep-505")
     targets = {metric.name: metric.target for metric in outcome.metrics}
-    assert targets["Lifecycle state accuracy"] == 0.80
-    assert targets["AST grounding precision"] == 0.75
-    assert targets["PR warning precision"] == 0.90
+    assert targets["Lifecycle state accuracy"] == 0.85
+    assert targets["AST grounding precision"] == 0.80
+    assert targets["PR warning precision"] == 0.95
 
 
 def test_audit_database_stores_20_case_abstentions_idempotently(tmp_path) -> None:
