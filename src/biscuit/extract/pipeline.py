@@ -59,12 +59,12 @@ def _proposal_ids_in_clause(clause: str, proposals: list[ProposalCandidate]) -> 
     found: set[str] = set()
     for proposal in proposals:
         pid = proposal.proposal_id
-        patterns = [rf"(?<!\\w){re.escape(pid)}(?!\\w)"]
-        digits = re.sub(r"[^\\d]", "", pid)
+        patterns = [rf"(?<!\w){re.escape(pid)}(?!\w)"]
+        digits = re.sub(r"[^\d]", "", pid)
         if digits:
-            patterns.append(rf"\\b(?:proposal|alternative|option)\\s*{re.escape(digits)}\\b")
+            patterns.append(rf"\b(?:proposal|alternative|option)\s*{re.escape(digits)}\b")
         if proposal.name and len(proposal.name) >= 4:
-            patterns.append(rf"\\b{re.escape(proposal.name)}\\b")
+            patterns.append(rf"\b{re.escape(proposal.name)}\b")
         if any(re.search(pattern, clause, flags=re.IGNORECASE) for pattern in patterns):
             found.add(pid)
     return found
@@ -74,19 +74,19 @@ def _rejection_clauses(quote: str) -> list[str]:
     """Separate independent propositions so 'reject P1; P2 open' cannot reject P2."""
     return [
         clause.strip()
-        for clause in re.split(r"[;.\\n]+|\\b(?:but|however|whereas|while)\\b", quote, flags=re.I)
+        for clause in re.split(r"[;.\n]+|\b(?:but|however|whereas|while)\b", quote, flags=re.I)
         if clause.strip()
     ]
 
 
 def _affirmative_rejection(clause: str) -> bool:
     """Conservatively identify affirmative rejections; negated/contested rejections fail closed."""
-    if not re.search(r"\\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\\b", clause, re.I):
+    if not re.search(r"\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b", clause, re.I):
         return False
     if re.search(
-        r"\\b(?:not|never|no|don't|do\\s+not|does\\s+not|oppose|opposing|"
-        r"against|object\\s+to|disagree\\s+with|reconsider)\\b"
-        r"(?:\\s+\\w+){0,4}\\s+\\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\\b",
+        r"\b(?:not|never|no|don't|do\s+not|does\s+not|oppose|opposing|"
+        r"against|object\s+to|disagree\s+with|reconsider)\b"
+        r"(?:\s+\w+){0,4}\s+\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b",
         clause, re.I,
     ):
         return False
@@ -125,7 +125,7 @@ def _is_affirmative_signoff(quote: str, proposal_id: str, proposals: list[Propos
     for clause in _rejection_clauses(quote):
         if not _affirmative_rejection(clause):
             continue
-        if not re.search(r"\\b(?:agree|concur|second|endorse|support)\\b", clause, re.I):
+        if not re.search(r"\b(?:agree|concur|second|endorse|support)\b", clause, re.I):
             continue
         targets = _proposal_ids_in_clause(clause, proposals)
         if targets == {proposal_id} or (not targets and len(proposals) == 1):
