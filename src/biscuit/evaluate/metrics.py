@@ -115,6 +115,57 @@ def ast_grounding_precision(
     }
 
 
+
+def alternative_disambiguation_rate(
+    anchors: Sequence[Mapping[str, Any]],
+    proposal_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Fraction of alternatives with nonempty, distinct file/AST/symbol anchors."""
+    identifiers = list(dict.fromkeys(proposal_ids))
+    locations: dict[str, set[tuple[str, str, str]]] = {
+        pid: set() for pid in identifiers
+    }
+    for anchor in anchors:
+        pid = str(anchor.get("proposal_id", ""))
+        if pid not in locations:
+            continue
+        location = (
+            str(anchor.get("file_path", anchor.get("file_pattern", ""))),
+            str(anchor.get("symbol_identifier", "")),
+            str(anchor.get("ast_node_type", "")),
+        )
+        if location[0] and (location[1] or location[2]):
+            locations[pid].add(location)
+    distinguishable = sum(
+        bool(location_set)
+        and all(
+            location_set.isdisjoint(other_set)
+            for other_id, other_set in locations.items() if other_id != pid
+        )
+        for pid, location_set in locations.items()
+    )
+    return {
+        "rate": _ratio(distinguishable, len(identifiers)),
+        "distinguishable": distinguishable,
+        "total": len(identifiers),
+    }
+
+
+def hashed_text_embedding(text: str, dimensions: int = 256) -> list[float]:
+    """Offline deterministic lexical proxy, NOT a semantic-embedding accuracy claim."""
+    import re
+
+    if dimensions <= 0:
+        raise ValueError("Embedding dimension must be positive")
+    tokens = re.findall(r"[a-z0-9_]+", text.lower())
+    vector = [0.0] * dimensions
+    for token in tokens:
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % dimensions
+        vector[index] += 1.0
+    return vector
+
+
 def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     if not left or len(left) != len(right):
         raise ValueError("Embeddings must have equal nonzero dimensions")
