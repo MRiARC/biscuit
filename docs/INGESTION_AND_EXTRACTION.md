@@ -47,9 +47,10 @@ flowchart TD
 ## 2. Universal Data Ingestion & Versioned Source Storage
 
 Per **Issue #5 (A1, C1)** and **PR #7 Review (1.1, 1.2)**:
-- Raw content is **never mutated, truncated, or overwritten**.
-- All content captures live in `source_message_versions` with SHA-256 digests. If a post is later edited or deleted remotely, a new version record is appended with `edit_state = 'EDITED'` or `'DELETED'`, preserving the historical version that past evidence spans point to.
-- Cleaned content used for token reduction is stored strictly as a derived secondary view.
+- `raw_content` stores the exact decoded message-content field returned by the source API. Preserve line endings, punctuation, whitespace, and Unicode exactly; do not normalize, truncate, or overwrite it.
+- `content_hash` is SHA-256 over the UTF-8 bytes of that exact decoded string. It is not a hash of the HTTP response or JSON envelope.
+- Every remote edit/deletion appends a new version. A remote deletion is represented by a tombstone/new version with `edit_state = 'DELETED'`; earlier captured versions and evidence spans remain retained.
+- CRLF normalization and noise filtering are allowed only in derived columns/views; derived text is never used for source hashes or evidence offsets.
 
 ### Canonical Data Contract: Ingested Source Message & Versions
 
@@ -65,13 +66,14 @@ Structure: IngestedMessageIdentity
 Structure: IngestedMessageVersion
     message_id          : UUID           (Foreign Key to source_messages)
     version_number      : Integer        (Monotonically increasing version: 1, 2, ...)
-    raw_content         : String         (IMMUTABLE: Exactly as received from API)
-    content_hash        : String         (SHA-256 of raw_content)
+    raw_content         : String         (Immutable exact decoded content field; CRLF/LF and Unicode preserved)
+    content_hash        : String         (SHA-256 of UTF-8 bytes of exact raw_content)
     captured_at         : Timestamp      (ISO-8601 UTC capture timestamp)
-    is_current          : Boolean        (True if latest active version)
+    is_current          : Boolean        (At most one TRUE row per message; rotated transactionally)
     edit_state          : Enum           (ORIGINAL, EDITED, DELETED, UNAVAILABLE)
     edit_reason         : String or Null
-    derived_cleaned     : String         (Derived text post-noise-filtering)
+    derived_normalized  : String         (Optional CRLF-normalized retrieval view; never used for evidence)
+    derived_cleaned     : String         (Noise-filtered view; never used for evidence)
 ```
 
 ---
@@ -99,14 +101,14 @@ flowchart LR
 | `SUPPORTS` | Advances supporting arguments or benchmarks for a proposal | `MODEL_INFERRED` (Pass 3) |
 | `OBJECTS` | Raises a specific technical, performance, or compatibility critique | `MODEL_INFERRED` (Pass 3) |
 | `REBUTS` | Directly counters or answers a previously raised objection | `MODEL_INFERRED` (Pass 3) |
-| `RESOLVES` | Authoritative maintainer ruling accepting or rejecting a proposal | `MODEL_INFERRED` + Maintainer Role |
+| `RESOLVES` | Authoritative maintainer ruling accepting or rejecting a proposal | Verified human `RULING` span; never model-inferred |
 | `REFERENCES` | Mentions another PEP, commit, or issue identifier | `DETERMINISTIC_RULE` (Regex) |
 | `DIRECT_REPLY` | Explicit platform reply thread relation | `PLATFORM_METADATA` (API payload) |
 | `QUOTE_REFERENCE` | Quoting a specific passage from an earlier message | `DETERMINISTIC_RULE` (Blockquote parsing) |
 | `MENTION` | User `@` handle mention | `PLATFORM_METADATA` |
 
 > [!CRITICAL]
-> **Deliberation Edge Invariant:** A platform `MENTION` or `DIRECT_REPLY` must **never** be interpreted as an objection, rebuttal, or resolution without explicit semantic evidence in `evidence_spans`.
+> **Deliberation Edge Invariant:** A platform `MENTION` or `DIRECT_REPLY` is structural metadata only. It must never be interpreted as an objection, rebuttal, or resolution. Semantic edges (`PROPOSES`, `SUPPORTS`, `OBJECTS`, `REBUTS`, `RESOLVES`) require an explicit target alternative and source-message evidence span. The canonical DDL binds the span to the originating message/version and checks the edge role/stance; `RESOLVES` additionally requires `VERIFIED_EXACT` `RULING` evidence and non-model provenance.
 
 ---
 
@@ -129,10 +131,11 @@ Filters trivial discussions (e.g. documentation typos, cosmetic variable names) 
 ### Proposal-Occurrence Tracking (Cross-Time Recurrence)
 Per **PR #7 Review (2)**:
 When a proposal is discovered in a thread:
-1. Generate an embedding using `nomic-embed-text-v1.5`.
-2. Compute cosine similarity against existing alternatives in `decision_alternatives`.
-3. **If Cosine Similarity $\ge 0.90$ with an existing alternative:**
-   - Do **NOT** silently merge the records or overwrite the historical proposal.
+1. Generate a candidate embedding using `nomic-embed-text-v1.5`.
+2. Compute cosine similarity against existing alternatives in `decision_alternatives`; the provisional $\ge 0.90$ value is candidate retrieval only.
+3. **If a candidate meets the retrieval threshold:**
+   - Do **NOT** automatically merge or confirm identity; similarity alone cannot establish that two proposals are the same.
+   - Keep the occurrence in `PROPOSED_RECURRENCE` until a human confirms the link.
    - Insert an auditable record into `proposal_occurrences`:
      - `alternative_id`: Link to canonical alternative.
      - `source_thread_id`: New discussion thread.
@@ -140,9 +143,10 @@ When a proposal is discovered in a thread:
      - `proposal_wording_version`: Exact wording used in this specific debate.
      - `occurrence_context`: Contextual rationale for recurrence (e.g. "Triggered by PR #412").
      - `occurrence_outcome`: Status in this thread (e.g. `DISMISSED_AS_DUPLICATE`, `REOPENED`).
-     - `linkage_similarity`: Exact cosine score.
-     - `linkage_status`: `PROPOSED_RECURRENCE` (flagged for review; does not auto-merge).
-   - Log recurrence in `decision_event_log`.
+     - `linkage_similarity`: Candidate cosine score (retrieval signal only).
+     - `linkage_status`: `PROPOSED_RECURRENCE` until explicit human confirmation.
+     - The initiating message must belong to `source_thread_id`, and its version must belong to that message; composite foreign keys enforce both relationships.
+   - Log recurrence in `decision_event_log.proposal_occurrence_id`, bound to the same alternative and source thread.
 
 ---
 
@@ -166,7 +170,7 @@ Extracts directed subgraphs around each alternative using `discussion_edges`, pa
 ### Pass 3: Argument & Stance Mining (`Phi-3.5-mini-instruct`)
 Separates individual member objections from consensus rulings:
 * **Objection:** Recorded as an `arguments` row. Does NOT change proposal status to `REJECTED`.
-* **Ruling:** Recorded only when signed by an authority (`BDFL`, `CORE_MAINTAINER_CONSENSUS`). Links to `ruling_evidence_id`.
+* **Ruling:** A model-generated ruling label has no authority. A rejection requires a `VERIFIED_EXACT` `RULING` span linked to the same alternative and authored by an identified human authority. Core Maintainer consensus requires two distinct verified maintainer sign-offs. Draft approval is not a ruling.
 
 ### Pass 4: Schema & MADR Synthesis (`Qwen 2.5-Coder-7B-Instruct`)
 Synthesizes the complete MADR record and extracts exact character offsets `[start_char, end_char)` for all evidence quotes.
