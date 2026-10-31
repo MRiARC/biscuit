@@ -513,3 +513,42 @@ def test_all_twenty_patches_have_valid_unified_diff_hunks() -> None:
             corrupted["diff"] = corrupted["diff"] + "\n+extra"
             with pytest.raises(ValueError, match="line counts"):
                 _validate_unified_diff(corrupted)
+
+
+@pytest.mark.parametrize("state", [
+    "ACCEPTED", "REJECTED", "UNRESOLVED", "DISPUTED",
+    "WITHDRAWN", "DEFERRED", "SUPERSEDED", "ACCEPTED_WITH_MODIFICATION",
+])
+def test_each_eight_judged_states_is_scored_without_coercion(state) -> None:
+    scored = lifecycle_accuracy({"proposal": state}, {"proposal": state})
+    assert scored["accuracy"] == 1.0
+    assert scored["confusion_matrix"][state][state] == 1
+
+
+def test_ambiguous_proposal_alias_is_unmatched_not_guessed() -> None:
+    from biscuit.evaluate.runner import _align_proposals
+
+    truth = [
+        {"proposal_id": "A", "name": "First", "aliases": ["shared alias"]},
+        {"proposal_id": "B", "name": "Second", "aliases": ["shared alias"]},
+    ]
+    proposed = [{"proposal_id": "model-1", "name": "shared alias"}]
+    aligned, mapping = _align_proposals(proposed, truth)
+    assert aligned[0]["proposal_id"] == "UNMATCHED:model-1"
+    assert mapping == {"model-1": "UNMATCHED:model-1"}
+    assert proposal_recovery(
+        [aligned[0]["proposal_id"]], ["A", "B"]
+    )["f1"] == 0.0
+
+
+def test_duplicate_model_candidates_cannot_double_credit_single_alternative() -> None:
+    from biscuit.evaluate.runner import _align_proposals
+
+    truth = [{"proposal_id": "A", "name": "Unique option"}]
+    with pytest.raises(ValueError, match="Multiple predicted alternatives"):
+        _align_proposals(
+            [
+                {"proposal_id": "generated-1", "name": "Unique option"},
+                {"proposal_id": "generated-2", "name": "Unique option"},
+            ], truth,
+        )
