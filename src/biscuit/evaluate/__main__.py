@@ -24,8 +24,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-db", type=Path, help="SQLite per-PR audit database")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--no-simulate", action="store_true", help="Return NOT_MEASURED unless predictions supplied")
+    parser.add_argument("--stream3", action="store_true", help="Run installed Stream 3 extraction (NOT mock replay)")
     args = parser.parse_args(argv)
 
+    if args.stream3 and args.predictions is not None:
+        parser.error("--stream3 cannot be combined with --predictions")
     if args.all:
         names = sorted(
             p.name
@@ -38,6 +41,16 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--all requires --predictions to be a directory of ID.json files")
     else:
         names = [args.benchmark]
+    predictor = None
+    if args.stream3:
+        try:
+            from biscuit.extract.pipeline import ExtractionPipeline
+            from .stream3_adapter import stream3_predictor
+
+            predictor = stream3_predictor(ExtractionPipeline())
+        except ImportError as exc:
+            parser.exit(1, "Stream 3 extraction is not installed; integrate PR #23: "
+                        + str(exc) + "\\n")
     outputs = []
     outcomes = []
     try:
@@ -49,8 +62,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = run_benchmark(
                 name, fixtures_root=args.fixtures_root, predictions_path=prediction_file,
+                predictor=predictor,
                 audit_db=args.audit_db or Path.home() / ".local/share/biscuit/workspace.sqlite3",
-                recorded_replay=args.predictions is None and not args.no_simulate,
+                recorded_replay=(args.predictions is None and not args.no_simulate
+                                 and not args.stream3),
             )
             outputs.append(result.to_dict())
             outcomes.append(result)
