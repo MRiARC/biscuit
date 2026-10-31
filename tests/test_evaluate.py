@@ -401,3 +401,65 @@ def test_runner_fails_on_wrong_but_nonoverlapping_anchors() -> None:
     assert next(
         m for m in outcome.metrics if m.name == "Alternative disambiguation rate"
     ).status == "FAILED"
+
+
+def test_stream3_adapter_calls_real_extraction_without_labels() -> None:
+    from types import SimpleNamespace
+
+    from biscuit.evaluate.stream3_adapter import stream3_predictor
+
+    seen = {}
+
+    class FakePipeline:
+        def run(self, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(
+                run_id="injected-run",
+                run_status="SUCCESS",
+                proposals=[SimpleNamespace(proposal_id="model-1", name="Unary ? operator")],
+                madr=SimpleNamespace(considered_alternatives=[
+                    {"proposal_id": "model-1", "status": "DISPUTED"},
+                ]),
+                evidence_spans=[],
+            )
+
+    prediction = stream3_predictor(FakePipeline())(predictor_input(load_thread("pep-505")))
+    assert prediction["prediction_origin"] == "STREAM3_PIPELINE_NOT_SYNTHETIC_REPLAY"
+    assert prediction["proposals"][0]["status"] == "DISPUTED"
+    assert prediction["warning_records"] == []
+    assert prediction["warned_pr_ids"] == []
+    assert "ground_truth" not in json.dumps(seen).lower()
+    assert seen["messages"][0]["author"] == "fixture-author-a"
+    assert seen["messages"][0]["author_role"] == "contributor"
+    assert seen["verified_project_roles"] is None
+    assert run_benchmark("pep-505", predictor=lambda _: prediction).verdict != "PASSED"
+
+
+def test_stream3_adapter_untraceable_version_is_never_verified() -> None:
+    from types import SimpleNamespace
+
+    from biscuit.evaluate.stream3_adapter import stream3_predictor
+
+    class FakePipeline:
+        def run(self, **kwargs):
+            return SimpleNamespace(
+                run_id="test-run",
+                run_status="SUCCESS",
+                proposals=[],
+                madr=SimpleNamespace(considered_alternatives=[]),
+                evidence_spans=[
+                    SimpleNamespace(
+                        source_message_version_id="not-in-original-thread",
+                        start_char=0, end_char=4, exact_quote="fake",
+                        content_hash=hashlib.sha256(b"fake").hexdigest(),
+                    ),
+                ],
+            )
+
+    prediction = stream3_predictor(FakePipeline())(predictor_input(load_thread("pep-505")))
+    checked = exact_evidence_match(
+        prediction["evidence"],
+        {m["message_id"]: m["raw_text"] for m in load_thread("pep-505")["messages"]},
+    )
+    assert checked["emr"] == 0.0
+    assert checked["invalid_citation_rate"] == 1.0
