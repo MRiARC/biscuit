@@ -806,6 +806,11 @@ CREATE TABLE hitl_approval_requests (
          AND target_commit_sha IS NOT NULL)
     ),
     CONSTRAINT chk_hitl_expiry CHECK (expires_at > created_at),
+    CONSTRAINT chk_hitl_pr_target CHECK (
+        action_type = 'APPROVE_LIVING_DECISION'
+        OR (target_pr_number > 0 AND length(target_repository) > 0 AND target_commit_sha ~ '^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')
+    ),
+    CONSTRAINT chk_hitl_idempotency_key CHECK (idempotency_key ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'),
     CONSTRAINT chk_hitl_action_payload_hash CHECK (action_payload_sha256 ~ '^[0-9a-fA-F]{64}$'),
     CONSTRAINT chk_hitl_roles_nonempty CHECK (cardinality(authorized_roles) > 0)
 );
@@ -819,6 +824,7 @@ CREATE INDEX idx_hitl_approval_switch ON hitl_approval_requests(switch_approval_
 CREATE TABLE hitl_approval_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     approval_request_id UUID NOT NULL REFERENCES hitl_approval_requests(id) ON DELETE RESTRICT,
+    actor_source_platform VARCHAR(32) NOT NULL,
     actor_platform_id TEXT NOT NULL,
     actor_contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
     action_taken VARCHAR(32) NOT NULL,
@@ -862,12 +868,16 @@ DECLARE
     ev_role evidence_role;
     ev_stance evidence_stance;
     ev_status verification_status;
+    ruling_author_role TEXT;
 BEGIN
     IF NEW.edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES') THEN
-        SELECT evidence_role, stance, verification_status
-          INTO ev_role, ev_stance, ev_status
-          FROM evidence_spans
-         WHERE id = NEW.evidence_span_id;
+        SELECT es.evidence_role, es.stance, es.verification_status, c.project_role
+          INTO ev_role, ev_stance, ev_status, ruling_author_role
+          FROM evidence_spans es
+          JOIN source_message_versions smv ON smv.id = es.source_message_version_id
+          JOIN source_messages sm ON sm.id = smv.message_id
+          LEFT JOIN contributors c ON c.id = sm.author_id
+         WHERE es.id = NEW.evidence_span_id;
         IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edges require an evidence span'; END IF;
         IF NEW.edge_type = 'PROPOSES' AND ev_role <> 'PROPOSAL' THEN
             RAISE EXCEPTION 'PROPOSES requires PROPOSAL evidence';
@@ -878,8 +888,10 @@ BEGIN
         ELSIF NEW.edge_type = 'REBUTS' AND ev_role <> 'REBUTTAL' THEN
             RAISE EXCEPTION 'REBUTS requires REBUTTAL evidence';
         ELSIF NEW.edge_type = 'RESOLVES'
-          AND (ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT' OR NEW.edge_provenance = 'MODEL_INFERRED') THEN
-            RAISE EXCEPTION 'RESOLVES requires VERIFIED_EXACT RULING evidence and non-model provenance';
+          AND (ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
+               OR NEW.edge_provenance = 'MODEL_INFERRED'
+               OR ruling_author_role NOT IN ('BDFL', 'Core Maintainer', 'Working Group Chair')) THEN
+            RAISE EXCEPTION 'RESOLVES requires VERIFIED_EXACT RULING evidence authored by an identified human authority';
         END IF;
     END IF;
     RETURN NEW;
@@ -1067,12 +1079,31 @@ CREATE TRIGGER trg_verify_hitl_action_payload_hash
 BEFORE INSERT OR UPDATE OF card_rendered_payload, action_payload_sha256 ON hitl_approval_requests
 FOR EACH ROW EXECUTE FUNCTION verify_hitl_action_payload_hash();
 
+CREATE OR REPLACE FUNCTION protect_hitl_approval_request()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'HITL approval requests are retained for audit'; END IF;
+    IF (to_jsonb(NEW) - 'status') IS DISTINCT FROM (to_jsonb(OLD) - 'status') THEN
+        RAISE EXCEPTION 'HITL request identity, target, payload, expiry and secret reference are immutable';
+    END IF;
+    IF OLD.status <> 'PENDING' OR NEW.status NOT IN ('DECIDED', 'EXPIRED', 'REVOKED') THEN
+        RAISE EXCEPTION 'HITL request status may transition only from PENDING to a terminal state';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_protect_hitl_approval_request
+BEFORE UPDATE OR DELETE ON hitl_approval_requests
+FOR EACH ROW EXECUTE FUNCTION protect_hitl_approval_request();
+
 -- The HMAC is verified by the application against the raw callback body; this trigger
--- enforces the remaining request, actor, expiry, and action-binding invariants.
+-- enforces request, platform identity, role, expiry, action binding and the one-way
+-- PENDING -> DECIDED status transition in the same transaction.
 CREATE OR REPLACE FUNCTION enforce_hitl_approval_event()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
     request_row hitl_approval_requests%ROWTYPE;
+    actor_source_platform TEXT;
     actor_platform_id TEXT;
     actor_role TEXT;
 BEGIN
@@ -1081,9 +1112,12 @@ BEGIN
     IF NOT FOUND OR request_row.status <> 'PENDING' OR request_row.expires_at <= NOW() THEN
         RAISE EXCEPTION 'HITL request is not pending or has expired';
     END IF;
-    SELECT platform_user_id, project_role INTO actor_platform_id, actor_role
+    SELECT source_platform, platform_user_id, project_role
+      INTO actor_source_platform, actor_platform_id, actor_role
       FROM contributors WHERE id = NEW.actor_contributor_id;
-    IF NOT FOUND OR actor_role IS NULL OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id
+    IF NOT FOUND OR actor_role IS NULL
+       OR actor_source_platform IS DISTINCT FROM NEW.actor_source_platform
+       OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id
        OR NOT (actor_role = ANY(request_row.authorized_roles)) THEN
         RAISE EXCEPTION 'HITL actor identity or role is not authorized for this request';
     END IF;
@@ -1092,6 +1126,9 @@ BEGIN
        OR (request_row.action_type = 'DISMISS_PR_WARNING' AND NEW.action_taken <> 'DISMISS_PR_COMMENT') THEN
         RAISE EXCEPTION 'HITL callback action does not match the requested action type';
     END IF;
+    UPDATE hitl_approval_requests SET status = 'DECIDED'
+     WHERE id = NEW.approval_request_id AND status = 'PENDING';
+    IF NOT FOUND THEN RAISE EXCEPTION 'HITL approval request changed before callback finalization'; END IF;
     RETURN NEW;
 END;
 $$;
