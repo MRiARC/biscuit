@@ -463,3 +463,36 @@ def test_stream3_adapter_untraceable_version_is_never_verified() -> None:
     )
     assert checked["emr"] == 0.0
     assert checked["invalid_citation_rate"] == 1.0
+
+
+def test_audit_records_explain_authorization_and_migrate_legacy_db(tmp_path) -> None:
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE pr_watchdog_audit_log ("
+            "run_sha256 TEXT NOT NULL, benchmark_id TEXT NOT NULL, "
+            "case_id TEXT NOT NULL, ground_truth_class TEXT NOT NULL, "
+            "action TEXT NOT NULL, correct INTEGER NOT NULL, "
+            "PRIMARY KEY (run_sha256, benchmark_id, case_id))"
+        )
+    run_benchmark("pep-505", recorded_replay=True, audit_db=db)
+    with sqlite3.connect(db) as conn:
+        columns = {row[1] for row in conn.execute(
+            "PRAGMA table_info(pr_watchdog_audit_log)"
+        )}
+        assert {"reason_code", "alternative_id", "authorization",
+                "ruling_source_message_id", "ruling_quote_sha256"} <= columns
+        authorized = conn.execute(
+            "SELECT reason_code, alternative_id, ruling_source_message_id "
+            "FROM pr_watchdog_audit_log WHERE case_id='pr-01'"
+        ).fetchone()
+        assert authorized == (
+            "AUTHORIZED_REJECTED_PATTERN", "pep-505:S1", "post-s1"
+        )
+        abstained = conn.execute(
+            "SELECT COUNT(*) FROM pr_watchdog_audit_log "
+            "WHERE reason_code='AMBIGUOUS_ABSTENTION'"
+        ).fetchone()[0]
+        assert abstained == 5
