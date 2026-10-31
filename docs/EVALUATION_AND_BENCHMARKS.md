@@ -192,15 +192,16 @@ Ground-truth evaluation fixtures are structured in auditable JSON format:
   "thread_id": "pep-505-discourse",
   "source_platform": "DISCOURSE",
   "external_url": "https://discuss.python.org/t/pep-505-none-aware-operators",
-  "thread_sha256": "f7c3bc1d808e04732adf679965ccc34ca7ae3441b04ec54f494f1c1186716a41",
-  "_comment": "thread_sha256 is a representative fixture checksum over the 234 raw posts",
+  "expected_source_message_count": 234,
+  "thread_sha256": null,
+  "_comment": "Schema illustration only: this example contains one message, not the complete 234-message snapshot. A digest remains null until the complete canonical fixture is materialized and validated.",
   "messages": [
     {
       "message_id": "post-48",
       "author_handle": "gvanrossum",
       "author_role": "maintainer",
       "created_at": "2018-08-01T14:22:00Z",
-      "content_sha256": "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+      "content_sha256": null,
       "raw_text": "I am rejecting the unary ? proposal. It creates unacceptable lexical ambiguity with the ternary if-else operator when whitespace is omitted."
     }
   ]
@@ -403,11 +404,11 @@ Per **PR #7 Review (6)**:
 1. **Human Annotation Protocol:**  
    Ground truth was annotated directly from final, accepted PEP texts (e.g. `pep-0505.rst` under `python/peps`). For each proposal, the annotator recorded: (1) proposal syntax variant, (2) final resolution status, (3) exact quotation of author/BDFL ruling in the discussion thread with post number, and (4) affected source code files and AST node types.
 2. **Source Thread Snapshots & Canonical Checksums:**  
-   The `thread_sha256` value shown in the fixture example is a documented placeholder digest. For benchmark execution, each raw discussion fixture is serialized to canonical JSON (UTF-8, `sort_keys=True`, separators `(',', ':')`) and hashed via `hashlib.sha256(canonical_bytes).hexdigest()` to guarantee tamper-proof reproducibility.
+   The JSON object above is a schema illustration, not the complete fixture: it contains one message and therefore has no valid thread digest. For a real fixture, include every captured message and compute per-message hashes over UTF-8 bytes of exact decoded message content. Compute `thread_sha256` only after materialization by canonicalizing the complete fixture: remove `thread_sha256` and explanatory `_comment` keys, sort the `messages` array by `(created_at, message_id)`, serialize with UTF-8, `ensure_ascii=False`, `sort_keys=True`, and separators `(',', ':')`, then hash those bytes with SHA-256. Record the canonicalization version and expected/actual message counts in the fixture manifest. A missing digest must remain null; never substitute a representative checksum.
 3. **Source-Specific Licensing & Compliance:**  
-   - **`discuss.python.org` (PEP 505, PEP 557):** Content is contributed under **Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported (CC BY-NC-SA 3.0)** per PSF Discourse Terms of Service.
-   - **`python-ideas@python.org` (PEP 572):** Public mailing list archives maintained by the Python Software Foundation, distributed under the **Python Software Foundation (PSF) License** and public archival fair use.
-   - All evaluation benchmarks operate strictly on publicly archived, non-confidential discussions.
+   - **`discuss.python.org` (PEP 505, PEP 557):** The current [PSF Discourse Terms of Service, Section 3](https://discuss.python.org/tos) states that user contributions are licensed under **CC BY-NC-SA 3.0 Unported**. Preserve the terms URL and retrieval date in the fixture manifest, and re-check the terms before redistribution.
+   - **`python-ideas@python.org` (PEP 572):** The [PSF mailing-list directory](https://www.python.org/community/lists/) confirms that the list is archived, but does not establish a blanket license for archived message content. Do not label messages as covered by the Python software license or assume fair-use permission. Record per-source/message license or permission evidence; absent a verified grant, do not redistribute raw archive content and seek rights-holder/legal review before publishing substantial excerpts.
+   - Public accessibility alone is not a license. Store source URL, attribution, author/date metadata, license/permission identifier, terms URL or snapshot, reviewer, and review date for every fixture.
 4. **Held-Out Split & Contamination Prevention:**  
    - The final PEP document text is strictly excluded from all model prompts and context windows.
    - The 20 simulated PR diff test cases are authored independently as synthetic diffs against modern CPython to ensure zero test-set leakage.
