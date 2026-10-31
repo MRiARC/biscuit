@@ -11,33 +11,39 @@ A standalone Next.js App Router experience introducing Biscuit, the open-source 
 
 Run the app from its own directory. This matters because Biscuit's repository root is a Python project.
 
-```bash
+~~~bash
 cd intro
 pnpm install
 rm -rf .next
 pnpm dev
-```
+~~~
 
-Open [http://localhost:3000](http://localhost:3000).
+Open http://localhost:3000.
 
-## If Next.js reports a missing `/_not-found/page` module
+The default development command uses **Webpack** as a workaround for the reported Turbopack /_not-found/page runtime error. The production build remains on Next.js 16's default Turbopack builder.
 
-1. Stop the dev server completely (`Ctrl + C`).
-2. Make sure your terminal is inside the `intro/` directory.
-3. Remove the generated Turbopack/Next cache: `rm -rf .next`.
-4. Start it again with `pnpm dev`.
+## Trying Turbopack explicitly
 
-The app pins `turbopack.root` to the `intro/` directory and includes an explicit `app/not-found.tsx` fallback. Do not create a second `app/` folder at the repository root.
+~~~bash
+pnpm dev:turbo
+~~~
 
-For comparison, you can temporarily run the Webpack dev server with `pnpm dev:webpack`. If Webpack works but Turbopack still fails after a clean restart, capture the terminal output and report it with the Next.js version.
+The app pins turbopack.root to the intro/ directory and includes an explicit app/not-found.tsx fallback. If Turbopack still reports a missing /_not-found/page module:
+
+1. Stop the dev server completely (Ctrl + C).
+2. Make sure your terminal is inside the intro/ directory.
+3. Remove the generated cache: rm -rf .next.
+4. Retry with pnpm dev:turbo.
+
+A similar stale App Router manifest issue has been reported upstream; restarting the dev server after clearing .next is a useful diagnostic. Do not create a second app/ folder at the repository root.
 
 ## Other commands
 
-```bash
+~~~bash
 pnpm typecheck
 pnpm build
 pnpm start
-```
+~~~
 
 ## Project notes
 
