@@ -238,6 +238,9 @@ def test_cli_all_uses_three_synthetic_fixtures_without_false_history(tmp_path) -
     }
     assert all("SYNTHETIC" in item["dataset_kind"] for item in data["benchmarks"])
     assert data["verdict"] == "PASSED"
+    assert data["aggregate"]["benchmark_count"] == 3
+    assert data["aggregate"]["shared_held_out_pr_case_count"] == 20
+    assert data["aggregate"]["historical_accuracy_measured"] is False
 
 
 def test_typer_cli_no_simulate_remains_unmeasured(tmp_path) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from biscuit.cli.scorecard import render_scorecard
 from biscuit.cli.storage import export_madr, import_decisions, ingest_discourse, list_decisions
+from biscuit.evaluate.aggregate import aggregate_outcomes
 from biscuit.evaluate.runner import run_benchmark
 
 try:
@@ -81,6 +82,7 @@ if typer is not None:
             else {
                 "schema_version": 1,
                 "benchmarks": [outcome.to_dict() for outcome in outcomes],
+                "aggregate": aggregate_outcomes(outcomes),
                 "verdict": (
                     "FAILED" if any(x.verdict == "FAILED" for x in outcomes)
                     else "INCOMPLETE" if any(x.verdict != "PASSED" for x in outcomes)

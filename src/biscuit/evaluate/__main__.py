@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from .aggregate import aggregate_outcomes
 from .fixtures import DEFAULT_FIXTURE_ROOT
 from .runner import run_benchmark
 
@@ -38,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         names = [args.benchmark]
     outputs = []
+    outcomes = []
     try:
         for name in names:
             prediction_file = (
@@ -51,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
                 recorded_replay=args.predictions is None and not args.no_simulate,
             )
             outputs.append(result.to_dict())
+            outcomes.append(result)
     except (ValueError, OSError, KeyError, TypeError) as exc:
         parser.exit(1, f"Benchmark failed: {exc}\n")
 
@@ -65,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = outputs[0] if len(outputs) == 1 else {
         "schema_version": 1, "benchmarks": outputs,
+        "aggregate": aggregate_outcomes(outcomes),
         "verdict": (
             "FAILED" if any(x["verdict"] == "FAILED" for x in outputs)
             else "INCOMPLETE" if any(
