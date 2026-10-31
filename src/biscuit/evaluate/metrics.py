@@ -70,8 +70,8 @@ def exact_evidence_match(
         quote, supplied_hash = span.get("quote"), span.get("sha256")
         offsets_ok = (
             raw is not None
-            and type(start) is int
-            and type(end) is int
+            and isinstance(start, int) and not isinstance(start, bool)
+            and isinstance(end, int) and not isinstance(end, bool)
             and 0 <= start < end <= len(raw)
         )
         exact = offsets_ok and isinstance(quote, str) and raw[start:end] == quote

@@ -57,14 +57,13 @@ def test_scorecard_marks_unmeasured_truthfully() -> None:
 
 
 def test_typer_evaluate_and_scorecard(tmp_path) -> None:
-    typer = pytest.importorskip("typer")
+    import typer
     from typer.testing import CliRunner
 
     from biscuit.cli.main import app
 
     assert typer is not None
-    if app is None:
-        pytest.skip("Typer is not installed")
+    assert app is not None
     runner = CliRunner()
     output = tmp_path / "scorecard.json"
     result = runner.invoke(app, ["evaluate", "--benchmark", "pep-505", "--output", str(output)])
@@ -74,7 +73,7 @@ def test_typer_evaluate_and_scorecard(tmp_path) -> None:
 
 
 def test_typer_decisions_list_and_export(tmp_path) -> None:
-    pytest.importorskip("typer")
+    import typer
     from typer.testing import CliRunner
 
     from biscuit.cli.main import app
