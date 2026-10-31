@@ -141,14 +141,14 @@ def run_benchmark(
     if predictions is None:
         metrics = (
             _metric("Proposal recovery F1", None, 0.85, 0),
-            _metric("Lifecycle state accuracy", None, 0.80, 0),
+            _metric("Lifecycle state accuracy", None, 0.85, 0),
             _metric("False rejection rate", None, 0.0, 0, "max"),
             _metric("Evidence exact match rate", None, 1.0, 0),
             _metric("Invalid citation rate", None, 0.0, 0, "max"),
-            _metric("AST grounding precision", None, 0.75, 0),
+            _metric("AST grounding precision", None, 0.80, 0),
             _metric("Alternative disambiguation rate", None, 1.0, 0),
             _metric("Causal rationale alignment", None, 0.82, 0),
-            _metric("PR warning precision", None, 0.90, 0),
+            _metric("PR warning precision", None, 0.95, 0),
             _metric("PR warning recall", None, 1.0, 0),
             _metric("Benign false alarm rate", None, 0.0, 0, "max"),
             _metric("Ambiguous abstention rate", None, 1.0, 0),
@@ -188,7 +188,8 @@ def run_benchmark(
         evidence = exact_evidence_match(predictions.get("evidence", []), raw)
         anchors = ast_grounding_precision(found_anchors, truth_anchors)
         disambiguation = alternative_disambiguation_rate(
-            found_anchors, recovered_ids
+            found_anchors, recovered_ids, expected_anchors=truth_anchors,
+            expected_proposal_ids=list(truth_states),
         )
         rationale = causal_rationale_alignment(found_vectors, truth_vectors)
         # A bare list of PR IDs cannot establish the correct rejected alternative.
@@ -213,14 +214,14 @@ def run_benchmark(
             )
         metrics = (
             _metric("Proposal recovery F1", recovery["f1"], 0.85, len(truth_states)),
-            _metric("Lifecycle state accuracy", state["accuracy"], 0.80, state["total"]),
+            _metric("Lifecycle state accuracy", state["accuracy"], 0.85, state["total"]),
             _metric("False rejection rate", state["false_rejection_rate"], 0.0, state["non_rejected"], "max"),
             _metric("Evidence exact match rate", evidence["emr"], 1.0, evidence["total"]),
             _metric("Invalid citation rate", evidence["invalid_citation_rate"], 0.0, evidence["total"], "max"),
-            _metric("AST grounding precision", anchors["precision"], 0.75, anchors["total"]),
+            _metric("AST grounding precision", anchors["precision"], 0.80, anchors["total"]),
             _metric("Alternative disambiguation rate", disambiguation["rate"], 1.0, disambiguation["total"]),
             _metric("Causal rationale alignment", rationale["cra"], 0.82, rationale["evaluated"]),
-            _metric("PR warning precision", watchdog["precision"], 0.90, watchdog["total"]),
+            _metric("PR warning precision", watchdog["precision"], 0.95, watchdog["total"]),
             _metric("PR warning recall", watchdog["recall"], 1.0, len(expected_warning_alternatives)),
             _metric("Benign false alarm rate", watchdog["benign_false_alarm_rate"], 0.0, watchdog["benign_total"], "max"),
             _metric("Ambiguous abstention rate", watchdog["ambiguous_abstention_rate"], 1.0, watchdog["ambiguous_total"]),
