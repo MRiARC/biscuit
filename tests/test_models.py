@@ -1,7 +1,7 @@
 """Unit tests for Biscuit SQLModel models and database schema integrity."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import Session, create_engine
@@ -164,11 +164,13 @@ def test_evidence_span_offsets_and_relationship(test_db_session: Session):
     start_char = raw_text.index(quote)
     end_char = start_char + len(quote)
 
+    import hashlib
+
     version = SourceMessageVersion(
         message_id=message.id,
         version_number=1,
         raw_content=raw_text,
-        content_hash="dummy_hash_64_chars_length_hex_string_0123456789abcdef0123456789abcde",
+        content_hash=hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
         is_current=True,
     )
     test_db_session.add(version)
@@ -198,7 +200,7 @@ def test_evidence_span_offsets_and_relationship(test_db_session: Session):
         exact_quote=quote,
         start_char=start_char,
         end_char=end_char,
-        content_hash="dummy_hash_evidence_quote_0123456789abcdef0123456789abcdef0123456789",
+        content_hash=hashlib.sha256(quote.encode("utf-8")).hexdigest(),
         evidence_role=EvidenceRole.PROPOSAL,
         stance=EvidenceStance.SUPPORT,
         verification_status=VerificationStatus.UNVERIFIED,
@@ -286,6 +288,32 @@ def test_hitl_approval_models(test_db_session: Session):
     test_db_session.add(author)
     test_db_session.commit()
 
+    # AUTHORIZE_PR_WARNING must target a real decision alternative (chk_hitl_action_target)
+    thread = SourceThread(
+        source_platform="github_pr",
+        project_context="python/cpython",
+        external_thread_id="pull_505",
+        title="PEP 505 PR",
+        canonical_url="https://github.com/python/cpython/pull/505",
+    )
+    test_db_session.add(thread)
+    test_db_session.commit()
+
+    decision = Decision(
+        source_thread_id=thread.id,
+        title="PEP 505 PR decision",
+        context_summary="PR diff evaluation",
+    )
+    test_db_session.add(decision)
+    test_db_session.commit()
+
+    alternative = DecisionAlternative(
+        decision_id=decision.id,
+        proposal_text="Add token support for None-aware operator in tokenizer.c",
+    )
+    test_db_session.add(alternative)
+    test_db_session.commit()
+
     request = HitlApprovalRequest(
         switch_approval_id="switch_req_123",
         action_type=HitlActionType.AUTHORIZE_PR_WARNING,
@@ -293,12 +321,13 @@ def test_hitl_approval_models(test_db_session: Session):
         idempotency_key=str(uuid.uuid4()),
         target_pr_number=505,
         target_repository="python/cpython",
-        target_commit_sha="d" * 40,
+        target_commit_sha="d" * 39 + "e",  # 40-char hex sha
+        decision_alternative_id=alternative.id,
         card_rendered_payload={"text": "Authorize warning on PR #505"},
-        action_payload_sha256="e" * 64,
+        action_payload_sha256="e" * 63 + "f",  # 64-char hex digest
         authorized_roles=["BDFL", "Core Maintainer"],
         callback_hmac_secret_id="secret_v1",
-        expires_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=72),
     )
     test_db_session.add(request)
     test_db_session.commit()
@@ -317,6 +346,54 @@ def test_hitl_approval_models(test_db_session: Session):
 
     assert event.id is not None
     assert event.action_taken == "AUTHORIZE_PR_COMMENT"
+
+
+def test_hitl_action_target_shape_negative(test_db_session: Session):
+    """Negative: AUTHORIZE_PR_WARNING without a decision alternative target is rejected."""
+    from sqlalchemy.exc import IntegrityError
+
+    request = HitlApprovalRequest(
+        switch_approval_id="switch_req_bad_target",
+        action_type=HitlActionType.AUTHORIZE_PR_WARNING,
+        status=HitlRequestStatus.PENDING,
+        idempotency_key=str(uuid.uuid4()),
+        target_pr_number=505,
+        target_repository="python/cpython",
+        target_commit_sha="d" * 39 + "e",
+        card_rendered_payload={"text": "Bad target"},
+        action_payload_sha256="e" * 63 + "f",
+        authorized_roles=["BDFL"],
+        callback_hmac_secret_id="secret_v1",
+        expires_at=datetime.now(UTC) + timedelta(hours=72),
+    )
+    test_db_session.add(request)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_hitl_expiry_check_negative(test_db_session: Session):
+    """Negative: expires_at earlier than created_at is rejected by chk_hitl_expiry."""
+    from sqlalchemy.exc import IntegrityError
+
+    request = HitlApprovalRequest(
+        switch_approval_id="switch_req_expired",
+        action_type=HitlActionType.DISMISS_PR_WARNING,
+        status=HitlRequestStatus.PENDING,
+        idempotency_key=str(uuid.uuid4()),
+        target_pr_number=505,
+        target_repository="python/cpython",
+        target_commit_sha="d" * 39 + "e",
+        card_rendered_payload={"text": "Expired request"},
+        action_payload_sha256="e" * 63 + "f",
+        authorized_roles=["BDFL"],
+        callback_hmac_secret_id="secret_v1",
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    test_db_session.add(request)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
 
 
 def test_proposal_occurrence_composite_fk_negative(test_db_session: Session):
@@ -407,3 +484,484 @@ def test_postgres_vector_column_compilation():
     col = Column("embedding", VectorColumn(768))
     compiled = col.type.compile(dialect=postgresql.dialect())
     assert "VECTOR(768)" in str(compiled).upper()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Review follow-up: edge target shape, composite provenance FKs, authority
+# back-links, and author RESTRICT behavior (canonical DDL §3, §7, §8, §12, §15).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _build_discussion_graph(session, with_author: bool = True):
+    """Create thread → message → version → decision → alternative → evidence."""
+    import hashlib
+
+    author = Contributor(
+        source_platform="discourse",
+        platform_user_id="user_graph",
+        canonical_name="Graph Author",
+        author_handle="graphauthor",
+    )
+    session.add(author)
+    session.flush()
+
+    thread = SourceThread(
+        source_platform="DISCOURSE",
+        project_context="python/cpython",
+        external_thread_id="graph_thread",
+        title="Graph Thread",
+        canonical_url="https://example.com/graph",
+    )
+    session.add(thread)
+    session.flush()
+
+    message = SourceMessage(
+        thread_id=thread.id,
+        external_message_id="graph_msg_1",
+        author_id=author.id if with_author else None,
+        original_timestamp=datetime.now(UTC),
+        canonical_permalink="https://example.com/graph/1",
+    )
+    session.add(message)
+    session.flush()
+
+    raw_text = "We should reject the coalesce operator approach."
+    version = SourceMessageVersion(
+        message_id=message.id,
+        version_number=1,
+        raw_content=raw_text,
+        content_hash=hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+        is_current=True,
+    )
+    session.add(version)
+    session.flush()
+
+    decision = Decision(
+        source_thread_id=thread.id,
+        title="Graph decision",
+        context_summary="Summary",
+    )
+    session.add(decision)
+    session.flush()
+
+    alternative = DecisionAlternative(
+        decision_id=decision.id,
+        proposal_text="Graph alternative",
+    )
+    session.add(alternative)
+    session.flush()
+
+    quote = raw_text
+    evidence = EvidenceSpan(
+        source_message_version_id=version.id,
+        alternative_id=alternative.id,
+        exact_quote=quote,
+        start_char=0,
+        end_char=len(quote),
+        content_hash=hashlib.sha256(quote.encode("utf-8")).hexdigest(),
+        evidence_role=EvidenceRole.RULING,
+        stance=EvidenceStance.OBJECT,
+        verification_status=VerificationStatus.VERIFIED_EXACT,
+    )
+    session.add(evidence)
+    session.flush()
+    session.commit()
+    return {
+        "author": author,
+        "thread": thread,
+        "message": message,
+        "version": version,
+        "decision": decision,
+        "alternative": alternative,
+        "evidence": evidence,
+    }
+
+
+def test_discussion_edge_target_shape_semantic_requires_evidence(test_db_session):
+    """Negative: semantic edge without evidence span or version is rejected."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import DiscussionEdge, EdgeProvenance
+
+    graph = _build_discussion_graph(test_db_session)
+
+    edge = DiscussionEdge(
+        source_thread_id=graph["thread"].id,
+        from_message_id=graph["message"].id,
+        to_message_id=graph["message"].id,
+        target_alternative_id=graph["alternative"].id,
+        target_decision_id=None,
+        source_message_version_id=None,  # missing
+        evidence_span_id=None,  # missing
+        edge_type="SUPPORTS",
+        edge_provenance=EdgeProvenance.DETERMINISTIC_RULE,
+        confidence_score=0.9,
+    )
+    test_db_session.add(edge)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_discussion_edge_target_shape_conversational_blocks_alternative(
+    test_db_session,
+):
+    """Negative: DIRECT_REPLY carrying an alternative target is rejected."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import DiscussionEdge, EdgeProvenance
+
+    graph = _build_discussion_graph(test_db_session)
+
+    edge = DiscussionEdge(
+        source_thread_id=graph["thread"].id,
+        from_message_id=graph["message"].id,
+        to_message_id=graph["message"].id,
+        target_alternative_id=graph["alternative"].id,
+        edge_type="DIRECT_REPLY",
+        edge_provenance=EdgeProvenance.PLATFORM_METADATA,
+        confidence_score=1.0,
+    )
+    test_db_session.add(edge)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_discussion_edge_target_shape_references_exactly_one_target(test_db_session):
+    """Negative: REFERENCES with both decision and alternative targets is rejected."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import DiscussionEdge, EdgeProvenance
+
+    graph = _build_discussion_graph(test_db_session)
+
+    edge = DiscussionEdge(
+        source_thread_id=graph["thread"].id,
+        from_message_id=graph["message"].id,
+        to_message_id=graph["message"].id,
+        target_decision_id=graph["decision"].id,
+        target_alternative_id=graph["alternative"].id,
+        edge_type="REFERENCES",
+        edge_provenance=EdgeProvenance.PLATFORM_METADATA,
+        confidence_score=1.0,
+    )
+    test_db_session.add(edge)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_discussion_edge_semantic_positive(test_db_session):
+    """Positive: fully-provenanced semantic edge with matched evidence is accepted."""
+    from biscuit.models import DiscussionEdge, EdgeProvenance
+
+    graph = _build_discussion_graph(test_db_session)
+
+    edge = DiscussionEdge(
+        source_thread_id=graph["thread"].id,
+        from_message_id=graph["message"].id,
+        to_message_id=graph["message"].id,
+        target_alternative_id=graph["alternative"].id,
+        source_message_version_id=graph["version"].id,
+        evidence_span_id=graph["evidence"].id,
+        edge_type="RESOLVES",
+        edge_provenance=EdgeProvenance.PLATFORM_METADATA,
+        confidence_score=1.0,
+    )
+    test_db_session.add(edge)
+    test_db_session.commit()
+    assert edge.id is not None
+
+
+def test_discussion_edge_cross_thread_composite_fk_negative(test_db_session):
+    """Negative: an edge cannot link a message from another thread."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import DiscussionEdge, EdgeProvenance
+
+    graph = _build_discussion_graph(test_db_session)
+
+    other_thread = SourceThread(
+        source_platform="DISCOURSE",
+        project_context="python/cpython",
+        external_thread_id="graph_thread_other",
+        title="Other Thread",
+        canonical_url="https://example.com/other",
+    )
+    test_db_session.add(other_thread)
+    test_db_session.flush()
+
+    # from_message belongs to graph thread, but source_thread_id points elsewhere
+    edge = DiscussionEdge(
+        source_thread_id=other_thread.id,
+        from_message_id=graph["message"].id,
+        to_message_id=graph["message"].id,
+        edge_type="DIRECT_REPLY",
+        edge_provenance=EdgeProvenance.PLATFORM_METADATA,
+        confidence_score=1.0,
+    )
+    test_db_session.add(edge)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_discussion_edge_evidence_mismatch_composite_fk_negative(test_db_session):
+    """Negative: semantic edge citing evidence bound to another alternative/version."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import DiscussionEdge, EdgeProvenance
+
+    graph = _build_discussion_graph(test_db_session)
+
+    # A second alternative; the evidence span belongs to the first one, so the
+    # composite FK (evidence_span_id, alternative_id, version_id) must fail.
+    other_alt = DecisionAlternative(
+        decision_id=graph["decision"].id,
+        proposal_text="Graph alternative 2",
+    )
+    test_db_session.add(other_alt)
+    test_db_session.flush()
+
+    edge = DiscussionEdge(
+        source_thread_id=graph["thread"].id,
+        from_message_id=graph["message"].id,
+        to_message_id=graph["message"].id,
+        target_alternative_id=other_alt.id,
+        source_message_version_id=graph["version"].id,
+        evidence_span_id=graph["evidence"].id,
+        edge_type="SUPPORTS",
+        edge_provenance=EdgeProvenance.DETERMINISTIC_RULE,
+        confidence_score=0.9,
+    )
+    test_db_session.add(edge)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_alternative_ruling_evidence_backlink_negative(test_db_session):
+    """Negative: an alternative cannot cite evidence bound to another alternative."""
+    from sqlalchemy.exc import IntegrityError
+
+    graph = _build_discussion_graph(test_db_session)
+
+    other_alt = DecisionAlternative(
+        decision_id=graph["decision"].id,
+        proposal_text="Backlink alt",
+    )
+    test_db_session.add(other_alt)
+    test_db_session.flush()
+
+    graph["alternative"].ruling_evidence_id = graph["evidence"].id
+    test_db_session.add(graph["alternative"])
+    test_db_session.commit()
+
+    # evidence.id is bound to alternative 1; citing it from alternative 2 fails
+    other_alt.ruling_evidence_id = graph["evidence"].id
+    test_db_session.add(other_alt)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_decision_ruling_evidence_backlink_negative(test_db_session):
+    """Negative: a decision cannot cite evidence not bound to that decision."""
+    from sqlalchemy.exc import IntegrityError
+
+    graph = _build_discussion_graph(test_db_session)
+
+    other_decision = Decision(
+        source_thread_id=graph["thread"].id,
+        title="Other decision",
+        context_summary="Summary",
+    )
+    test_db_session.add(other_decision)
+    test_db_session.flush()
+
+    # evidence spans target alternatives, not decisions → composite FK fails
+    other_decision.ruling_evidence_id = graph["evidence"].id
+    test_db_session.add(other_decision)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_living_draft_author_attribution_negative(test_db_session):
+    """Negative: a living draft cannot attribute another author to the initiating message."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import LivingDecisionDraft, LivingDecisionState, ProposalLifecycle
+
+    graph = _build_discussion_graph(test_db_session)
+
+    other_author = Contributor(
+        source_platform="discourse",
+        platform_user_id="user_other",
+        canonical_name="Other Person",
+        author_handle="otherperson",
+    )
+    test_db_session.add(other_author)
+    test_db_session.flush()
+
+    draft = LivingDecisionDraft(
+        switch_session_id="switch_session_1",
+        source_thread_id=graph["thread"].id,
+        initiating_message_id=graph["message"].id,
+        initiating_message_version_id=graph["version"].id,
+        initiating_author_id=other_author.id,  # NOT the message author
+        topic="Wrong attribution",
+        draft_status=LivingDecisionState.DRAFT_PENDING_APPROVAL,
+        proposed_lifecycle=ProposalLifecycle.PROPOSED,
+        proposal_text="Proposal text",
+    )
+    test_db_session.add(draft)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_living_draft_author_attribution_positive(test_db_session):
+    """Positive: draft with the true initiating author is accepted."""
+    from biscuit.models import LivingDecisionDraft, LivingDecisionState, ProposalLifecycle
+
+    graph = _build_discussion_graph(test_db_session)
+
+    draft = LivingDecisionDraft(
+        switch_session_id="switch_session_2",
+        source_thread_id=graph["thread"].id,
+        initiating_message_id=graph["message"].id,
+        initiating_message_version_id=graph["version"].id,
+        initiating_author_id=graph["author"].id,
+        topic="Correct attribution",
+        draft_status=LivingDecisionState.DRAFT_PENDING_APPROVAL,
+        proposed_lifecycle=ProposalLifecycle.PROPOSED,
+        proposal_text="Proposal text",
+    )
+    test_db_session.add(draft)
+    test_db_session.commit()
+    assert draft.id is not None
+
+
+def test_occurrence_linkage_evidence_composite_fk_negative(test_db_session):
+    """Negative: occurrence linkage evidence must match alternative AND version."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import ProposalOccurrence
+
+    graph = _build_discussion_graph(test_db_session)
+
+    other_alt = DecisionAlternative(
+        decision_id=graph["decision"].id,
+        proposal_text="Occurrence alt",
+    )
+    test_db_session.add(other_alt)
+    test_db_session.flush()
+
+    occurrence = ProposalOccurrence(
+        alternative_id=other_alt.id,  # evidence is bound to alternative 1
+        source_thread_id=graph["thread"].id,
+        initiating_message_id=graph["message"].id,
+        initiating_message_version_id=graph["version"].id,
+        occurred_at=datetime.now(UTC),
+        proposal_wording_version="wording",
+        occurrence_context="context",
+        occurrence_outcome="REJECTED",
+        linkage_evidence_span_id=graph["evidence"].id,
+    )
+    test_db_session.add(occurrence)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_source_message_author_delete_restrict(test_db_session):
+    """Deleting a contributor referenced by a message is rejected (RESTRICT)."""
+    from sqlalchemy.exc import IntegrityError
+
+    graph = _build_discussion_graph(test_db_session)
+
+    test_db_session.delete(graph["author"])
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_message_version_hash_length_and_enum_checks(test_db_session):
+    """Negative: bad direct SQL values (short hash, invalid edit state) rejected.
+
+    Uses raw SQL to exercise the DB-level CHECK constraints rather than the
+    pydantic model validation layer.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    graph = _build_discussion_graph(test_db_session)
+
+    with pytest.raises(IntegrityError):
+        test_db_session.execute(
+            text(
+                "INSERT INTO source_message_versions "
+                "(id, message_id, version_number, raw_content, content_hash, "
+                "captured_at, is_current, edit_state) VALUES "
+                "(lower(hex(randomblob(16))), :mid, 2, 'short', 'notahexhash', "
+                "CURRENT_TIMESTAMP, 0, 'ORIGINAL')"
+            ),
+            {"mid": str(graph["message"].id)},
+        )
+        test_db_session.commit()
+    test_db_session.rollback()
+
+    with pytest.raises(IntegrityError):
+        test_db_session.execute(
+            text(
+                "INSERT INTO source_message_versions "
+                "(id, message_id, version_number, raw_content, content_hash, "
+                "captured_at, is_current, edit_state) VALUES "
+                "(lower(hex(randomblob(16))), :mid, 3, 'content', :h, "
+                "CURRENT_TIMESTAMP, 0, 'NOT_A_STATE')"
+            ),
+            {"mid": str(graph["message"].id), "h": "a" * 64},
+        )
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_evidence_span_enum_and_hash_checks(test_db_session):
+    """Negative: bad direct SQL values (role, verification status, hash) rejected.
+
+    Uses raw SQL to exercise the DB-level CHECK constraints rather than the
+    pydantic model validation layer.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    graph = _build_discussion_graph(test_db_session)
+    insert_sql = (
+        "INSERT INTO evidence_spans "
+        "(id, source_message_version_id, alternative_id, exact_quote, "
+        "start_char, end_char, content_hash, evidence_role, stance, "
+        "verification_status, created_at) VALUES "
+        "(lower(hex(randomblob(16))), :vid, :aid, 'q', 0, 1, :h, :role, 'NEUTRAL', "
+        ":status, CURRENT_TIMESTAMP)"
+    )
+    base = {
+        "vid": str(graph["version"].id),
+        "aid": str(graph["alternative"].id),
+        "h": "b" * 64,
+        "role": "PROPOSAL",
+        "status": "UNVERIFIED",
+    }
+
+    for field, value in (
+        ("role", "NOT_A_ROLE"),
+        ("status", "MAYBE"),
+        ("h", "zzz"),
+    ):
+        params = dict(base)
+        params[field] = value
+        with pytest.raises(IntegrityError):
+            test_db_session.execute(text(insert_sql), params)
+            test_db_session.commit()
+        test_db_session.rollback()

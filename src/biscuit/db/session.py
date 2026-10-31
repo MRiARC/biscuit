@@ -5,7 +5,7 @@ import re
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine
@@ -17,6 +17,26 @@ DEFAULT_ASYNC_SQLITE_URL = "sqlite+aiosqlite:///:memory:"
 TRIGGERS_SQL_PATH = os.path.join(
     os.path.dirname(__file__), "migrations", "triggers.sql"
 )
+
+
+def _enable_sqlite_fk_pragma(engine) -> None:
+    """SQLite defaults to foreign_keys=OFF; enforce FKs on every pooled connection.
+
+    Without this pragma the production fallback accepts orphan messages and
+    invalid composite links. Registering on the engine (not a test fixture) means
+    every connection opened by get_engine()/get_async_engine() is covered.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    # AsyncEngine does not accept pool events directly; attach to its sync_engine.
+    sync_target = getattr(engine, "sync_engine", engine)
+
+    @event.listens_for(sync_target, "connect")
+    def _set_sqlite_fk_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 def get_triggers_sql() -> str:
@@ -149,8 +169,12 @@ def split_sql_statements(sql: str) -> list[str]:
 
 
 def get_database_url() -> str:
-    """Retrieve database URL from environment or return default SQLite memory URL."""
-    return os.getenv("DATABASE_URL", DEFAULT_SQLITE_URL)
+    """Retrieve database URL from environment or return default SQLite memory URL.
+
+    Accepts BISCUIT_TEST_PG_DSN (Issue #17) as an alias for DATABASE_URL so local
+    integration tests and CI (TEST_POSTGRES_URL) share one resolution path.
+    """
+    return os.getenv("DATABASE_URL") or os.getenv("BISCUIT_TEST_PG_DSN") or DEFAULT_SQLITE_URL
 
 
 def get_engine(db_url: str | None = None, echo: bool = False):
@@ -167,7 +191,9 @@ def get_engine(db_url: str | None = None, echo: bool = False):
                 url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
             elif url.startswith("postgres://"):
                 url = url.replace("postgres://", "postgresql+psycopg2://", 1)
-    return create_engine(url, echo=echo, connect_args=connect_args)
+    engine = create_engine(url, echo=echo, connect_args=connect_args)
+    _enable_sqlite_fk_pragma(engine)
+    return engine
 
 
 def get_async_database_url(db_url: str | None = None) -> str:
@@ -188,7 +214,9 @@ def get_async_engine(db_url: str | None = None, echo: bool = False) -> AsyncEngi
     connect_args = {}
     if "sqlite" in async_url:
         connect_args["check_same_thread"] = False
-    return create_async_engine(async_url, echo=echo, connect_args=connect_args)
+    engine = create_async_engine(async_url, echo=echo, connect_args=connect_args)
+    _enable_sqlite_fk_pragma(engine)
+    return engine
 
 
 def bootstrap_postgres_extensions(engine) -> None:

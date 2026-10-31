@@ -5,8 +5,13 @@ from typing import Any
 from sqlmodel import Session, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from biscuit.ingest.base import RawThreadPayload
-from biscuit.ingest.cleaner import clean_derived_content, normalize_line_endings
+from biscuit.ingest.base import RawMessagePayload, RawThreadPayload
+from biscuit.ingest.cleaner import (
+    clean_derived_content,
+    is_administrative_noise,
+    is_bot_message,
+    normalize_line_endings,
+)
 from biscuit.ingest.hasher import compute_sha256
 from biscuit.models.base import utcnow
 from biscuit.models.enums import MessageEditState
@@ -23,6 +28,22 @@ def _get_platform_str(platform: Any) -> str:
     if hasattr(platform, "value"):
         return str(platform.value)
     return str(platform)
+
+
+def _cleaned_derived_view(msg_payload: RawMessagePayload) -> str | None:
+    """Produce the Tier-2/Tier-3 noise-filtered derived view for a message.
+
+    Raw content and its hash are never touched. Automated bot messages and
+    administrative chatter are pruned to an empty derived view so downstream
+    LLM extraction never sees them as deliberation content; meaningful
+    benchmark bots are preserved by cleaner.is_bot_message().
+    """
+    cleaned = clean_derived_content(msg_payload.raw_content)
+    if is_bot_message(msg_payload.author_handle, msg_payload.raw_content):
+        return ""
+    if is_administrative_noise(cleaned):
+        return ""
+    return cleaned
 
 
 class IngestResult:
@@ -88,7 +109,12 @@ class IngestService:
     def get_or_create_thread(
         session: Session, payload: RawThreadPayload
     ) -> tuple[SourceThread, bool]:
-        """Find or create a SourceThread container."""
+        """Find or create a SourceThread container.
+
+        On reingestion the thread's top-level metadata is refreshed so the
+        record reflects the current source snapshot; historical message
+        versions are never rewritten (they rotate append-only).
+        """
         plat_str = _get_platform_str(payload.source_platform)
         statement = select(SourceThread).where(
             SourceThread.source_platform == plat_str,
@@ -97,6 +123,16 @@ class IngestService:
         )
         thread = session.exec(statement).first()
         if thread:
+            thread.title = payload.title
+            thread.canonical_url = payload.canonical_url
+            if payload.source_revision and payload.source_revision != "v1":
+                thread.source_revision = payload.source_revision
+            merged_metadata = dict(thread.ingestion_metadata or {})
+            merged_metadata.update(payload.ingestion_metadata or {})
+            merged_metadata["reingested_at"] = utcnow().isoformat()
+            thread.ingestion_metadata = merged_metadata
+            session.add(thread)
+            session.flush()
             return thread, False
 
         thread = SourceThread(
@@ -173,9 +209,7 @@ class IngestService:
                         derived_normalized_content=normalize_line_endings(
                             msg_payload.raw_content
                         ),
-                        derived_cleaned_content=clean_derived_content(
-                            msg_payload.raw_content
-                        ),
+                        derived_cleaned_content=_cleaned_derived_view(msg_payload),
                     )
                     session.add(version)
                     session.flush()
@@ -216,9 +250,7 @@ class IngestService:
                             derived_normalized_content=normalize_line_endings(
                                 prior_content
                             ),
-                            derived_cleaned_content=clean_derived_content(
-                                prior_content
-                            ),
+                            derived_cleaned_content=_cleaned_derived_view(msg_payload),
                         )
                         session.add(tombstone_version)
                         session.flush()
@@ -249,9 +281,7 @@ class IngestService:
                     derived_normalized_content=normalize_line_endings(
                         msg_payload.raw_content
                     ),
-                    derived_cleaned_content=clean_derived_content(
-                        msg_payload.raw_content
-                    ),
+                    derived_cleaned_content=_cleaned_derived_view(msg_payload),
                 )
                 session.add(version)
                 session.flush()
@@ -302,9 +332,7 @@ class IngestService:
                         derived_normalized_content=normalize_line_endings(
                             msg_payload.raw_content
                         ),
-                        derived_cleaned_content=clean_derived_content(
-                            msg_payload.raw_content
-                        ),
+                        derived_cleaned_content=_cleaned_derived_view(msg_payload),
                     )
                     session.add(new_version)
                     session.flush()
@@ -352,7 +380,12 @@ class IngestService:
     async def async_get_or_create_thread(
         cls, session: AsyncSession, payload: RawThreadPayload
     ) -> tuple[SourceThread, bool]:
-        """Find or create a SourceThread container asynchronously."""
+        """Find or create a SourceThread container asynchronously.
+
+        On reingestion the thread's top-level metadata is refreshed so the
+        record reflects the current source snapshot; historical message
+        versions are never rewritten (they rotate append-only).
+        """
         plat_str = _get_platform_str(payload.source_platform)
         statement = select(SourceThread).where(
             SourceThread.source_platform == plat_str,
@@ -362,6 +395,16 @@ class IngestService:
         result = await session.exec(statement)
         thread = result.first()
         if thread:
+            thread.title = payload.title
+            thread.canonical_url = payload.canonical_url
+            if payload.source_revision and payload.source_revision != "v1":
+                thread.source_revision = payload.source_revision
+            merged_metadata = dict(thread.ingestion_metadata or {})
+            merged_metadata.update(payload.ingestion_metadata or {})
+            merged_metadata["reingested_at"] = utcnow().isoformat()
+            thread.ingestion_metadata = merged_metadata
+            session.add(thread)
+            await session.flush()
             return thread, False
 
         thread = SourceThread(
@@ -435,9 +478,7 @@ class IngestService:
                         derived_normalized_content=normalize_line_endings(
                             msg_payload.raw_content
                         ),
-                        derived_cleaned_content=clean_derived_content(
-                            msg_payload.raw_content
-                        ),
+                        derived_cleaned_content=_cleaned_derived_view(msg_payload),
                     )
                     session.add(version)
                     await session.flush()
@@ -480,9 +521,7 @@ class IngestService:
                             derived_normalized_content=normalize_line_endings(
                                 prior_content
                             ),
-                            derived_cleaned_content=clean_derived_content(
-                                prior_content
-                            ),
+                            derived_cleaned_content=_cleaned_derived_view(msg_payload),
                         )
                         session.add(tombstone_version)
                         await session.flush()
@@ -512,9 +551,7 @@ class IngestService:
                     derived_normalized_content=normalize_line_endings(
                         msg_payload.raw_content
                     ),
-                    derived_cleaned_content=clean_derived_content(
-                        msg_payload.raw_content
-                    ),
+                    derived_cleaned_content=_cleaned_derived_view(msg_payload),
                 )
                 session.add(version)
                 await session.flush()
@@ -564,9 +601,7 @@ class IngestService:
                         derived_normalized_content=normalize_line_endings(
                             msg_payload.raw_content
                         ),
-                        derived_cleaned_content=clean_derived_content(
-                            msg_payload.raw_content
-                        ),
+                        derived_cleaned_content=_cleaned_derived_view(msg_payload),
                     )
                     session.add(new_version)
                     await session.flush()

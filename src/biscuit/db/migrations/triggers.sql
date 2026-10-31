@@ -16,6 +16,9 @@ DECLARE
     decision_project TEXT;
 BEGIN
     IF NEW.edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES') THEN
+        -- The schema CHECK guarantees NOT NULL targets; this join additionally
+        -- binds evidence to the exact alternative, message version, and thread so
+        -- a span from alternative A can never authorize an edge on alternative B.
         SELECT es.evidence_role, es.stance, es.verification_status, sm.author_id, st.project_context
           INTO ev_role, ev_stance, ev_status, ev_author, decision_project
           FROM evidence_spans es
@@ -26,7 +29,8 @@ BEGIN
           JOIN source_threads st ON st.id = d.source_thread_id
          WHERE es.id = NEW.evidence_span_id
            AND es.alternative_id = NEW.target_alternative_id
-           AND (NEW.source_message_version_id IS NULL OR es.source_message_version_id = NEW.source_message_version_id)
+           AND es.source_message_version_id = NEW.source_message_version_id
+           AND smv.message_id = NEW.from_message_id
            AND sm.thread_id = NEW.source_thread_id;
         IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edge needs evidence matching the target alternative, version, and thread'; END IF;
         IF NEW.edge_type = 'PROPOSES' AND ev_role <> 'PROPOSAL' THEN
@@ -347,3 +351,96 @@ DROP TRIGGER IF EXISTS trg_ruling_signoffs_append_only ON decision_alternative_r
 CREATE TRIGGER trg_ruling_signoffs_append_only
 BEFORE UPDATE OR DELETE ON decision_alternative_ruling_signoffs
 FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+
+-- 10. Atomic audited lifecycle transitions (canonical DDL §15).
+-- Audit every lifecycle transition in the same transaction as its state change.
+-- The application DB role has NO direct UPDATE/DELETE on decision_alternatives;
+-- only the trusted transition service may use the protected transition entrypoint.
+CREATE OR REPLACE FUNCTION record_alternative_status_change()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    acting_contributor UUID;
+    explanation TEXT;
+    discussion_thread UUID;
+    snapshot JSONB := '{}'::jsonb;
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.lifecycle_status IS NOT DISTINCT FROM OLD.lifecycle_status THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' AND NEW.lifecycle_status = 'PROPOSED' THEN
+        RETURN NEW;
+    END IF;
+    acting_contributor := NULLIF(current_setting('biscuit.transition_actor_id', TRUE), '')::UUID;
+    explanation := NULLIF(trim(current_setting('biscuit.transition_reason', TRUE)), '');
+    IF acting_contributor IS NULL OR explanation IS NULL THEN
+        RAISE EXCEPTION 'Status changes require authenticated actor and reason in transaction';
+    END IF;
+    SELECT source_thread_id INTO discussion_thread FROM decisions WHERE id = NEW.decision_id;
+    IF NEW.lifecycle_status = 'REJECTED' THEN
+        snapshot := jsonb_build_object(
+            'ruling_authority', NEW.ruling_authority::text,
+            'ruling_actor_id', NEW.ruling_actor_id,
+            'ruling_actor_grant_id', NEW.ruling_actor_grant_id,
+            'ruling_evidence_id', NEW.ruling_evidence_id,
+            'signoffs', COALESCE((
+                SELECT jsonb_agg(jsonb_build_object('contributor_id', s.contributor_id,
+                    'role_grant_id', s.project_role_grant_id, 'evidence_span_id', s.evidence_span_id)
+                    ORDER BY s.contributor_id)
+                  FROM decision_alternative_ruling_signoffs s
+                 WHERE s.alternative_id = NEW.id
+            ), '[]'::jsonb)
+        );
+    END IF;
+    INSERT INTO decision_event_log (
+        alternative_id, source_thread_id, event_type, previous_status,
+        new_status, reason, evidence_span_id, actor_contributor_id, authority_snapshot
+    ) VALUES (
+        NEW.id, discussion_thread, 'STATUS_CHANGE',
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.lifecycle_status ELSE NULL END,
+        NEW.lifecycle_status, explanation,
+        CASE WHEN NEW.lifecycle_status = 'REJECTED' THEN NEW.ruling_evidence_id ELSE NULL END,
+        acting_contributor, snapshot
+    );
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_alternative_status_audit ON decision_alternatives;
+CREATE TRIGGER trg_alternative_status_audit
+AFTER INSERT OR UPDATE OF lifecycle_status ON decision_alternatives
+FOR EACH ROW EXECUTE FUNCTION record_alternative_status_change();
+
+-- SECURITY BOUNDARY: only a trusted service that has *already authenticated*
+-- and bound p_actor_id to the caller may EXECUTE this function. An arbitrary
+-- actor UUID supplied through a public API is never accepted as identity proof.
+-- In deployment, REVOKE EXECUTE ... FROM PUBLIC, GRANT only to that service, and
+-- REVOKE direct lifecycle-table writes from runtime/LLM/MCP/ingestion DB roles.
+CREATE OR REPLACE FUNCTION transition_alternative_lifecycle(
+    p_alternative_id UUID, p_new_status TEXT, p_actor_id UUID,
+    p_reason TEXT, p_ruling_evidence_id UUID DEFAULT NULL,
+    p_ruling_authority TEXT DEFAULT NULL,
+    p_ruling_actor_id UUID DEFAULT NULL, p_ruling_actor_grant_id UUID DEFAULT NULL
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    IF p_actor_id IS NULL OR p_reason IS NULL OR length(trim(p_reason)) = 0 THEN
+        RAISE EXCEPTION 'Verified actor and reason required';
+    END IF;
+    PERFORM set_config('biscuit.transition_actor_id', p_actor_id::text, TRUE);
+    PERFORM set_config('biscuit.transition_reason', p_reason, TRUE);
+    UPDATE decision_alternatives SET
+        lifecycle_status = p_new_status,
+        ruling_evidence_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_evidence_id ELSE NULL END,
+        ruling_authority = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_authority ELSE NULL END,
+        ruling_actor_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_actor_id ELSE NULL END,
+        ruling_actor_grant_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_actor_grant_id ELSE NULL END
+    WHERE id = p_alternative_id AND lifecycle_status IS DISTINCT FROM p_new_status;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Alternative not found or status unchanged'; END IF;
+END;
+$$;
+
+-- 11. Canonical HNSW retrieval index (STORAGE_AND_RETRIEVAL.md §4).
+-- Idempotent; safe to re-run on every bootstrap. Postgres-only.
+CREATE INDEX IF NOT EXISTS idx_alternatives_embedding
+ON decision_alternatives
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);

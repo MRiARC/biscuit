@@ -68,6 +68,32 @@ class MboxAdapter(BaseIngestAdapter):
             cleaned = re.sub(r"^(?:re|fwd?):\s*", "", cleaned, flags=re.IGNORECASE).strip()
         return cleaned or "Mailing List Discussion"
 
+    @staticmethod
+    def _normalize_message_ids(value: str | None) -> list[str]:
+        """Extract all angle-bracket Message-IDs from a (possibly folded) header value."""
+        if not value:
+            return []
+        # Unfold RFC-822 continuation lines (leading whitespace) before matching.
+        unfolded = re.sub(r"\r?\n[ \t]+", " ", value)
+        return re.findall(r"<[^<>]+>", unfolded)
+
+    @classmethod
+    def _resolve_parent_id(cls, msg: email.message.Message) -> str | None:
+        """Resolve the immediate parent Message-ID for a mailing list message.
+
+        RFC-style precedence: a (possibly multi-ID) In-Reply-To names the direct
+        parent(s); when absent, the References header is ordered root → … →
+        immediate ancestor, so the *last* ID is the parent. This keeps deep
+        reply chains pointing at their direct parent instead of the thread root.
+        """
+        in_reply_to = cls._normalize_message_ids(msg.get("In-Reply-To"))
+        if in_reply_to:
+            return in_reply_to[-1].strip("<>")
+        references = cls._normalize_message_ids(msg.get("References"))
+        if references:
+            return references[-1].strip("<>")
+        return None
+
     def parse_payload(
         self,
         data: str | bytes | list[email.message.Message] | os.PathLike,
@@ -75,7 +101,107 @@ class MboxAdapter(BaseIngestAdapter):
         archive_base_url: str = "https://mail.python.org/archives",
         **kwargs: Any,
     ) -> RawThreadPayload:
-        """Parse mbox string, bytes, or email messages into a RawThreadPayload."""
+        """Parse a single-conversation mbox into a RawThreadPayload.
+
+        The input must belong to one conversation; multi-conversation archives
+        should be partitioned first via :meth:`parse_archive`, which groups
+        messages into threads by Message-ID / In-Reply-To / References chains.
+        """
+        messages_list = self._load_messages(data)
+        if not messages_list:
+            raise ValueError("No valid RFC-822 email messages found in payload")
+
+        payload = self._build_thread_payload(
+            messages_list,
+            project_context=project_context,
+            archive_base_url=archive_base_url,
+            source_revision=kwargs.get("source_revision", "v1"),
+        )
+        return payload
+
+    def parse_archive(
+        self,
+        data: str | bytes | list[email.message.Message] | os.PathLike,
+        project_context: str,
+        archive_base_url: str = "https://mail.python.org/archives",
+        **kwargs: Any,
+    ) -> list[RawThreadPayload]:
+        """Partition a multi-conversation mbox archive into separate thread payloads.
+
+        Messages are grouped by conversation: each root message (no resolvable
+        parent within the archive) starts a thread, and every message with a
+        parent ID joins that parent's thread. This prevents unrelated
+        conversations from cross-contaminating discussion and decision evidence.
+        """
+        messages_list = self._load_messages(data)
+        if not messages_list:
+            raise ValueError("No valid RFC-822 email messages found in payload")
+
+        message_ids: dict[str, email.message.Message] = {}
+        for msg in messages_list:
+            msg_id = self._normalize_message_ids(msg.get("Message-ID"))
+            if msg_id:
+                message_ids[msg_id[-1].strip("<>")] = msg
+
+        # Union-find style thread assignment via parent chains.
+        thread_of: dict[str, str] = {}  # message-id -> root message-id
+        roots: list[str] = []
+
+        def resolve_root(msg_key: str) -> str:
+            """Walk parent links until an unresolvable root is reached."""
+            current = msg_key
+            visited = set()
+            while True:
+                if current in visited:
+                    break  # cycle guard
+                visited.add(current)
+                if current in thread_of:
+                    return thread_of[current]
+                msg = message_ids.get(current)
+                if msg is None:
+                    break
+                parent = self._resolve_parent_id(msg)
+                if parent is None or parent not in message_ids:
+                    break
+                current = parent
+            return current
+
+        ordered_keys: list[str] = []
+        for msg in messages_list:
+            ids = self._normalize_message_ids(msg.get("Message-ID"))
+            key = ids[-1].strip("<>") if ids else f"_anon_{len(ordered_keys)}"
+            if key not in message_ids:
+                # Anonymous or duplicated-ID message: keep it addressable.
+                message_ids[key] = msg
+            ordered_keys.append(key)
+
+        for key in ordered_keys:
+            root = resolve_root(key)
+            thread_of[key] = root
+            if root not in roots:
+                roots.append(root)
+
+        payloads: list[RawThreadPayload] = []
+        for root in roots:
+            thread_messages = [
+                message_ids[key]
+                for key in ordered_keys
+                if thread_of.get(key) == root
+            ]
+            payloads.append(
+                self._build_thread_payload(
+                    thread_messages,
+                    project_context=project_context,
+                    archive_base_url=archive_base_url,
+                    source_revision=kwargs.get("source_revision", "v1"),
+                )
+            )
+        return payloads
+
+    def _load_messages(
+        self, data: str | bytes | list[email.message.Message] | os.PathLike
+    ) -> list[email.message.Message]:
+        """Load email messages from an mbox path, raw bytes, string, or list."""
         messages_list: list[email.message.Message] = []
 
         if isinstance(data, list):
@@ -99,16 +225,20 @@ class MboxAdapter(BaseIngestAdapter):
                     msg = email.message_from_bytes(chunk_bytes, policy=email.policy.compat32)
                     if msg.get("Message-ID") or msg.get("Subject"):
                         messages_list.append(msg)
+        return messages_list
 
-        if not messages_list:
-            raise ValueError("No valid RFC-822 email messages found in payload")
-
-        # Determine thread metadata from earliest message
+    def _build_thread_payload(
+        self,
+        messages_list: list[email.message.Message],
+        project_context: str,
+        archive_base_url: str,
+        source_revision: str,
+    ) -> RawThreadPayload:
+        """Build a single RawThreadPayload from one conversation's messages."""
         first_msg = messages_list[0]
         raw_subject = first_msg.get("Subject", "Untitled Thread")
         thread_title = self._clean_subject_for_thread(raw_subject)
 
-        # Thread ID based on first message ID or subject slug
         thread_msg_id = first_msg.get("Message-ID", "")
         clean_thread_id = re.sub(r"[<>\s]", "", thread_msg_id) or "thread_0"
         canonical_url = f"{archive_base_url.rstrip('/')}/thread/{clean_thread_id}"
@@ -119,8 +249,7 @@ class MboxAdapter(BaseIngestAdapter):
             raw_id = msg.get("Message-ID", "")
             ext_msg_id = re.sub(r"[<>\s]", "", raw_id) or f"msg_{len(parsed_messages)}"
 
-            parent_id_raw = msg.get("In-Reply-To") or msg.get("References")
-            parent_id = re.sub(r"[<>\s]", "", parent_id_raw.split()[0]) if parent_id_raw else None
+            parent_id = self._resolve_parent_id(msg)
 
             # Parse sender
             from_header = msg.get("From", "Anonymous <anonymous@example.org>")
@@ -159,6 +288,7 @@ class MboxAdapter(BaseIngestAdapter):
                     metadata={
                         "subject": msg.get("Subject", ""),
                         "in_reply_to": msg.get("In-Reply-To"),
+                        "references": msg.get("References"),
                     },
                 )
             )
@@ -169,7 +299,7 @@ class MboxAdapter(BaseIngestAdapter):
             external_thread_id=clean_thread_id,
             title=thread_title,
             canonical_url=canonical_url,
-            source_revision=kwargs.get("source_revision", "v1"),
+            source_revision=source_revision,
             ingestion_metadata={
                 "message_count": len(parsed_messages),
                 "original_subject": raw_subject,

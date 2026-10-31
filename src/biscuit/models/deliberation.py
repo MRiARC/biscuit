@@ -37,9 +37,68 @@ class DiscussionEdge(UUIDModel, TimestampMixin, table=True):
             "confidence_score >= 0.0 AND confidence_score <= 1.0",
             name="chk_edge_confidence",
         ),
+        # Canonical DDL §3 chk_edge_target_shape: semantic edges carry exactly an
+        # alternative target plus exact evidence provenance (no decision target);
+        # REFERENCES carries exactly one decision/alternative target; conversational
+        # edges carry neither.
+        CheckConstraint(
+            "(edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES') "
+            "AND target_alternative_id IS NOT NULL AND target_decision_id IS NULL "
+            "AND source_message_version_id IS NOT NULL AND evidence_span_id IS NOT NULL) "
+            "OR (edge_type = 'REFERENCES' AND "
+            "(CASE WHEN target_decision_id IS NOT NULL THEN 1 ELSE 0 END "
+            "+ CASE WHEN target_alternative_id IS NOT NULL THEN 1 ELSE 0 END) = 1) "
+            "OR (edge_type IN ('DIRECT_REPLY', 'QUOTE_REFERENCE', 'MENTION') "
+            "AND target_decision_id IS NULL AND target_alternative_id IS NULL)",
+            name="chk_edge_target_shape",
+        ),
+        CheckConstraint(
+            "edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES', "
+            "'REFERENCES', 'DIRECT_REPLY', 'QUOTE_REFERENCE', 'MENTION')",
+            name="chk_edge_type",
+        ),
+        CheckConstraint(
+            "edge_provenance IN ('PLATFORM_METADATA', 'DETERMINISTIC_RULE', 'MODEL_INFERRED')",
+            name="chk_edge_provenance",
+        ),
         Index("idx_edges_thread", "source_thread_id"),
         Index("idx_edges_nodes", "from_message_id", "to_message_id"),
         Index("idx_edges_alt", "target_alternative_id"),
+        # Canonical DDL §15: bind edge endpoints to the same thread, the evidence
+        # version to its originating message, and evidence spans to their exact
+        # alternative + version provenance.
+        ForeignKeyConstraint(
+            ["from_message_id", "source_thread_id"],
+            ["source_messages.id", "source_messages.thread_id"],
+            name="fk_edge_from_message_thread",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["to_message_id", "source_thread_id"],
+            ["source_messages.id", "source_messages.thread_id"],
+            name="fk_edge_to_message_thread",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["source_message_version_id", "from_message_id"],
+            ["source_message_versions.id", "source_message_versions.message_id"],
+            name="fk_edge_source_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "evidence_span_id",
+                "target_alternative_id",
+                "source_message_version_id",
+            ],
+            [
+                "evidence_spans.id",
+                "evidence_spans.alternative_id",
+                "evidence_spans.source_message_version_id",
+            ],
+            name="fk_edge_evidence_source_target",
+            ondelete="RESTRICT",
+        ),
     )
 
     source_thread_id: uuid.UUID = Field(
@@ -150,6 +209,22 @@ class LivingDecisionDraft(UUIDModel, table=True):
             name="fk_living_draft_message_version",
             ondelete="RESTRICT",
         ),
+        # Canonical DDL §12: the draft's initiating author must actually be the
+        # author of the initiating message, preventing false attribution.
+        ForeignKeyConstraint(
+            [
+                "initiating_message_id",
+                "source_thread_id",
+                "initiating_author_id",
+            ],
+            [
+                "source_messages.id",
+                "source_messages.thread_id",
+                "source_messages.author_id",
+            ],
+            name="fk_living_draft_initiating_author",
+            ondelete="RESTRICT",
+        ),
     )
 
     switch_session_id: str = Field(
@@ -223,6 +298,34 @@ class HitlApprovalRequest(UUIDModel, table=True):
         ),
         UniqueConstraint("idempotency_key", name="uq_hitl_idempotency_key"),
         Index("idx_hitl_approval_switch", "switch_approval_id"),
+        # Canonical DDL §13: approval intents must carry exactly the target shape
+        # of their action type.
+        CheckConstraint(
+            "(action_type = 'APPROVE_LIVING_DECISION' AND living_draft_id IS NOT NULL "
+            "AND decision_alternative_id IS NULL AND target_pr_number IS NULL "
+            "AND target_repository IS NULL AND target_commit_sha IS NULL) "
+            "OR (action_type IN ('AUTHORIZE_PR_WARNING', 'DISMISS_PR_WARNING') "
+            "AND living_draft_id IS NULL AND decision_alternative_id IS NOT NULL "
+            "AND target_pr_number IS NOT NULL AND target_repository IS NOT NULL "
+            "AND target_commit_sha IS NOT NULL)",
+            name="chk_hitl_action_target",
+        ),
+        CheckConstraint("expires_at > created_at", name="chk_hitl_expiry"),
+        CheckConstraint(
+            "action_type = 'APPROVE_LIVING_DECISION' "
+            "OR (target_pr_number > 0 AND length(trim(target_repository)) > 0)",
+            name="chk_hitl_pr_target",
+        ),
+        CheckConstraint(
+            "target_commit_sha IS NULL OR length(target_commit_sha) IN (40, 64)",
+            name="chk_hitl_commit_format",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) = 36", name="chk_hitl_idempotency_key"
+        ),
+        CheckConstraint(
+            "length(action_payload_sha256) = 64", name="chk_hitl_action_payload_hash"
+        ),
     )
 
     switch_approval_id: str = Field(
@@ -291,6 +394,17 @@ class HitlApprovalEvent(UUIDModel, table=True):
             "approval_request_id", name="uq_hitl_event_per_request"
         ),
         Index("idx_hitl_events_request", "approval_request_id"),
+        CheckConstraint(
+            "action_taken IN ('APPROVE_DRAFT', 'REJECT_DRAFT', "
+            "'AUTHORIZE_PR_COMMENT', 'DISMISS_PR_COMMENT')",
+            name="chk_hitl_event_action",
+        ),
+        CheckConstraint(
+            "length(payload_signature) = 64", name="chk_hitl_signature_format"
+        ),
+        CheckConstraint(
+            "length(callback_body_sha256) = 64", name="chk_hitl_callback_hash_format"
+        ),
     )
 
     approval_request_id: uuid.UUID = Field(

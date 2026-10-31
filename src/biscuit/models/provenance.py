@@ -211,7 +211,9 @@ class SourceMessage(UUIDModel, TimestampMixin, table=True):
     author_id: uuid.UUID | None = Field(
         default=None,
         sa_column=Column(
-            ForeignKey("contributors.id", ondelete="SET NULL"), nullable=True
+            # RESTRICT per Issue #17 §3.A: deleting a contributor must never
+            # silently erase message attribution relied on by ruling-author checks.
+            ForeignKey("contributors.id", ondelete="RESTRICT"), nullable=True
         ),
     )
     original_timestamp: datetime = Field(
@@ -241,6 +243,13 @@ class SourceMessageVersion(UUIDModel, table=True):
             postgresql_where=Column("is_current") == True,
         ),
         CheckConstraint("version_number >= 1", name="chk_message_version_number"),
+        CheckConstraint(
+            "edit_state IN ('ORIGINAL', 'EDITED', 'DELETED', 'UNAVAILABLE')",
+            name="chk_message_version_edit_state",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64", name="chk_message_version_hash_length"
+        ),
     )
 
     message_id: uuid.UUID = Field(
@@ -313,6 +322,21 @@ class EvidenceSpan(UUIDModel, TimestampMixin, table=True):
             "alternative_id",
             "source_message_version_id",
             name="uq_evidence_edge_source",
+        ),
+        CheckConstraint(
+            "verification_status IN ('UNVERIFIED', 'VERIFIED_EXACT', 'STALE_EDITED', 'UNAVAILABLE')",
+            name="chk_evidence_verification_status",
+        ),
+        CheckConstraint(
+            "evidence_role IN ('PROPOSAL', 'OBJECTION', 'REBUTTAL', 'RULING', "
+            "'CONCESSION', 'BENCHMARK_REPORT')",
+            name="chk_evidence_role",
+        ),
+        CheckConstraint(
+            "stance IN ('SUPPORT', 'OBJECT', 'NEUTRAL')", name="chk_evidence_stance"
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64", name="chk_evidence_hash_length"
         ),
     )
 

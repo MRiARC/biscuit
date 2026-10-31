@@ -31,6 +31,20 @@ class Decision(UUIDModel, TimestampMixin, table=True):
     """Architectural or language design decision evaluated over source discussions."""
 
     __tablename__ = "decisions"
+    __table_args__ = (
+        # Canonical DDL §7: a decision may only cite evidence that is itself
+        # bound to that decision (ruling back-link).
+        ForeignKeyConstraint(
+            ["ruling_evidence_id", "id"],
+            ["evidence_spans.id", "evidence_spans.decision_id"],
+            name="fk_decision_ruling_evidence",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "resolution_status IN ('RESOLVED', 'UNRESOLVED', 'DISPUTED')",
+            name="chk_decision_resolution_status",
+        ),
+    )
 
     source_thread_id: uuid.UUID = Field(
         sa_column=Column(
@@ -80,6 +94,20 @@ class DecisionAlternative(UUIDModel, table=True):
             "ruling_evidence_id IS NOT NULL AND ruling_authority IS NOT NULL "
             "AND ruling_actor_id IS NOT NULL AND ruling_actor_grant_id IS NOT NULL)",
             name="chk_rejected_requires_ruling",
+        ),
+        CheckConstraint(
+            "lifecycle_status IN ('PROPOSED', 'UNDER_DISCUSSION', 'ACCEPTED', "
+            "'REJECTED', 'WITHDRAWN', 'DEFERRED', 'SUPERSEDED', 'UNRESOLVED', "
+            "'DISPUTED', 'ACCEPTED_WITH_MODIFICATION')",
+            name="chk_alternative_lifecycle_status",
+        ),
+        # Canonical DDL §7: the ruling evidence cited by an alternative must be
+        # an evidence span bound to that exact alternative.
+        ForeignKeyConstraint(
+            ["ruling_evidence_id", "id"],
+            ["evidence_spans.id", "evidence_spans.alternative_id"],
+            name="fk_alternative_ruling_evidence",
+            ondelete="RESTRICT",
         ),
     )
 
@@ -146,7 +174,20 @@ class Argument(UUIDModel, TimestampMixin, table=True):
     """Specific argument advanced for or against a decision alternative."""
 
     __tablename__ = "arguments"
-    __table_args__ = (Index("idx_arguments_alt", "alternative_id"),)
+    __table_args__ = (
+        Index("idx_arguments_alt", "alternative_id"),
+        # Canonical DDL §7: an argument may only cite evidence bound to that
+        # exact argument.
+        ForeignKeyConstraint(
+            ["evidence_span_id", "id"],
+            ["evidence_spans.id", "evidence_spans.argument_id"],
+            name="fk_argument_evidence_span",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "stance IN ('SUPPORT', 'OBJECT', 'NEUTRAL')", name="chk_argument_stance"
+        ),
+    )
 
     alternative_id: uuid.UUID = Field(
         sa_column=Column(
@@ -198,6 +239,22 @@ class ProposalOccurrence(UUIDModel, table=True):
             ["initiating_message_version_id", "initiating_message_id"],
             ["source_message_versions.id", "source_message_versions.message_id"],
             name="fk_occurrence_message_version",
+            ondelete="RESTRICT",
+        ),
+        # Canonical DDL §8: linkage evidence must be an evidence span bound to
+        # this exact alternative and initiating message version.
+        ForeignKeyConstraint(
+            [
+                "linkage_evidence_span_id",
+                "alternative_id",
+                "initiating_message_version_id",
+            ],
+            [
+                "evidence_spans.id",
+                "evidence_spans.alternative_id",
+                "evidence_spans.source_message_version_id",
+            ],
+            name="fk_occurrence_evidence_alternative",
             ondelete="RESTRICT",
         ),
         Index("idx_occurrences_alt", "alternative_id"),
@@ -295,6 +352,12 @@ class DecisionEventLog(UUIDModel, table=True):
             "event_type <> 'RECURRENCE_RECORDED' OR "
             "(proposal_occurrence_id IS NOT NULL AND source_thread_id IS NOT NULL)",
             name="chk_recurrence_event_link",
+        ),
+        ForeignKeyConstraint(
+            ["evidence_span_id", "alternative_id"],
+            ["evidence_spans.id", "evidence_spans.alternative_id"],
+            name="fk_decision_event_evidence",
+            ondelete="RESTRICT",
         ),
     )
 
