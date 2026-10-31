@@ -30,8 +30,8 @@ from biscuit.extract.types import (
 from biscuit.provenance.matcher import CandidateSpanMatcher
 from biscuit.provenance.types import (
     EvidenceRole,
-    EvidenceStance,
     EvidenceSpan,
+    EvidenceStance,
     VerificationStatus,
 )
 from biscuit.provenance.verifier import EvidenceVerifier
@@ -348,9 +348,11 @@ class ExtractionPipeline:
                         # Core Maintainer consensus requires at least 2 distinct maintainers in discussion
                         if len(maintainer_authors) >= 2:
                             verified_ruling_alt_ids.add(v_span.alternative_id)
-                    elif author_role in ("working group chair", "working_group_chair", "wg_chair"):
-                        if len(maintainer_authors) >= 2:
-                            verified_ruling_alt_ids.add(v_span.alternative_id)
+                    elif (
+                        author_role in ("working group chair", "working_group_chair", "wg_chair")
+                        and len(maintainer_authors) >= 2
+                    ):
+                        verified_ruling_alt_ids.add(v_span.alternative_id)
 
         # Validate considered_alternatives
         updated_alternatives = []
@@ -360,24 +362,22 @@ class ExtractionPipeline:
             alt_uuid = proposal_uuid_map.get(prop_id)
             status = str(alt.get("status", "")).upper()
 
-            if status == "REJECTED":
-                if not alt_uuid or alt_uuid not in verified_ruling_alt_ids:
-                    # Downgrade unauthorized rejection to DISPUTED
-                    alt_copy["status"] = "DISPUTED"
-                    alt_copy["unauthorized_ruling_note"] = (
-                        "Status downgraded from model-authored REJECTED to DISPUTED: "
-                        "no VERIFIED_EXACT human ruling from an authorized authority found."
-                    )
-                    downgraded_rejections.append(f"Alternative {prop_id}")
+            if status == "REJECTED" and (not alt_uuid or alt_uuid not in verified_ruling_alt_ids):
+                # Downgrade unauthorized rejection to DISPUTED
+                alt_copy["status"] = "DISPUTED"
+                alt_copy["unauthorized_ruling_note"] = (
+                    "Status downgraded from model-authored REJECTED to DISPUTED: "
+                    "no VERIFIED_EXACT human ruling from an authorized authority found."
+                )
+                downgraded_rejections.append(f"Alternative {prop_id}")
             updated_alternatives.append(alt_copy)
         madr.considered_alternatives = updated_alternatives
 
         # Validate overall decision status
         overall_status = madr.status.upper()
-        if overall_status == "REJECTED":
-            if not verified_ruling_alt_ids:
-                madr.status = "DISPUTED"
-                downgraded_rejections.append("Overall Decision")
+        if overall_status == "REJECTED" and not verified_ruling_alt_ids:
+            madr.status = "DISPUTED"
+            downgraded_rejections.append("Overall Decision")
 
         audit_metadata = {
             "pipeline_version": "1.0.0",

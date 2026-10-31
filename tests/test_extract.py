@@ -5,10 +5,9 @@ Runs completely offline in mock mode (BISCUIT_MOCK_LLM=1) with zero cloud depend
 """
 
 import json
+from uuid import uuid4
 
 import pytest
-
-from uuid import uuid4
 
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery

@@ -173,9 +173,8 @@ class Pass2DeliberationSlicing:
                 must_include_indices.add(idx)
 
             # Anchor 2: Authoritative maintainer / BDFL ruling message
-            if role in RULING_ROLES:
-                if any(kw in content_lower for kw in RULING_KEYWORDS):
-                    must_include_indices.add(idx)
+            if role in RULING_ROLES and any(kw in content_lower for kw in RULING_KEYWORDS):
+                must_include_indices.add(idx)
 
         # Always include the very last message if authored by an authorized maintainer
         if candidate_msgs:
