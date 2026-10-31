@@ -271,6 +271,7 @@ def test_heldout_warning_wrong_rejected_alternative_is_false_positive() -> None:
         [entry["case_id"] for entry in bad],
         warning_records=bad, expected_alternatives=expected,
         expected_rulings=load_pr_authorization_oracle(),
+        allow_simulated_authorization=True,
     )
     assert score["tp"] == 4 and score["fp"] == 1 and score["fn"] == 1
     assert score["precision"] == pytest.approx(4 / 5)
@@ -330,6 +331,7 @@ def test_wrong_ruling_source_or_digest_never_gets_warning_credit() -> None:
     scored = pr_warning_metrics(
         load_pr_labels(), data["warned_pr_ids"], warning_records=corrupted,
         expected_alternatives=expected, expected_rulings=proofs,
+        allow_simulated_authorization=True,
     )
     assert scored["tp"] == 4
     assert scored["fp"] == 1
