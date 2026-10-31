@@ -263,7 +263,7 @@ def pr_warning_metrics(
     expected_rulings: Mapping[str, Mapping[str, str]] | None = None,
     trusted_ruling_proofs: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     verified_project_roles: Mapping[str, str] | None = None,
-    allow_simulated_authorization: bool = True,
+    allow_simulated_authorization: bool = False,
 ) -> dict[str, Any]:
     """Compare warnings with withheld labels and independent ruling evidence.
 
