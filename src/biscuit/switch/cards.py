@@ -24,7 +24,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from biscuit.switch.types import (
-    APPROVAL_TTL_HOURS,
     HITLApprovalRequest,
     LivingDecisionDraft,
     SwitchActionType,
@@ -32,6 +31,19 @@ from biscuit.switch.types import (
 )
 
 _MAX_TEXT = 2900
+# Switch agent-controller 0.31.0 rejects ApprovalOpen expirations beyond 24h.
+# Use a safety margin for transport delay and clock skew.
+_SWITCH_APPROVAL_LIFETIME = timedelta(hours=23)
+
+
+def _switch_expiry(desired: datetime | None = None) -> datetime:
+    """Use the earlier of local approval TTL and Switch's 23h transport limit."""
+    now = datetime.now(UTC)
+    expiry = min(desired, now + _SWITCH_APPROVAL_LIFETIME) if desired else now + _SWITCH_APPROVAL_LIFETIME
+    if expiry <= now:
+        raise ValueError("cannot dispatch an already expired Switch approval")
+    return expiry
+
 
 
 def _truncate(text: str, limit: int = _MAX_TEXT) -> str:
@@ -53,7 +65,7 @@ class BlockKitBuilder:
         (``MAINTAINER_APPROVED``); it does not resolve the decision or mark
         any alternative REJECTED.
         """
-        expiry = expires_at or datetime.now(UTC) + timedelta(hours=APPROVAL_TTL_HOURS)
+        expiry = _switch_expiry(expires_at)
         header = f"Living decision draft — {draft.topic}"
         sections = [
             self._section_mrkdwn(f"*{header}*"),
@@ -121,7 +133,7 @@ class BlockKitBuilder:
         body. A later callback that does not match these values is rejected
         by ``CallbackSecurity``.
         """
-        expiry = expires_at or datetime.now(UTC) + timedelta(hours=APPROVAL_TTL_HOURS)
+        expiry = _switch_expiry(expires_at)
         comment_sha = compute_sha256_hex(comment_body)
 
         blocks = [
@@ -235,7 +247,7 @@ class BlockKitBuilder:
         ``HITLEventAction``.
         """
         options = self._options_for(request.action_type)
-        expiry = expires_at or request.expires_at
+        expiry = _switch_expiry(expires_at or request.expires_at)
         return {
             "request_id": request.switch_approval_id,
             "turn_id": turn_id,
@@ -256,16 +268,16 @@ class BlockKitBuilder:
     def _options_for(action_type: SwitchActionType) -> list[tuple[str, str, str]]:
         if action_type == SwitchActionType.APPROVE_LIVING_DECISION:
             return [
-                ("approve_draft", "Approve Draft", "approve"),
-                ("edit_rationale", "Edit Rationale", "edit"),
-                ("dismiss_draft", "Dismiss Draft", "reject"),
+                ("approve_draft", "Approve Draft", "accept"),
+                ("edit_rationale", "Edit Rationale", "cancel"),
+                ("dismiss_draft", "Dismiss Draft", "decline"),
             ]
         if action_type == SwitchActionType.AUTHORIZE_PR_WARNING:
             return [
-                ("authorize_pr_comment", "Post to PR", "approve"),
-                ("dismiss_pr_comment", "Keep Silent", "reject"),
+                ("authorize_pr_comment", "Post to PR", "accept"),
+                ("dismiss_pr_comment", "Keep Silent", "decline"),
             ]
-        return [("dismiss_pr_comment", "Keep Silent", "reject")]
+        return [("dismiss_pr_comment", "Keep Silent", "decline")]
 
     def _title_for(self, request: HITLApprovalRequest) -> str:
         if request.action_type == SwitchActionType.APPROVE_LIVING_DECISION:
@@ -297,7 +309,7 @@ class BlockKitBuilder:
                     "type": "button",
                     "action_id": option["id"],
                     "text": {"type": "plain_text", "text": option["label"]},
-                    "style": option.get("style", "default"),
+                    **({"style": option["style"]} if option.get("style") in ("primary", "danger") else {}),
                 }
                 for option in options
             ],
