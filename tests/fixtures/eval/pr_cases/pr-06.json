@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Grammar/python.gram",
-      "diff": "-# argument parsing\n+# Parser argument handling"
+      "diff": "diff --git a/Grammar/python.gram b/Grammar/python.gram\n--- a/Grammar/python.gram\n+++ b/Grammar/python.gram\n@@ -1,1 +1,1 @@\n-# argument parsing\n+# Parser argument handling"
     }
   ],
   "fixture_origin": "SYNTHETIC"
