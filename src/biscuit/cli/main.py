@@ -69,7 +69,7 @@ if typer is not None:
                         if all_benchmarks and predictions is not None else predictions
                     ),
                     fixtures_root=root,
-                    audit_db=audit_db,
+                    audit_db=audit_db or _default_db(),
                     recorded_replay=predictions is None and simulate,
                 )
                 for name in names
