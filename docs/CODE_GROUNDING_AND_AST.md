@@ -39,8 +39,9 @@ flowchart TD
     Diff["Incoming Pull Request Diff"] --> Extract
 
     subgraph Extract["1. Code Feature Extraction (Tree-sitter)"]
-        Tree["AST Parser"] --> ModSymbols["Modified Symbol Names & Signatures"]
-        Tree --> ModTrees["Normalized AST Subtrees"]
+        Tree["Tree-sitter CST + language-specific AST parser"]
+        Tree --> ModSymbols["Modified Symbol Names & Signatures"]
+        Tree --> ModTrees["Normalized AST/CST Subtrees"]
         Tree --> DiffHunk["Added/Modified Code Lines"]
     end
 
@@ -50,7 +51,7 @@ flowchart TD
         T1["Tier 1: AST Qualified Symbol Lookup<br/>Queries code_anchors by qualified_symbol_name"]
         T2["Tier 2: Forward Commit-DAG Diff Traversal<br/>Traces path renames (-M) and splits (-B) from historical commit to HEAD"]
         T3["Tier 3: Normalized AST Subtree Hashing<br/>Matches grammar shape with masked variable identifiers"]
-        T4["Tier 4: Semantic Diff Embedding (nomic-embed-text)<br/>Embeds code hunk & computes provisional cosine distance"]
+        T4["Tier 4: Semantic Diff Embedding (nomic-embed-text)<br/>Candidate retrieval signal only; never authorizes warnings"]
     end
 
     Tiers --> Candidates["Candidate Alternative Matches"]
@@ -89,16 +90,18 @@ Structure: CodeSymbolAnchor
     source_locator_type        : Enum (AST_NODE_QUERY, FILE_BYTE_RANGE, FILE_LINE_RANGE)
     start_line, end_line       : Integer or Null
     start_byte, end_byte       : Integer or Null
-    parser_name                : String (e.g. "tree-sitter-python")
-    grammar_version            : String (e.g. "v0.22.0")
-    fingerprint_algorithm      : String (e.g. "ast-canonical-hash-v1")
-    ast_structural_fingerprint : String (SHA-256 of identifier-masked AST subtree)
+    parser_name                : String (language-specific parser identifier)
+    parser_version             : String (exact parser release)
+    grammar_version            : String (exact grammar release or commit)
+    fingerprint_algorithm      : String (versioned canonical fingerprint algorithm)
+    ast_normalization_version  : String (exact AST/CST normalization ruleset)
+    ast_structural_fingerprint : String (SHA-256 of versioned identifier-masked subtree)
     signature_hash             : String (SHA-256 of normalized parameter signature)
     anchor_state               : Enum (HISTORICAL, CURRENT, MIGRATED, SPLIT, MERGED, DELETED, AMBIGUOUS)
     historical_file_path       : String (Relative path at time of debate)
     historical_commit_sha      : String (40/64-char Git SHA at time of debate)
     head_commit_sha            : String or Null
-    mapping_confidence         : Float (0.0 to 1.0)
+    mapping_confidence         : Float or Null (0.0 to 1.0; NULL until supported by mapping evidence)
 ```
 
 ---
@@ -124,15 +127,12 @@ flowchart LR
 ```
 
 ### Forward Traversal Strategy:
-1. **Direct Path Check:** Verify if `historical_file_path` exists unchanged at `HEAD`. If yes, `anchor_state = CURRENT`.
-2. **Forward DAG Diff Traversal:** If the path no longer exists at `HEAD`, traverse forward from $C_{\text{past}}$ to `HEAD` using `git diff-tree -r -M80% -C -B`:
-   - **`-M80%` (Rename Tracking):** Follows renames when file similarity $\ge 80\%$.
-   - **`-C` (Copy Tracking):** Detects code copied into new utility modules.
-   - **`-B` (Break/Rewrite Detection):** Identifies total file rewrites or splits.
-3. **Tree-sitter Symbol Move Tracking:** If file-level heuristics fail (e.g., Python 3.9 parser rewrite from LL(1) to PEG), Tree-sitter scans candidate grammar files for the qualified AST symbol.
-4. **Ambiguity & Abstention Contract:**
-   - If a file split produces multiple candidate locations, or a symbol is deleted, the anchor is marked `anchor_state = SPLIT` or `AMBIGUOUS` with a low `mapping_confidence`.
-   - **Biscuit strictly abstains from auto-resolving ambiguous paths** and logs the event in `code_anchor_lineage`.
+1. **Direct Path Check:** Check the historical path at `HEAD`. This is only a fast path; a path match does not by itself prove the same symbol survived.
+2. **Enumerate the Forward DAG:** Enumerate every commit reachable from `HEAD` but not before the historical anchor commit, in topological order. Process commits in that order rather than following only one path.
+3. **Diff Every Parent:** For each commit, run `git diff-tree -r -M80% -C -B <parent> <commit>` for every parent. Compare a root commit with the empty tree. For merge commits, record a separate lineage transition for each parent and do not silently select only the first parent.
+4. **Persist Mapping Evidence:** Store `transition_commit_sha`, `compared_parent_sha`, parent index, old/new paths, transition classification, diff/patch digest, matching symbol identifiers, and the exact parser, grammar, and normalization versions in `code_anchor_lineage.mapping_evidence`.
+5. **Resolve or Abstain:** Collapse parent paths into one current anchor only when all viable parent histories converge on the same symbol/path or AST/CST evidence independently confirms equivalence. If parents disagree, a split/copy has multiple plausible targets, or the symbol is deleted, mark the anchor `SPLIT`, `AMBIGUOUS`, or `DELETED`; leave confidence NULL unless measured evidence supports a score and abstain from warnings.
+6. **Reproducibility:** Store Git object IDs and mapping evidence for every traversed transition so a future run can replay the same path-resolution decision.
 
 ---
 
@@ -170,8 +170,8 @@ When a subsystem undergoes an architectural rewrite:
 1. Extract the PR diff hunk (added code lines, grammar rules, docstrings).
 2. Generate an embedding using `nomic-embed-text-v1.5` with prefix `search_query:`.
 3. Compute cosine similarity against `decision_alternatives.embedding`.
-4. If cosine similarity $\ge 0.82$, it triggers as a candidate match.
-   * **Provisional Threshold Notice:** The `0.82` threshold is provisional pending empirical calibration against labeled benchmarks. It serves as a candidate-retrieval filter, not semantic proof of re-introduction.
+4. A cosine score at or above provisional `0.82` may add an item to the candidate set for further analysis.
+   * **Retrieval-Only Threshold:** `0.82` is a tunable candidate-retrieval parameter. It is not a warning invariant, does not establish semantic equivalence, and can never authorize a comment. A candidate must independently pass alternative-specific AST/CST structural verification and every authoritative evidence/authorization check.
 
 ---
 
@@ -185,13 +185,14 @@ Per **PR #7 Review (5)**:
 | Invariant | Requirement | Failure Action |
 |---|---|---|
 | **1. Decision State** | `decision_alternatives.lifecycle_status == 'REJECTED'` | **ABSTAIN.** (Never warn on `DISPUTED`, `UNRESOLVED`, or `PROPOSED` items). |
-| **2. Authoritative Ruling** | `ruling_evidence_id` has `verification_status == 'VERIFIED_EXACT'` signed by an authority or consensus (`BDFL`, `CORE_MAINTAINER_CONSENSUS`). `MODEL_INFERRED` alone cannot authorize a warning. | **ABSTAIN.** (Never warn based on unverified evidence or speculative inference). |
+| **2. Authoritative Ruling** | `ruling_evidence_id` is a `VERIFIED_EXACT` `RULING` span linked to this exact alternative and authored by an identified authorized human. The database enforces BDFL identity or distinct Core Maintainer/Working Group sign-offs; model inference is never authority. | **ABSTAIN.** (Never warn based on unverified or speculative evidence). |
 | **3. Alternative Code Anchor** | Modified PR code touches an active `code_anchor` bound directly to THIS alternative. | **ABSTAIN.** (Never warn based on semantic similarity to unrelated code). |
 | **4. AST Structural Equivalence** | AST/CST subtree comparison confirms PR introduces the rejected syntax/construct (not an accepted or refactored pattern). | **ABSTAIN.** (Never warn on semantic embedding similarity alone). |
 
 ### Hard Negatives and Threshold Recalibration:
-- **Hard Negative Filtering:** If a PR modifies syntax for an accepted language feature (e.g. ternary operator `a if b else c`) in the same file where unary `?` was rejected, the AST classifier detects that the node is a conditional expression and **ABSTAINS**.
-- **Threshold Recalibration Triggers:** If the false positive rate on benign pull requests in benchmark test runs exceeds **2.0%**, the provisional 0.82 threshold is automatically recalibrated upward.
+- **Hard Negative Filtering:** If a PR modifies syntax for an accepted language feature (e.g. ternary operator `a if b else c`) in the same file where unary `?` was rejected, the verifier checks the actual AST/CST node; file or symbol overlap is insufficient.
+- **Abstention:** Unsupported syntax, parser errors, unknown parser/grammar versions, ambiguous lineage, missing evidence, or incomplete mapping evidence cause abstention.
+- **Calibration Governance:** Candidate-retrieval thresholds are recalibrated only in a versioned offline evaluation using labeled positives, benign refactors, hard negatives, and ambiguous cases. Runtime threshold changes cannot weaken or bypass authorization invariants.
 
 ---
 
