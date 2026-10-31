@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 from copy import deepcopy
+from types import SimpleNamespace
 
 from biscuit.evaluate.fixtures import (
     DEFAULT_FIXTURE_ROOT,
@@ -17,6 +18,7 @@ from biscuit.evaluate.fixtures import (
 )
 from biscuit.evaluate.metrics import causal_rationale_alignment, pr_warning_metrics
 from biscuit.evaluate.runner import run_benchmark
+from biscuit.evaluate.stream3_adapter import stream3_predictor
 
 
 def _metric(outcome, name: str):
@@ -201,3 +203,63 @@ def test_runner_passes_scorer_side_trusted_proofs_without_leaking_to_predictor()
     assert outcome.counts["watchdog"]["fp"] == 0
     assert outcome.counts["watchdog"]["fn"] == 4
     assert outcome.verdict == "FAILED"  # 4/5 violations remain unhandled
+
+
+def test_working_group_chair_needs_distinct_verified_signoff() -> None:
+    warning, ruling = _trusted_ruling()
+    collaborator = {
+        **ruling,
+        "source_message_id": "post-wg-member",
+        "source_message_version_id": "wg-member-version",
+        "author_handle": "independent-member",
+        "evidence_role": "SIGNOFF",
+    }
+    roles = {
+        "human-author": "working_group_chair",
+        "independent-member": "working_group_member",
+    }
+    assert _score_warning(warning, [ruling], roles)["tp"] == 0
+    assert _score_warning(warning, [ruling, collaborator], roles)["tp"] == 1
+
+
+def test_stream3_adapter_into_runner_with_production_watchdog_contract() -> None:
+    warning, proof = _trusted_ruling()
+    observed = {}
+
+    class FakeStream3:
+        def run(self, **kwargs):
+            observed.update(kwargs)
+            return SimpleNamespace(
+                run_id="mock-extraction",
+                run_status="SUCCESS",
+                proposals=[
+                    SimpleNamespace(proposal_id="S1", name="Unary ? operator"),
+                    SimpleNamespace(proposal_id="S2", name="Safe navigation"),
+                ],
+                madr=SimpleNamespace(considered_alternatives=[
+                    {"proposal_id": "S1", "status": "REJECTED"},
+                    {"proposal_id": "S2", "status": "DEFERRED"},
+                ]),
+                evidence_spans=[],
+            )
+
+    def mock_watchdog(run, cases):
+        assert len(cases) == 20
+        assert run.run_id == "mock-extraction"
+        return [warning]
+
+    result = run_benchmark(
+        "pep-505",
+        predictor=stream3_predictor(FakeStream3(), watchdog=mock_watchdog),
+        trusted_ruling_proofs={"pep-505:S1": [proof]},
+        verified_project_roles={"human-author": "bdfl"},
+    )
+    assert result.prediction_source == "PREDICTOR"
+    assert result.counts["watchdog"]["tp"] == 1
+    assert result.counts["watchdog"]["fp"] == 0
+    assert result.counts["watchdog"]["fn"] == 4
+    assert result.verdict == "FAILED"
+    assert "ground_truth" not in observed
+    assert "trusted_ruling_proofs" not in observed
+    assert "verified_project_roles" in observed  # Optional Stream 3 role argument, no grants.
+    assert observed["verified_project_roles"] is None
