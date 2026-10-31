@@ -110,8 +110,8 @@ rejected_alternatives:
 ### Code Grounding: Surviving File Moves & Refactoring
 *Problem:* A decision made in 2021 in `cpython/Parser/tokenizer.c` may have moved to `cpython/Parser/lexer/tokenizer.c` or been completely rewritten.  
 *Solution:*
-1. **AST Symbol Anchoring:** Decisions are bound to **code symbol identities** (e.g., `Function: parse_subscript()`, `GrammarRule: test_nocond`), not fragile file paths.
-2. **Git Tracking (`git log --follow`):** Traces file renames and moves across commit histories from the historical commit to modern `HEAD`.
+1. **Alternative-Specific AST Symbol Anchoring:** Decisions are bound directly to `decision_alternatives(id)` with **code symbol identities** (e.g., `Function: parse_subscript()`, `GrammarRule: test_nocond`), not fragile file paths.
+2. **Forward Commit-DAG Lineage Traversal:** Rather than relying on backward `git log --follow`, Biscuit traverses forward from the historical commit to `HEAD` using `git diff-tree -M80% -C -B` combined with Tree-sitter AST symbol tracking. Ambiguous file splits or deleted paths remain marked `SPLIT`/`AMBIGUOUS` with uncertainty flags, and Biscuit abstains from auto-resolving.
 
 ---
 
@@ -169,3 +169,12 @@ During the pitch and judging:
    - Show a live Slack channel mimicking a CNCF SIG debate where an idea is rejected.
    - Show a developer opening a PR on GitHub trying that exact idea.
    - Show Biscuit's GitHub Action instantly reviewing the PR diff and commenting with the historical rejection context and citations.
+
+---
+
+## 7. Specifications Map
+- [`docs/TECH_STACK_AND_ARCHITECTURE.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/TECH_STACK_AND_ARCHITECTURE.md): Complete tech stack justifications and module architecture.
+- [`docs/STORAGE_AND_RETRIEVAL.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/STORAGE_AND_RETRIEVAL.md): Relational DDL, message versions, typed edges, and vector schema.
+- [`docs/INGESTION_AND_EXTRACTION.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/INGESTION_AND_EXTRACTION.md): Universal adapters, noise filtering, and 4-pass extraction.
+- [`docs/CODE_GROUNDING_AND_AST.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/CODE_GROUNDING_AND_AST.md): Tree-sitter AST grounding and forward commit-DAG lineage.
+- [`docs/EVALUATION_AND_BENCHMARKS.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/EVALUATION_AND_BENCHMARKS.md): Quantitative metric suites and target benchmark specifications.
