@@ -293,3 +293,27 @@ def test_ingest_canonical_snapshot_reuses_evaluation_hash_contract(tmp_path, mon
             db.execute("SELECT raw_json FROM threads WHERE thread_id='topic-1'").fetchone()[0]
         )
     assert stored["canonical_thread"]["thread_sha256"] == snapshot["thread_sha256"]
+
+
+def test_typer_evaluate_persists_abstention_audit_by_default(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
+    from typer.testing import CliRunner
+
+    from biscuit.cli.main import app
+
+    db = tmp_path / "default-workspace.sqlite3"
+    monkeypatch.setenv("BISCUIT_DB", str(db))
+    result = CliRunner().invoke(
+        app, ["evaluate", "--benchmark", "pep-505",
+              "--output", str(tmp_path / "scorecard.json")]
+    )
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM pr_watchdog_audit_log"
+        ).fetchone()[0] == 20
+        assert conn.execute(
+            "SELECT COUNT(*) FROM pr_watchdog_audit_log "
+            "WHERE action='ABSTAIN' AND reason_code='AMBIGUOUS_ABSTENTION'"
+        ).fetchone()[0] == 5
