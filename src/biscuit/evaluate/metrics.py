@@ -296,6 +296,19 @@ def pr_warning_metrics(
             "action": "WARN" if case_id in warned else "ABSTAIN",
             "alternative_id": supplied_records.get(case_id, {}).get("alternative_id"),
             "authorization": supplied_records.get(case_id, {}).get("authorization"),
+            "ruling_source_message_id": supplied_records.get(case_id, {}).get(
+                "ruling_source_message_id"
+            ),
+            "ruling_quote_sha256": supplied_records.get(case_id, {}).get(
+                "ruling_quote_sha256"
+            ),
+            "reason_code": (
+                "AUTHORIZED_REJECTED_PATTERN" if case_id in correct_warnings
+                else "UNVERIFIED_OR_WRONG_ALTERNATIVE_WARNING" if case_id in warned
+                else "MISSED_VIOLATION" if label == "violation"
+                else "AMBIGUOUS_ABSTENTION" if label == "ambiguous"
+                else "BENIGN_NO_WARNING"
+            ),
             "correct": (
                 case_id in correct_warnings if label == "violation"
                 else case_id not in warned
