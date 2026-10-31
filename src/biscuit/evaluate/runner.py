@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,8 @@ def run_benchmark(
     recorded_replay: bool = False,
     semantic_embedder: Callable[[str], Sequence[float]] | None = None,
     profile_host_memory: bool = False,
+    trusted_ruling_proofs: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    verified_project_roles: Mapping[str, str] | None = None,
 ) -> BenchmarkOutcome:
     """Score supplied predictions without passing labels or official PEP text to extraction.
 
@@ -120,6 +122,14 @@ def run_benchmark(
         source = "SUPPLIED_JSON"
     if predictions is not None and not isinstance(predictions, dict):
         raise ValueError("Predictions must be a JSON object")
+    if (
+        predictions is not None
+        and predictions.get("fixture_kind") == "RECORDED_SYNTHETIC_MOCK_OUTPUT_NOT_MODEL"
+        and source != "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL"
+    ):
+        # A callback or JSON file returning the hand-authored fixture is NEVER
+        # represented as independently measured production inference.
+        source = "INJECTED_SYNTHETIC_MOCK_NOT_MODEL"
 
     # The scoring-only oracle is deliberately loaded AFTER predictor invocation.
     # It must never be passed to the predictor, prompt builder, or crawler.
@@ -156,6 +166,10 @@ def run_benchmark(
             for p in gt_proposals
             if "rationale_text" in p or "rationale_embedding" in p
         }
+    rationale_expected_count = sum(
+        "rationale_text" in p or "rationale_embedding" in p
+        for p in gt_proposals
+    )
     raw = {msg["message_id"]: msg["raw_text"] for msg in thread["messages"]}
 
     if predictions is None:
@@ -168,6 +182,7 @@ def run_benchmark(
             _metric("AST grounding precision", None, 0.80, 0),
             _metric("Alternative disambiguation rate", None, 1.0, 0),
             _metric("Causal rationale alignment", None, 0.82, 0),
+            _metric("Causal rationale coverage", None, 1.0, 0),
             _metric("PR warning precision", None, 0.95, 0),
             _metric("PR warning recall", None, 1.0, 0),
             _metric("Benign false alarm rate", None, 0.0, 0, "max"),
@@ -218,7 +233,9 @@ def run_benchmark(
             found_anchors, recovered_ids, expected_anchors=truth_anchors,
             expected_proposal_ids=list(truth_states),
         )
-        rationale = causal_rationale_alignment(found_vectors, truth_vectors)
+        rationale = causal_rationale_alignment(
+            found_vectors, truth_vectors, expected_count=rationale_expected_count,
+        )
         # A bare list of PR IDs cannot establish the correct rejected alternative.
         # Scoring such a list alone would reward unauthenticated warnings.
         warning_records = predictions.get("warning_records", [])
@@ -228,6 +245,12 @@ def run_benchmark(
             warning_records=warning_records,
             expected_alternatives=expected_warning_alternatives,
             expected_rulings=expected_rulings,
+            trusted_ruling_proofs=trusted_ruling_proofs,
+            verified_project_roles=verified_project_roles,
+            allow_simulated_authorization=source in {
+                "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL",
+                "INJECTED_SYNTHETIC_MOCK_NOT_MODEL",
+            },
         )
         if audit_db is not None:
             run_hash = hashlib.sha256(
@@ -248,6 +271,7 @@ def run_benchmark(
             _metric("AST grounding precision", anchors["precision"], 0.80, anchors["total"]),
             _metric("Alternative disambiguation rate", disambiguation["rate"], 1.0, disambiguation["total"]),
             _metric("Causal rationale alignment", rationale["cra"], 0.82, rationale["evaluated"]),
+            _metric("Causal rationale coverage", rationale["coverage"], 1.0, rationale["expected"]),
             _metric("PR warning precision", watchdog["precision"], 0.95, watchdog["total"]),
             _metric("PR warning recall", watchdog["recall"], 1.0, len(expected_warning_alternatives)),
             _metric("Benign false alarm rate", watchdog["benign_false_alarm_rate"], 0.0, watchdog["benign_total"], "max"),
