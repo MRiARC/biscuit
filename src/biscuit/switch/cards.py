@@ -190,6 +190,7 @@ class BlockKitBuilder:
         target_commit_sha: str | None = None,
         living_draft_id: str | None = None,
         decision_alternative_id: str | None = None,
+        project_context: str | None = None,
     ) -> HITLApprovalRequest:
         """Assemble a ``hitl_approval_requests`` row around a rendered card.
 
@@ -227,6 +228,7 @@ class BlockKitBuilder:
             target_commit_sha=target_commit_sha,
             living_draft_id=living_draft_id,
             decision_alternative_id=decision_alternative_id,
+            project_context=project_context,
         )
 
     # ── Switch ApprovalOpen payload ─────────────────────────────────────
