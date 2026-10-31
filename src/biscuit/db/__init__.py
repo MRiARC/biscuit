@@ -6,6 +6,8 @@ from biscuit.db.session import (
     TRIGGERS_SQL_PATH,
     apply_async_triggers,
     apply_triggers,
+    bootstrap_async_postgres_extensions,
+    bootstrap_postgres_extensions,
     get_async_database_url,
     get_async_engine,
     get_async_session,
@@ -15,6 +17,7 @@ from biscuit.db.session import (
     get_triggers_sql,
     init_async_db,
     init_db,
+    split_sql_statements,
 )
 
 __all__ = [
@@ -23,6 +26,8 @@ __all__ = [
     "TRIGGERS_SQL_PATH",
     "apply_async_triggers",
     "apply_triggers",
+    "bootstrap_async_postgres_extensions",
+    "bootstrap_postgres_extensions",
     "get_async_database_url",
     "get_async_engine",
     "get_async_session",
@@ -32,4 +37,5 @@ __all__ = [
     "get_triggers_sql",
     "init_async_db",
     "init_db",
+    "split_sql_statements",
 ]

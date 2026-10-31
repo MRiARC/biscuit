@@ -264,10 +264,19 @@ class IngestService:
                 )
                 current_version = session.exec(v_statement).first()
 
-                if current_version and current_version.content_hash == content_hash:
+                is_restoration = (
+                    current_version is not None
+                    and current_version.edit_state == MessageEditState.DELETED
+                )
+
+                if (
+                    current_version
+                    and not is_restoration
+                    and current_version.content_hash == content_hash
+                ):
                     unchanged_count += 1
                 else:
-                    # Message content has changed remotely - rotate version!
+                    # Message content changed remotely, or post was restored from deletion
                     next_version_num = (
                         current_version.version_number + 1 if current_version else 1
                     )
@@ -276,6 +285,11 @@ class IngestService:
                         session.add(current_version)
                         versions_rotated += 1
 
+                    edit_reason = (
+                        "Remote post restored from deletion"
+                        if is_restoration
+                        else "Remote edit detected during ingestion"
+                    )
                     new_version = SourceMessageVersion(
                         message_id=existing_message.id,
                         version_number=next_version_num,
@@ -283,7 +297,8 @@ class IngestService:
                         content_hash=content_hash,
                         is_current=True,
                         edit_state=MessageEditState.EDITED,
-                        edit_reason="Remote edit detected during ingestion",
+                        edit_reason=edit_reason,
+                        deleted_at=None,
                         derived_normalized_content=normalize_line_endings(
                             msg_payload.raw_content
                         ),
@@ -512,7 +527,16 @@ class IngestService:
                 v_result = await session.exec(v_statement)
                 current_version = v_result.first()
 
-                if current_version and current_version.content_hash == content_hash:
+                is_restoration = (
+                    current_version is not None
+                    and current_version.edit_state == MessageEditState.DELETED
+                )
+
+                if (
+                    current_version
+                    and not is_restoration
+                    and current_version.content_hash == content_hash
+                ):
                     unchanged_count += 1
                 else:
                     next_version_num = (
@@ -523,6 +547,11 @@ class IngestService:
                         session.add(current_version)
                         versions_rotated += 1
 
+                    edit_reason = (
+                        "Remote post restored from deletion"
+                        if is_restoration
+                        else "Remote edit detected during ingestion"
+                    )
                     new_version = SourceMessageVersion(
                         message_id=existing_message.id,
                         version_number=next_version_num,
@@ -530,7 +559,8 @@ class IngestService:
                         content_hash=content_hash,
                         is_current=True,
                         edit_state=MessageEditState.EDITED,
-                        edit_reason="Remote edit detected during ingestion",
+                        edit_reason=edit_reason,
+                        deleted_at=None,
                         derived_normalized_content=normalize_line_endings(
                             msg_payload.raw_content
                         ),

@@ -1,6 +1,7 @@
 """Database engine, connection pooling, and session management."""
 
 import os
+import re
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
@@ -19,11 +20,132 @@ TRIGGERS_SQL_PATH = os.path.join(
 
 
 def get_triggers_sql() -> str:
-    """Read the canonical PostgreSQL trigger migration SQL script."""
-    if os.path.exists(TRIGGERS_SQL_PATH):
-        with open(TRIGGERS_SQL_PATH, encoding="utf-8") as f:
-            return f.read()
-    return ""
+    """Read the canonical PostgreSQL trigger migration SQL script.
+
+    Fails closed if the migration script is missing or empty to prevent running
+    unprotected without critical audit and provenance triggers.
+    """
+    if not os.path.exists(TRIGGERS_SQL_PATH):
+        raise FileNotFoundError(
+            f"PostgreSQL triggers migration script not found at {TRIGGERS_SQL_PATH}. "
+            "Ensure biscuit package data includes db/migrations/triggers.sql."
+        )
+    with open(TRIGGERS_SQL_PATH, encoding="utf-8") as f:
+        content = f.read().strip()
+        if not content:
+            raise ValueError(
+                f"PostgreSQL triggers migration script at {TRIGGERS_SQL_PATH} is empty."
+            )
+        return content
+
+
+def split_sql_statements(sql: str) -> list[str]:
+    """Split a SQL script into individual statements.
+
+    Preserves PL/pgSQL dollar-quoted blocks ($$...$$ or $tag$...$tag$),
+    single-quoted string literals, and comment blocks so multi-statement
+    scripts can be executed reliably via SQLAlchemy and asyncpg.
+    """
+    statements = []
+    current: list[str] = []
+    i = 0
+    n = len(sql)
+    dollar_tag: str | None = None
+    in_string = False
+    in_line_comment = False
+    in_block_comment = False
+
+    while i < n:
+        # 1. Single-line comments
+        if in_line_comment:
+            if sql[i] == "\n":
+                in_line_comment = False
+            current.append(sql[i])
+            i += 1
+            continue
+
+        # 2. Multi-line block comments
+        if in_block_comment:
+            if sql[i : i + 2] == "*/":
+                in_block_comment = False
+                current.append("*/")
+                i += 2
+                continue
+            current.append(sql[i])
+            i += 1
+            continue
+
+        # 3. Inside dollar-quoted body ($$...$$ or $tag$...$tag$)
+        if dollar_tag is not None:
+            tag_len = len(dollar_tag)
+            if sql[i : i + tag_len] == dollar_tag:
+                current.append(dollar_tag)
+                i += tag_len
+                dollar_tag = None
+            else:
+                current.append(sql[i])
+                i += 1
+            continue
+
+        # 4. Inside standard single-quoted string literal
+        if in_string:
+            if sql[i] == "'":
+                if i + 1 < n and sql[i + 1] == "'":
+                    current.append("''")
+                    i += 2
+                    continue
+                else:
+                    in_string = False
+                    current.append("'")
+                    i += 1
+                    continue
+            current.append(sql[i])
+            i += 1
+            continue
+
+        # 5. Outside string / comment / dollar-quote: check transitions
+        if sql[i : i + 2] == "--":
+            in_line_comment = True
+            current.append("--")
+            i += 2
+            continue
+
+        if sql[i : i + 2] == "/*":
+            in_block_comment = True
+            current.append("/*")
+            i += 2
+            continue
+
+        if sql[i] == "'":
+            in_string = True
+            current.append("'")
+            i += 1
+            continue
+
+        if sql[i] == "$":
+            match = re.match(r"\$[A-Za-z0-9_]*\$", sql[i:])
+            if match:
+                dollar_tag = match.group(0)
+                current.append(dollar_tag)
+                i += len(dollar_tag)
+                continue
+
+        if sql[i] == ";":
+            stmt = "".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            i += 1
+            continue
+
+        current.append(sql[i])
+        i += 1
+
+    rem = "".join(current).strip()
+    if rem:
+        statements.append(rem)
+
+    return statements
 
 
 def get_database_url() -> str:
@@ -61,44 +183,62 @@ def get_async_engine(db_url: str | None = None, echo: bool = False) -> AsyncEngi
     return create_async_engine(async_url, echo=echo, connect_args=connect_args)
 
 
+def bootstrap_postgres_extensions(engine) -> None:
+    """Pre-schema phase: install required PostgreSQL extensions prior to table creation."""
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+            conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto;"))
+
+
+async def bootstrap_async_postgres_extensions(async_engine: AsyncEngine) -> None:
+    """Asynchronously install required PostgreSQL extensions prior to table creation."""
+    if async_engine.dialect.name == "postgresql":
+        async with async_engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+            await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto;"))
+
+
 def apply_triggers(engine=None) -> None:
-    """Execute triggers.sql against a PostgreSQL database engine."""
+    """Execute triggers.sql against a PostgreSQL database engine statement-by-statement."""
     target_engine = engine or get_engine()
     if target_engine.dialect.name == "postgresql":
         sql = get_triggers_sql()
-        if sql.strip():
-            with target_engine.begin() as conn:
-                # Raw driver execution for multi-statement PL/pgSQL blocks
-                raw_conn = conn.connection
-                if hasattr(raw_conn, "cursor"):
-                    raw_conn.cursor().execute(sql)
-                else:
-                    conn.execute(text(sql))
+        statements = split_sql_statements(sql)
+        with target_engine.begin() as conn:
+            for stmt in statements:
+                if stmt.strip():
+                    conn.execute(text(stmt))
 
 
 async def apply_async_triggers(async_engine: AsyncEngine | None = None) -> None:
-    """Execute triggers.sql asynchronously against a PostgreSQL database engine."""
+    """Execute triggers.sql asynchronously statement-by-statement for asyncpg compatibility."""
     target_engine = async_engine or get_async_engine()
     if target_engine.dialect.name == "postgresql":
         sql = get_triggers_sql()
-        if sql.strip():
-            async with target_engine.begin() as conn:
-                def _exec_sync(sync_conn):
-                    raw_conn = sync_conn.connection
-                    if hasattr(raw_conn, "cursor"):
-                        raw_conn.cursor().execute(sql)
-                    else:
-                        sync_conn.execute(text(sql))
-
-                await conn.run_sync(_exec_sync)
+        statements = split_sql_statements(sql)
+        async with target_engine.begin() as conn:
+            for stmt in statements:
+                if stmt.strip():
+                    await conn.execute(text(stmt))
 
 
 def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
-    """Create all SQLModel tables in database and bootstrap triggers on PostgreSQL."""
+    """Create all SQLModel tables in database and bootstrap triggers on PostgreSQL.
+
+    Executes a pre-schema extension phase (ensuring pgvector is available before
+    tables with vector columns are created), then creates tables, then executes triggers.
+    """
     import biscuit.models  # noqa: F401
 
     target_engine = engine or get_engine()
+    if target_engine.dialect.name == "postgresql":
+        bootstrap_postgres_extensions(target_engine)
+
     SQLModel.metadata.create_all(target_engine)
+
     if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
         apply_triggers(target_engine)
 
@@ -107,12 +247,20 @@ async def init_async_db(
     async_engine: AsyncEngine | None = None,
     apply_postgres_triggers: bool = True,
 ) -> None:
-    """Asynchronously create all SQLModel tables in database and bootstrap triggers."""
+    """Asynchronously create all SQLModel tables in database and bootstrap triggers.
+
+    Ensures pgvector extension is created prior to table metadata creation, and
+    executes triggers statement-by-statement to prevent asyncpg multi-command errors.
+    """
     import biscuit.models  # noqa: F401
 
     target_engine = async_engine or get_async_engine()
+    if target_engine.dialect.name == "postgresql":
+        await bootstrap_async_postgres_extensions(target_engine)
+
     async with target_engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+
     if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
         await apply_async_triggers(target_engine)
 

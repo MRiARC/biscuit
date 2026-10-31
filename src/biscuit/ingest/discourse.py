@@ -99,16 +99,33 @@ class DiscourseAdapter(BaseIngestAdapter):
         loaded_ids = {p.get("id") for p in posts_data if "id" in p}
         missing_ids = [pid for pid in stream_ids if pid not in loaded_ids]
 
-        if missing_ids and client:
-            for i in range(0, len(missing_ids), chunk_size):
-                chunk = missing_ids[i : i + chunk_size]
-                fetched_posts = self.fetch_topic_posts_chunk(
-                    base_url=base_url,
-                    topic_id=topic_id,
-                    post_ids=chunk,
-                    client=client,
+        if missing_ids:
+            if client is not None:
+                for i in range(0, len(missing_ids), chunk_size):
+                    chunk = missing_ids[i : i + chunk_size]
+                    fetched_posts = self.fetch_topic_posts_chunk(
+                        base_url=base_url,
+                        topic_id=topic_id,
+                        post_ids=chunk,
+                        client=client,
+                    )
+                    posts_data.extend(fetched_posts)
+            elif base_url:
+                with httpx.Client() as internal_client:
+                    for i in range(0, len(missing_ids), chunk_size):
+                        chunk = missing_ids[i : i + chunk_size]
+                        fetched_posts = self.fetch_topic_posts_chunk(
+                            base_url=base_url,
+                            topic_id=topic_id,
+                            post_ids=chunk,
+                            client=internal_client,
+                        )
+                        posts_data.extend(fetched_posts)
+            else:
+                raise ValueError(
+                    f"Discourse stream contains {len(missing_ids)} un-fetched post IDs "
+                    "but neither an HTTP client nor a valid base_url was supplied."
                 )
-                posts_data.extend(fetched_posts)
 
         # Build post_number -> id lookup map for exact reply resolving
         post_num_to_id: dict[int, str] = {}
@@ -145,12 +162,13 @@ class DiscourseAdapter(BaseIngestAdapter):
 
             post_permalink = f"{canonical_url}/{post_number}"
 
+            # Upstream deletion markers (distinguished from moderation flags)
             is_deleted = bool(
                 post.get("deleted_at")
                 or post.get("user_deleted")
-                or post.get("hidden")
             )
-            delete_reason = "Discourse post marked deleted/hidden" if is_deleted else None
+            delete_reason = "Discourse post marked deleted by user/moderator" if is_deleted else None
+            is_hidden = bool(post.get("hidden", False))
 
             msg_payload = RawMessagePayload(
                 external_message_id=f"post_{post_id}",
@@ -169,6 +187,7 @@ class DiscourseAdapter(BaseIngestAdapter):
                     "reads": post.get("reads", 0),
                     "score": post.get("score", 0),
                     "reply_count": post.get("reply_count", 0),
+                    "hidden": is_hidden,
                 },
             )
             messages.append(msg_payload)

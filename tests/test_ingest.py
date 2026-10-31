@@ -1,7 +1,9 @@
 """Unit and integration tests for universal ingestion adapters and versioning."""
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from sqlmodel import Session, create_engine, select
 
@@ -514,3 +516,240 @@ def test_mbox_byte_level_non_utf8():
     thread = adapter.parse_payload(raw_email_bytes, project_context="test/repo")
     assert len(thread.messages) == 1
     assert "\xe9" in thread.messages[0].raw_content
+
+
+def test_discourse_hidden_post_not_marked_deleted():
+    """Verify that a moderated/hidden Discourse post is not marked as deleted, but preserves hidden metadata."""
+    adapter = DiscourseAdapter()
+    data = {
+        "id": 101,
+        "title": "Moderated Topic",
+        "slug": "moderated-topic",
+        "post_stream": {
+            "posts": [
+                {
+                    "id": 11,
+                    "post_number": 1,
+                    "user_id": 1,
+                    "username": "mod_user",
+                    "raw": "Flagged under review",
+                    "hidden": True,
+                },
+                {
+                    "id": 12,
+                    "post_number": 2,
+                    "user_id": 2,
+                    "username": "del_user",
+                    "raw": "Deleted post",
+                    "deleted_at": "2024-01-01T00:00:00Z",
+                    "hidden": True,
+                },
+            ],
+            "stream": [11, 12],
+        },
+    }
+    payload = adapter.parse_payload(data=data, project_context="python/cpython")
+    assert len(payload.messages) == 2
+
+    # Post 1: Hidden but not deleted
+    msg1 = payload.messages[0]
+    assert msg1.is_deleted is False
+    assert msg1.metadata.get("hidden") is True
+
+    # Post 2: Deleted (has deleted_at)
+    msg2 = payload.messages[1]
+    assert msg2.is_deleted is True
+    assert msg2.metadata.get("hidden") is True
+
+
+def test_discourse_internal_client_pagination_with_mock(monkeypatch):
+    """Verify DiscourseAdapter uses managed internal HTTP client when client=None and base_url is supplied."""
+    adapter = DiscourseAdapter()
+    data = {
+        "id": 500,
+        "title": "Paginated Topic",
+        "slug": "paginated-topic",
+        "post_stream": {
+            "posts": [
+                {"id": 100, "post_number": 1, "user_id": 1, "username": "alice", "raw": "Initial post"},
+            ],
+            "stream": [100, 200, 300],
+        },
+    }
+
+    def mock_get(url, *args, **kwargs):
+        params = kwargs.get("params", [])
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        pids = [val for key, val in params if key == "post_ids[]"]
+        posts = [
+            {
+                "id": pid,
+                "post_number": pid // 100,
+                "user_id": pid // 100,
+                "username": f"user_{pid}",
+                "raw": f"Post {pid}",
+            }
+            for pid in pids
+        ]
+        mock_response.json.return_value = {"post_stream": {"posts": posts}}
+        return mock_response
+
+    monkeypatch.setattr(httpx.Client, "get", mock_get)
+    payload = adapter.parse_payload(
+        data=data,
+        project_context="python/cpython",
+        base_url="https://forum.example.com",
+        chunk_size=1,
+    )
+
+    # Assert every stream ID is accounted for across multiple chunks
+    assert len(payload.messages) == 3
+    assert payload.messages[0].external_message_id == "post_100"
+    assert payload.messages[1].external_message_id == "post_200"
+    assert payload.messages[2].external_message_id == "post_300"
+
+    # Also verify that missing IDs without client or base_url raises ValueError
+    with pytest.raises(ValueError, match="neither an HTTP client nor a valid base_url"):
+        adapter.parse_payload(data=data, project_context="python/cpython", base_url="")
+
+
+def test_live_to_deleted_to_restored_lifecycle():
+    """Verify live -> deleted -> restored (same content bytes) rotates versions and clears deleted_at."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    init_db(engine)
+
+    msg = RawMessagePayload(
+        external_message_id="post_cycle_1",
+        author_platform_id="u_cycle",
+        author_handle="charlie",
+        author_name="Charlie",
+        original_timestamp=datetime.now(UTC),
+        canonical_permalink="https://example.com/cycle/1",
+        raw_content="Valuable restored content",
+    )
+    thread = RawThreadPayload(
+        source_platform=PlatformType.DISCOURSE,
+        project_context="python/cpython",
+        external_thread_id="topic_cycle",
+        title="Lifecycle Test",
+        canonical_url="https://example.com/cycle",
+        messages=[msg],
+    )
+
+    # 1. Ingest initial live version (v1, ORIGINAL)
+    with Session(engine) as session:
+        r1 = IngestService.ingest_thread(session, thread)
+        session.commit()
+    assert r1.messages_created == 1
+    assert r1.versions_created == 1
+
+    # 2. Ingest deletion (v2, DELETED)
+    del_msg = msg.model_copy(update={"is_deleted": True, "delete_reason": "Author flagged for deletion"})
+    thread_del = thread.model_copy(update={"messages": [del_msg]})
+    with Session(engine) as session:
+        r2 = IngestService.ingest_thread(session, thread_del)
+        session.commit()
+    assert r2.versions_rotated == 1
+    assert r2.versions_created == 1
+
+    with Session(engine) as session:
+        v2 = session.exec(
+            select(SourceMessageVersion).where(
+                SourceMessageVersion.is_current == True
+            )
+        ).first()
+        assert v2 is not None
+        assert v2.version_number == 2
+        assert v2.edit_state == MessageEditState.DELETED
+        assert v2.deleted_at is not None
+
+    # 3. Ingest restored post with EXACT SAME content bytes
+    restored_msg = msg.model_copy(update={"is_deleted": False, "delete_reason": None})
+    thread_restored = thread.model_copy(update={"messages": [restored_msg]})
+    with Session(engine) as session:
+        r3 = IngestService.ingest_thread(session, thread_restored)
+        session.commit()
+    assert r3.versions_rotated == 1
+    assert r3.versions_created == 1
+    assert r3.unchanged_count == 0
+
+    with Session(engine) as session:
+        v3 = session.exec(
+            select(SourceMessageVersion).where(
+                SourceMessageVersion.is_current == True
+            )
+        ).first()
+        assert v3 is not None
+        assert v3.version_number == 3
+        assert v3.is_current is True
+        assert v3.edit_state == MessageEditState.EDITED
+        assert v3.deleted_at is None
+        assert v3.raw_content == "Valuable restored content"
+        assert v3.edit_reason == "Remote post restored from deletion"
+
+    # 4. Ingesting again while still live is an idempotent no-op
+    with Session(engine) as session:
+        r4 = IngestService.ingest_thread(session, thread_restored)
+        session.commit()
+    assert r4.unchanged_count == 1
+    assert r4.versions_created == 0
+
+
+@pytest.mark.anyio
+async def test_async_live_to_deleted_to_restored_lifecycle():
+    """Verify async live -> deleted -> restored (same content bytes) state transitions."""
+    engine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_async_db(engine)
+
+    msg = RawMessagePayload(
+        external_message_id="post_async_cycle_1",
+        author_platform_id="u_acycle",
+        author_handle="dana",
+        author_name="Dana",
+        original_timestamp=datetime.now(UTC),
+        canonical_permalink="https://example.com/async_cycle/1",
+        raw_content="Async valuable content",
+    )
+    thread = RawThreadPayload(
+        source_platform=PlatformType.DISCOURSE,
+        project_context="python/cpython",
+        external_thread_id="topic_async_cycle",
+        title="Async Lifecycle Test",
+        canonical_url="https://example.com/async_cycle",
+        messages=[msg],
+    )
+
+    # 1. Live
+    async with get_async_session(engine) as session:
+        await IngestService.async_ingest_thread(session, thread)
+        await session.commit()
+
+    # 2. Deleted
+    del_msg = msg.model_copy(update={"is_deleted": True, "delete_reason": "Transient delete"})
+    thread_del = thread.model_copy(update={"messages": [del_msg]})
+    async with get_async_session(engine) as session:
+        await IngestService.async_ingest_thread(session, thread_del)
+        await session.commit()
+
+    # 3. Restored
+    restored_msg = msg.model_copy(update={"is_deleted": False, "delete_reason": None})
+    thread_restored = thread.model_copy(update={"messages": [restored_msg]})
+    async with get_async_session(engine) as session:
+        r3 = await IngestService.async_ingest_thread(session, thread_restored)
+        await session.commit()
+
+    assert r3.versions_rotated == 1
+    assert r3.versions_created == 1
+
+    async with get_async_session(engine) as session:
+        v_res = await session.exec(
+            select(SourceMessageVersion).where(SourceMessageVersion.is_current == True)
+        )
+        current_v = v_res.first()
+        assert current_v is not None
+        assert current_v.version_number == 3
+        assert current_v.edit_state == MessageEditState.EDITED
+        assert current_v.deleted_at is None
+        assert current_v.edit_reason == "Remote post restored from deletion"
+
