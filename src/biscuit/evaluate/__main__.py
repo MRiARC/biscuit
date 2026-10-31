@@ -45,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.stream3:
         try:
             from biscuit.extract.pipeline import ExtractionPipeline
+
             from .stream3_adapter import stream3_predictor
 
             predictor = stream3_predictor(ExtractionPipeline())
