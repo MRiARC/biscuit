@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Parser/parser.c",
-      "diff": "-int parse_args(void)\n+int parse_arguments(void)"
+      "diff": "diff --git a/Parser/parser.c b/Parser/parser.c\n--- a/Parser/parser.c\n+++ b/Parser/parser.c\n@@ -1,1 +1,1 @@\n-int parse_args(void)\n+int parse_arguments(void)"
     }
   ],
   "fixture_origin": "SYNTHETIC"
