@@ -127,7 +127,7 @@ def _validate_unified_diff(file: dict[str, Any]) -> None:
         raise ValueError("PR diff path must be a safe relative repository path")
     diff = file.get("diff")
     if not isinstance(diff, str):
-        raise ValueError("PR patch must be a unified diff string")
+        raise TypeError("PR patch must be a unified diff string")
     lines = diff.splitlines()
     if len(lines) < 5 or lines[:3] != [
         f"diff --git a/{path} b/{path}",
