@@ -385,6 +385,7 @@ Estimated Peak System-Memory Budget (Qwen phase):
 ---
 
 ## 9. Related Specifications & Reference Documents
+* [`docs/TECH_STACK.md`](./TECH_STACK.md): Dedicated Master Technology Stack & Dependency Specification.
 * [`docs/TECH_STACK_AND_ARCHITECTURE.md`](./TECH_STACK_AND_ARCHITECTURE.md): Core language justification (Python vs Go), full module contracts, and PR sequence.
 * [`docs/LIVING_DECISION_INTELLIGENCE.md`](./LIVING_DECISION_INTELLIGENCE.md): Switch agent-session activity integration, Biscuit MCP tools, approval security, and draft/outcome separation.
 * [`docs/STORAGE_AND_RETRIEVAL.md`](./STORAGE_AND_RETRIEVAL.md): Canonical PostgreSQL DDL, composite foreign keys, append-only triggers, and vector indexes.
