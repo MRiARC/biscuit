@@ -10,7 +10,7 @@ import re
 import sqlite3
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -32,42 +32,80 @@ def _plain_html(content: str) -> str:
     return parser.text()
 
 
+def _read_topic_json(url: str, allowed_host: str) -> dict:
+    """Read bounded JSON and reject cross-host or non-HTTPS redirects."""
+    request = Request(url, headers={"User-Agent": "Biscuit/0.1 (read-only)"})
+    with urlopen(request, timeout=20) as response:
+        final = urlparse(response.url)
+        if final.scheme != "https" or final.hostname != allowed_host:
+            raise ValueError("Cross-origin or non-HTTPS Discourse redirect refused")
+        data = response.read(8_000_001)
+        if len(data) > 8_000_000:
+            raise ValueError("Discourse response exceeds 8 MB")
+    payload = json.loads(data)
+    if not isinstance(payload, dict):
+        raise ValueError("Discourse response must be a JSON object")
+    return payload
+
+
 def _fetch_discourse(url: str) -> dict:
+    """Read all posts in a topic using Discourse post-stream pagination."""
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Discourse URLs must be HTTPS and must not contain credentials")
     if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
         raise ValueError("Localhost is not a valid Discourse ingestion host")
-    if not re.fullmatch(r"/t/[^/?#]+/\d+(?:/\d+)?/?", parsed.path):
+    match = re.fullmatch(r"/t/([^/?#]+)/(\d+)(?:/\d+)?/?", parsed.path)
+    if match is None:
         raise ValueError("Expected Discourse topic URL in /t/slug/topic-id form")
-    topic_url = f"https://{parsed.netloc}{parsed.path.rstrip('/')}.json"
-    request = Request(topic_url, headers={"User-Agent": "Biscuit/0.1 (read-only)"})
-    with urlopen(request, timeout=20) as response:
-        if response.url != topic_url:
-            raise ValueError("Unexpected redirect while ingesting Discourse topic")
-        body = response.read(8_000_001)
-        if len(body) > 8_000_000:
-            raise ValueError("Discourse response too large")
-    payload = json.loads(body)
+    slug, topic_id = match.groups()
+    root = f"https://{parsed.netloc}/t/{slug}/{topic_id}"
+    payload = _read_topic_json(root + ".json", parsed.hostname)
     stream = payload.get("post_stream", {})
-    posts = stream.get("posts", [])
-    if len(stream.get("stream", [])) > len(posts):
-        raise ValueError("Partial Discourse post stream; use a complete export")
-    if not posts:
+    initial = stream.get("posts", [])
+    if not isinstance(initial, list) or not initial:
         raise ValueError("Discourse topic contained no posts")
-    return {
-        "thread_id": str(payload.get("id")),
-        "url": url,
-        "title": str(payload.get("title", "")),
-        "messages": [
+    posts_by_id = {int(post["id"]): post for post in initial}
+    ordered_ids = [int(value) for value in stream.get("stream", [])]
+    if not ordered_ids:
+        ordered_ids = [int(post["id"]) for post in initial]
+    if len(ordered_ids) != len(set(ordered_ids)):
+        raise ValueError("Duplicate Discourse post IDs in stream")
+    missing = [post_id for post_id in ordered_ids if post_id not in posts_by_id]
+    for offset in range(0, len(missing), 20):
+        chunk = missing[offset:offset + 20]
+        query = urlencode([("post_ids[]", str(post_id)) for post_id in chunk])
+        page_url = f"https://{parsed.netloc}/t/{topic_id}/posts.json?{query}"
+        page = _read_topic_json(page_url, parsed.hostname)
+        fetched = page.get("post_stream", {}).get("posts", page.get("posts", []))
+        for post in fetched:
+            post_id = int(post["id"])
+            if post_id not in chunk:
+                raise ValueError("Unexpected post in Discourse paginated response")
+            posts_by_id[post_id] = post
+    if set(ordered_ids) != set(posts_by_id):
+        raise ValueError("Incomplete or inconsistent Discourse post-stream pagination")
+    messages = []
+    for post_id in ordered_ids:
+        post = posts_by_id[post_id]
+        raw_text = post.get("raw")
+        has_raw = isinstance(raw_text, str)
+        if not has_raw:
+            raw_text = _plain_html(str(post.get("cooked", "")))
+        messages.append(
             {
-                "message_id": str(post["id"]),
+                "message_id": str(post_id),
                 "author": str(post.get("username", "")),
                 "created_at": str(post.get("created_at", "")),
-                "raw_text": str(post.get("raw", "") or _plain_html(post.get("cooked", ""))),
+                "raw_text": raw_text,
+                "content_source": "RAW" if has_raw else "RENDERED_HTML_UNVERIFIED",
             }
-            for post in posts
-        ],
+        )
+    return {
+        "thread_id": str(payload.get("id", topic_id)),
+        "url": url,
+        "title": str(payload.get("title", "")),
+        "messages": messages,
     }
 
 

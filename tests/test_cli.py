@@ -95,3 +95,54 @@ def test_typer_decisions_list_and_export(tmp_path) -> None:
     )
     assert exported.exit_code == 0, exported.output
     assert (tmp_path / "out" / "ADR-001.md").is_file()
+
+
+def test_discourse_ingest_fetches_missing_post_pages(monkeypatch) -> None:
+    from biscuit.cli import storage
+
+    def fake_read_json(url: str, allowed_host: str) -> dict:
+        assert allowed_host == "forum.example.org"
+        if url.endswith("/t/topic/123.json"):
+            return {
+                "id": 123, "title": "Synthetic debate",
+                "post_stream": {
+                    "stream": [11, 12],
+                    "posts": [{
+                        "id": 11, "username": "alice", "created_at": "2026-01-01",
+                        "raw": "First post",
+                    }],
+                },
+            }
+        assert "/t/123/posts.json?" in url
+        assert "post_ids" in url
+        return {
+            "post_stream": {
+                "posts": [{
+                    "id": 12, "username": "bob", "created_at": "2026-01-02",
+                    "cooked": "<p>Second post</p>",
+                }],
+            },
+        }
+
+    monkeypatch.setattr(storage, "_read_topic_json", fake_read_json)
+    result = storage._fetch_discourse("https://forum.example.org/t/topic/123")
+    assert [m["message_id"] for m in result["messages"]] == ["11", "12"]
+    assert result["messages"][0]["content_source"] == "RAW"
+    assert result["messages"][1]["content_source"] == "RENDERED_HTML_UNVERIFIED"
+
+
+def test_discourse_ingest_rejects_incomplete_page(monkeypatch) -> None:
+    from biscuit.cli import storage
+
+    def fake_read_json(url: str, allowed_host: str) -> dict:
+        if url.endswith(".json") and "/posts.json" not in url:
+            return {
+                "id": 123, "post_stream": {
+                    "stream": [11, 12], "posts": [{"id": 11, "raw": "post"}],
+                },
+            }
+        return {"post_stream": {"posts": []}}
+
+    monkeypatch.setattr(storage, "_read_topic_json", fake_read_json)
+    with pytest.raises(ValueError, match="Incomplete"):
+        storage._fetch_discourse("https://forum.example.org/t/topic/123")
