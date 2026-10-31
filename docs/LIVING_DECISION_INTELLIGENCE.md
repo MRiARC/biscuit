@@ -17,7 +17,7 @@ While **Pillar 1 (The Past)** recovers historical knowledge buried across 10 yea
 3. **The Bot Spam Dilemma:** Traditional PR bots that blindly post automated rejection comments annoy maintainers and demoralize contributors with false alarms.
 
 ### Biscuit's Day 1+ Solution Powered by Switch:
-Biscuit integrates with [**`sandbox-quantum/switch`** (v0.31.0)](https://github.com/sandbox-quantum/switch) to turn ephemeral chat into verifiable architectural intelligence through three live workflows:
+Biscuit integrates with [**Switch agent-controller 0.31.0**](https://github.com/sandbox-quantum/switch/tree/7e57cd433a922bc91a00150c106e6ef1f15b1057) (pinned to commit `7e57cd433a922bc91a00150c106e6ef1f15b1057`) to turn ephemeral chat into auditable architectural records through three live workflows:
 1. **Autonomous Live Deliberation & MADR Drafting:** Listens to Slack/Discord architectural threads, detects potential consensus, and presents structured approval suggestion cards.
 2. **Conversational Organizational Brain in Chat:** Allows maintainers to query past decisions in plain English directly inside Slack/Discord (`@biscuit did we ever consider X?`).
 3. **Human-in-the-Loop (HITL) PR Guardrail Routing:** Routes PR diff collision warnings to maintainers in Slack for interactive confirmation before commenting on GitHub.
@@ -57,9 +57,9 @@ flowchart TD
 
 ## 2. Switch Integration Architecture (MCP & FastMCP SDK)
 
-The [Switch platform](https://github.com/sandbox-quantum/switch) (pinned to `v0.31.0`) provides multi-platform chat connectors (Slack, Discord, Mattermost), agent session activity routes (`/agent-sessions/{session}/approvals`), and native support for the open **Model Context Protocol (MCP)** specification (2024-11-05).
+The [Switch platform and agent-controller 0.31.0 release](https://github.com/sandbox-quantum/switch/tree/7e57cd433a922bc91a00150c106e6ef1f15b1057) provides the collaboration/agent-session boundary. The implementation is pinned to upstream commit `7e57cd433a922bc91a00150c106e6ef1f15b1057`; the [activity routes at that exact revision](https://github.com/sandbox-quantum/switch/blob/7e57cd433a922bc91a00150c106e6ef1f15b1057/core/switch_core/bridges/agent/api/activity_routes.py) include `POST /agent-sessions/{session_id}/approvals`, `POST /agent-sessions/{session_id}/approvals/{request_id}/close`, `POST /agent-sessions/{session_id}/approvals/{request_id}/delivered`, and `GET /agent-sessions/approvals/outcomes`.
 
-Biscuit implements an MCP server using the Python **FastMCP SDK** (`fastmcp>=3.2.0,<4`), exposing three tools to Switch:
+**MCP** is the tool protocol. Biscuit implements its own MCP server using the Python **FastMCP SDK** (`fastmcp>=3.2.0,<4`); Switch is the platform/gateway, not the FastMCP SDK. The integration uses the published API boundary and does not import Switch internal Python modules. Biscuit validates returned actor identity, action, request state, expiry, idempotency, and payload integrity before changing a decision state.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -146,7 +146,7 @@ When Switch streams chat messages for decision drafting:
    - Compute `content_hash` as SHA-256 over UTF-8 bytes of exact `raw_content`. Normalized/cleaned data belongs only in derived fields and never supplies evidence offsets.
 3. **Exact Evidence Spans:** All quotes cited in the drafted decision are stored in `evidence_spans` referencing `source_message_version_id` with exact zero-based character offsets `[start_char, end_char)`:
    - Default status: `UNVERIFIED`.
-   - Promoted to `VERIFIED_EXACT` upon 100% byte-for-byte substring verification.
+   - Promoted to `VERIFIED_EXACT` only when the exact decoded-string slice equals the quote and SHA-256 over the quote's UTF-8 bytes matches `content_hash`. Offsets are Unicode code-point indices, not UTF-8 byte offsets.
 4. **Draft Linkage:** The record in `living_decision_drafts` stores:
    - `source_thread_id`: Foreign key to `source_threads(id)`.
    - `initiating_message_id` and `initiating_message_version_id`: Composite foreign keys prove the version belongs to the initiating message and that message belongs to the declared thread.
@@ -154,7 +154,7 @@ When Switch streams chat messages for decision drafting:
    - Claim evidence is stored one row per span in `living_decision_draft_evidence`, with foreign keys rather than an unenforced JSON UUID array.
 
 > [!IMPORTANT]
-> **Evidentiary Parity Invariant:** A living decision drafted from Slack or Discord possesses the exact same tamper-proof, auditable provenance as a historical decision mined from a PEP mailing list.
+> **Evidentiary Parity Invariant:** A living decision drafted from Slack or Discord uses the same append-only source-version and evidence-span controls as a historical decision. These controls provide auditable provenance under the documented database-role and trigger assumptions; no claim is made that storage is immutable against privileged administrators.
 
 ---
 
@@ -251,9 +251,9 @@ During pitch day, this architecture enables the ultimate dual demo:
 
 1. **The Historical Proof (Pillar 1):**
    - Run `python -m biscuit.evaluate --benchmark pep-505`.
-   - Show the 100% exact character offset match, zero hallucinations, and the withheld ground-truth scorecard.
+   - Show exact character-offset verification results, any unverified spans, and the withheld ground-truth scorecard; report target metrics separately from measured results.
 2. **The Living CNCF Slack $\rightarrow$ GitHub Moat (Pillar 2):**
    - **Step 1:** Live Slack channel: Maintainers debate in `#sig-node`: *"Let's reject sync disk I/O in worker threads because of thread starvation."*
-   - **Step 2:** Switch triggers Biscuit, which posts an interactive **Approval Card** in Slack. Maintainer clicks **[Approve Draft]** and sets Approach B to `REJECTED`.
+   - **Step 2:** Switch triggers Biscuit, which posts an interactive **Approval Card** in Slack. A maintainer clicking **[Approve Draft]** publishes only the living draft (`MAINTAINER_APPROVED`); it does not change Approach B's lifecycle state. A separate outcome action may mark an alternative `ACCEPTED`, `DEFERRED`, `DISPUTED`, or `UNRESOLVED`. `REJECTED` requires a same-alternative `VERIFIED_EXACT` `RULING` and the documented authority quorum.
    - **Step 3:** Live GitHub PR: A team member opens PR #412 touching the worker thread code.
    - **Step 4:** Biscuit evaluates the 4 authorization invariants, routes an approval card to maintainers, and upon click, posts the verifiable warning on the PR diff within seconds.

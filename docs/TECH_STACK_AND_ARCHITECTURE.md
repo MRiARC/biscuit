@@ -86,12 +86,14 @@ Time-Sliced Model Execution Schedule:
 └────────────────────────────────────────────────────────┘
 ```
 
-* **Full-Stack Memory Budget (Engineering Estimate):**
-  - OS Overhead & Host Cache: ~1.5 GB
-  - PostgreSQL 16 + pgvector (Docker): ~350 MB
-  - Python Runtime & Services: ~250 MB
-  - Peak Model Memory (Qwen 2.5-Coder 7B Q4_K_M + KV Cache): ~4.7 GB
-  - **Estimated Peak Total RSS:** **~6.8 GB**, providing $>1.0$ GB safety headroom under the 8 GB boundary. These figures represent design targets subject to empirical profiling during benchmark runs.
+* **Full-Stack System-Memory Budget (Unmeasured Engineering Estimate):**
+  - OS, host daemons, and system cache: ~1.50 GB
+  - PostgreSQL 16 + pgvector (Docker): ~0.35 GB
+  - Python runtime and async services: ~0.25 GB
+  - Resident `nomic-embed-text-v1.5` model: ~0.28 GB
+  - Qwen 2.5-Coder 7B Q4_K_M model weights: ~4.40 GB
+  - KV cache and context overhead: ~0.30 GB
+  - **Estimated system-memory total:** **~7.08 GB** (`1.50 + 0.35 + 0.25 + 0.28 + 4.40 + 0.30`), leaving arithmetic headroom of ~0.92 GB to an 8.00 GB limit. This is a planning estimate, not measured peak process RSS or proof of fit. Measure both per-process RSS and complete host memory under the target workload.
 * **Sequential Execution:** Models are loaded and offloaded sequentially via the local Ollama / llama.cpp runtime during batch historical ingestion. In online PR Watchdog daemon mode, only `nomic-embed` and `qwen2.5-coder` remain resident.
 
 ---
