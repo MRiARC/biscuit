@@ -18,6 +18,15 @@ shipping mutable repository state.
 | diverging parent renames | `test_divergent_merge_paths_are_ambiguous` | unknown confidence and stop automated migration |
 | multi-parent octopus merge | `test_octopus_merge_inspects_all_three_parents` | record *all* parent comparisons, including first parent |
 | C function + file rename | `test_c_symbol_renamed_through_forward_git_lineage` | C lineage uses same forward Git algorithm |
+| comprehension/genexp/walrus bindings | `test_comprehension_and_walrus_rename_invariance` | capture bindings before use |
+| fallback C literal/comment braces | `test_c_fallback_ignores_braces_in_literals_and_comments` | exact locators despite quotes/comments |
+| edit then move below Git threshold | `test_edit_then_move_uses_latest_verified_symbol_exemplar` | exemplar follows verified edits |
+| one-sided clean merge | `test_clean_merge_with_only_mainline_edit_never_claims_first_parent_selection` | no false conflict choice |
+| post-deletion unrelated change | `test_dead_lineage_has_no_current_state_on_later_unrelated_commit` | no false CURRENT event |
+| sanitized local Git environment | `test_git_environment_does_not_redirect_lineage` | ambient Git variables cannot redirect reads |
+| compact audit replay | `test_noop_history_compacts_lineage_events_but_preserves_replay_digest` | transitions + commit DAG digest |
+| stream-1 enum vocabulary | `test_storage_transition_labels_match_stream_one_enum` | storage mapper uses canonical values |
+
 | Python and C real Tree-sitter | `test_real_tree_sitter_both_grammars_and_git_lineage` | both grammars and parser-proven lineage with strict opt-in |
 | Tier-1 anchor model contract | `test_anchor_contract_serialization_and_authority_scope` | DB-bound alternative and exact schema keys |
 | DDL lineage record mapping | `test_lineage_storage_records_cover_canonical_ddl` | actor-bound anchor ID, target commit, forward strategy, UTC timestamp |
@@ -35,3 +44,14 @@ consume `LineageResult.safe_for_automatic_migration` as an additional mandatory
 *authorization* gate. Neither Git file similarity nor AST equality by itself grants a
 maintainer-authoritative warning. Performance optimization/caching should be added only
 with a CPython-scale benchmark and without weakening provenance/abstention semantics.
+**Copy-scan performance:** Exhaustive Git `--find-copies-harder` is opt-in via
+`trace_lineage(..., find_copies_harder=True)`. Default traversal retains
+`-M80% -C -B` and structurally verifies touched-file moves/copies.
+Single-parent no-op records are suppressed; transition evidence includes a
+SHA-256 digest and count of the traversed commit IDs for replay. This avoids
+per-anchor persisted no-op rows but does not establish CPython-scale throughput.
+
+**Python fingerprint provenance:** AST dumps vary by CPython interpreter;
+both Python stdlib and hybrid Tree-sitter+stdlib backends record interpreter
+version in `parser_version`. Cross-version fingerprints are not comparable
+without re-parsing the input under the same Python interpreter.
