@@ -253,3 +253,43 @@ def test_typer_cli_no_simulate_remains_unmeasured(tmp_path) -> None:
     )
     assert response.exit_code == 2
     assert "NOT_MEASURED" in response.output
+
+
+def test_ingest_canonical_snapshot_reuses_evaluation_hash_contract(tmp_path, monkeypatch) -> None:
+    from biscuit.cli import storage
+    from biscuit.evaluate.fixtures import verify_thread
+
+    record = {
+        "thread_id": "topic-1",
+        "url": "https://example.org/t/topic/1",
+        "title": "Synthetic thread",
+        "messages": [
+            {
+                "message_id": "m1", "author": "alice",
+                "created_at": "2026-01-01T00:00:00Z",
+                "raw_text": "This is a synthetic example.",
+                "content_source": "RAW",
+            },
+            {
+                "message_id": "m2", "author": "bob",
+                "created_at": "2026-01-02T00:00:00Z",
+                "raw_text": "Rendered example.",
+                "content_source": "RENDERED_HTML_UNVERIFIED",
+            },
+        ],
+    }
+    monkeypatch.setattr(storage, "_fetch_discourse", lambda _: record.copy())
+    output = tmp_path / "thread.json"
+    assert storage.ingest_discourse(record["url"], tmp_path / "db.sqlite", output) == 2
+    snapshot = json.loads(output.read_text(encoding="utf-8"))
+    assert verify_thread(snapshot) == snapshot["thread_sha256"]
+    assert snapshot["expected_source_message_count"] == 2
+    assert snapshot["source_provenance"]["license_identifier"] == "UNKNOWN_UNVERIFIED"
+    assert snapshot["source_provenance"]["retrieval_date"]
+    assert snapshot["messages"][1]["content_source"] == "RENDERED_HTML_UNVERIFIED"
+    assert snapshot["messages"][0]["author_role"] == "UNVERIFIED"
+    with storage.connect_db(tmp_path / "db.sqlite") as db:
+        stored = json.loads(
+            db.execute("SELECT raw_json FROM threads WHERE thread_id='topic-1'").fetchone()[0]
+        )
+    assert stored["canonical_thread"]["thread_sha256"] == snapshot["thread_sha256"]
