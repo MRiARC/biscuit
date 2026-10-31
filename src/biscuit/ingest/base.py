@@ -38,6 +38,14 @@ class RawMessagePayload(BaseModel):
         ...,
         description="Exact decoded wire string as received; NEVER normalized or trimmed",
     )
+    is_deleted: bool = Field(
+        default=False,
+        description="True if message has been deleted remotely on upstream platform",
+    )
+    delete_reason: str | None = Field(
+        default=None,
+        description="Optional upstream deletion or tombstone reason",
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Platform-specific message metadata"
     )

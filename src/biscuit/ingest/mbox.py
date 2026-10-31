@@ -31,22 +31,31 @@ class MboxAdapter(BaseIngestAdapter):
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
                         try:
-                            return payload.decode(charset, errors="replace")
-                        except (UnicodeDecodeError, LookupError, ValueError):
-                            return payload.decode("utf-8", errors="replace")
-            # If no text/plain found, fallback to first payload
+                            return payload.decode(charset)
+                        except (UnicodeDecodeError, LookupError):
+                            try:
+                                return payload.decode("utf-8")
+                            except UnicodeDecodeError:
+                                return payload.decode("latin-1")
             payload = msg.get_payload(decode=True)
             if isinstance(payload, bytes):
-                return payload.decode("utf-8", errors="replace")
+                charset = msg.get_content_charset() or "utf-8"
+                try:
+                    return payload.decode(charset)
+                except (UnicodeDecodeError, LookupError):
+                    return payload.decode("latin-1")
             return str(payload or "")
         else:
             payload = msg.get_payload(decode=True)
             if isinstance(payload, bytes):
                 charset = msg.get_content_charset() or "utf-8"
                 try:
-                    return payload.decode(charset, errors="replace")
-                except (UnicodeDecodeError, LookupError, ValueError):
-                    return payload.decode("utf-8", errors="replace")
+                    return payload.decode(charset)
+                except (UnicodeDecodeError, LookupError):
+                    try:
+                        return payload.decode("utf-8")
+                    except UnicodeDecodeError:
+                        return payload.decode("latin-1")
             return str(payload or "")
 
     def _clean_subject_for_thread(self, subject: str) -> str:
@@ -61,7 +70,7 @@ class MboxAdapter(BaseIngestAdapter):
 
     def parse_payload(
         self,
-        data: str | bytes | list[email.message.Message],
+        data: str | bytes | list[email.message.Message] | os.PathLike,
         project_context: str,
         archive_base_url: str = "https://mail.python.org/archives",
         **kwargs: Any,
@@ -77,14 +86,13 @@ class MboxAdapter(BaseIngestAdapter):
                 for key in mbox:
                     messages_list.append(mbox.get_message(key))
             else:
-                raw_bytes = data.encode("utf-8") if isinstance(data, str) else data
-                # Check for multiple messages delimited by mbox From_ lines
-                raw_str = raw_bytes.decode("utf-8", errors="replace")
-                chunks = re.split(r"(?:\r?\n)(?=From [^\r\n]+(?:\r?\n))", raw_str)
-                for chunk in chunks:
-                    chunk_bytes = chunk.encode("utf-8")
-                    if chunk.startswith("From "):
-                        # Strip mbox From_ envelope line
+                raw_bytes = data if isinstance(data, bytes) else data.encode("utf-8")
+                # Split at byte level without destructive decoding
+                chunks = re.split(rb"(?:\r?\n)(?=From [^\r\n]+(?:\r?\n))", raw_bytes)
+                for chunk_bytes in chunks:
+                    if not chunk_bytes.strip():
+                        continue
+                    if chunk_bytes.startswith(b"From "):
                         first_newline = chunk_bytes.find(b"\n")
                         if first_newline != -1:
                             chunk_bytes = chunk_bytes[first_newline + 1 :]

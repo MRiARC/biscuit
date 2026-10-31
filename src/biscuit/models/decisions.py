@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Text,
     UniqueConstraint,
@@ -187,6 +188,18 @@ class ProposalOccurrence(UUIDModel, table=True):
         UniqueConstraint(
             "id", "alternative_id", "source_thread_id", name="uq_occurrence_alt_thread"
         ),
+        ForeignKeyConstraint(
+            ["initiating_message_id", "source_thread_id"],
+            ["source_messages.id", "source_messages.thread_id"],
+            name="fk_occurrence_message_thread",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["initiating_message_version_id", "initiating_message_id"],
+            ["source_message_versions.id", "source_message_versions.message_id"],
+            name="fk_occurrence_message_version",
+            ondelete="RESTRICT",
+        ),
         Index("idx_occurrences_alt", "alternative_id"),
         Index("idx_occurrences_thread", "source_thread_id"),
     )
@@ -203,15 +216,10 @@ class ProposalOccurrence(UUIDModel, table=True):
         )
     )
     initiating_message_id: uuid.UUID = Field(
-        sa_column=Column(
-            ForeignKey("source_messages.id", ondelete="RESTRICT"), nullable=False
-        )
+        sa_column=Column(nullable=False)
     )
     initiating_message_version_id: uuid.UUID = Field(
-        sa_column=Column(
-            ForeignKey("source_message_versions.id", ondelete="RESTRICT"),
-            nullable=False,
-        )
+        sa_column=Column(nullable=False)
     )
     occurred_at: datetime = Field(nullable=False)
     proposal_wording_version: str = Field(

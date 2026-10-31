@@ -35,11 +35,20 @@ from biscuit.models import (
 
 @pytest.fixture
 def test_db_session():
-    """Create in-memory SQLite engine and yield transactional session."""
+    """Create in-memory SQLite engine and yield transactional session with FKs enabled."""
+    from sqlalchemy import event
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
     )
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     init_db(engine)
     with Session(engine) as session:
         yield session
@@ -308,3 +317,93 @@ def test_hitl_approval_models(test_db_session: Session):
 
     assert event.id is not None
     assert event.action_taken == "AUTHORIZE_PR_COMMENT"
+
+
+def test_proposal_occurrence_composite_fk_negative(test_db_session: Session):
+    """Negative test: composite FK rejects occurrence pointing to thread A with message from thread B."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import ProposalOccurrence
+
+    # Thread A
+    thread_a = SourceThread(
+        source_platform="DISCOURSE",
+        project_context="python/cpython",
+        external_thread_id="thread_a",
+        title="Thread A",
+        canonical_url="https://example.com/a",
+    )
+    # Thread B
+    thread_b = SourceThread(
+        source_platform="DISCOURSE",
+        project_context="python/cpython",
+        external_thread_id="thread_b",
+        title="Thread B",
+        canonical_url="https://example.com/b",
+    )
+    test_db_session.add(thread_a)
+    test_db_session.add(thread_b)
+    test_db_session.commit()
+
+    # Message belongs to Thread A
+    msg_a = SourceMessage(
+        thread_id=thread_a.id,
+        external_message_id="msg_a_1",
+        original_timestamp=datetime.now(UTC),
+        canonical_permalink="https://example.com/a/1",
+    )
+    test_db_session.add(msg_a)
+    test_db_session.commit()
+
+    v_a = SourceMessageVersion(
+        message_id=msg_a.id,
+        version_number=1,
+        raw_content="Content A",
+        content_hash="0" * 64,
+        is_current=True,
+    )
+    test_db_session.add(v_a)
+
+    decision = Decision(
+        source_thread_id=thread_a.id,
+        title="Decision A",
+        context_summary="Summary",
+    )
+    test_db_session.add(decision)
+    test_db_session.commit()
+
+    alternative = DecisionAlternative(
+        decision_id=decision.id,
+        proposal_text="Alt 1",
+    )
+    test_db_session.add(alternative)
+    test_db_session.commit()
+
+    # Try to insert ProposalOccurrence with source_thread_id = Thread B,
+    # but initiating_message_id = msg_a (which belongs to Thread A).
+    bad_occurrence = ProposalOccurrence(
+        alternative_id=alternative.id,
+        source_thread_id=thread_b.id,  # Thread B!
+        initiating_message_id=msg_a.id,  # Message from Thread A!
+        initiating_message_version_id=v_a.id,
+        occurred_at=datetime.now(UTC),
+        proposal_wording_version="wording",
+        occurrence_context="context",
+        occurrence_outcome="REJECTED",
+    )
+    test_db_session.add(bad_occurrence)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_postgres_vector_column_compilation():
+    """Verify that VectorColumn compiles to VECTOR(768) on PostgreSQL dialect."""
+    from sqlalchemy import Column
+    from sqlalchemy.dialects import postgresql
+
+    from biscuit.models.base import VectorColumn
+
+    col = Column("embedding", VectorColumn(768))
+    compiled = col.type.compile(dialect=postgresql.dialect())
+    assert "VECTOR(768)" in str(compiled).upper()

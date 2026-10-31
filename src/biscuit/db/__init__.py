@@ -3,12 +3,16 @@
 from biscuit.db.session import (
     DEFAULT_ASYNC_SQLITE_URL,
     DEFAULT_SQLITE_URL,
+    TRIGGERS_SQL_PATH,
+    apply_async_triggers,
+    apply_triggers,
     get_async_database_url,
     get_async_engine,
     get_async_session,
     get_database_url,
     get_engine,
     get_session,
+    get_triggers_sql,
     init_async_db,
     init_db,
 )
@@ -16,12 +20,16 @@ from biscuit.db.session import (
 __all__ = [
     "DEFAULT_ASYNC_SQLITE_URL",
     "DEFAULT_SQLITE_URL",
+    "TRIGGERS_SQL_PATH",
+    "apply_async_triggers",
+    "apply_triggers",
     "get_async_database_url",
     "get_async_engine",
     "get_async_session",
     "get_database_url",
     "get_engine",
     "get_session",
+    "get_triggers_sql",
     "init_async_db",
     "init_db",
 ]

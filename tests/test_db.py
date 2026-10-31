@@ -4,12 +4,15 @@ import pytest
 from sqlmodel import select
 
 from biscuit.db.session import (
+    apply_async_triggers,
+    apply_triggers,
     get_async_database_url,
     get_async_engine,
     get_async_session,
     get_database_url,
     get_engine,
     get_session,
+    get_triggers_sql,
     init_async_db,
     init_db,
 )
@@ -24,6 +27,28 @@ def test_database_url_resolution(monkeypatch):
     assert get_async_database_url("sqlite:///foo.db") == "sqlite+aiosqlite:///foo.db"
     assert get_async_database_url("postgresql://user:pass@localhost/db") == "postgresql+asyncpg://user:pass@localhost/db"
     assert get_async_database_url("postgres://user:pass@localhost/db") == "postgresql+asyncpg://user:pass@localhost/db"
+
+
+def test_triggers_sql_loading_and_application():
+    """Verify that triggers.sql exists, is readable, and contains canonical functions."""
+    sql = get_triggers_sql()
+    assert len(sql) > 0
+    assert "enforce_authoritative_alternative_rejection" in sql
+    assert "enforce_discussion_edge_evidence" in sql
+    assert "verify_source_message_version_hash" in sql
+
+    # Test that calling apply_triggers on non-postgres (e.g. SQLite) is safely a no-op
+    engine = get_engine("sqlite:///:memory:")
+    init_db(engine)
+    apply_triggers(engine)
+
+
+@pytest.mark.anyio
+async def test_async_apply_triggers_sqlite_noop():
+    """Verify that apply_async_triggers is a safe no-op on non-postgres."""
+    aengine = get_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_async_db(aengine)
+    await apply_async_triggers(aengine)
 
 
 def test_sync_session_commit_and_query():

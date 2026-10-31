@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine
@@ -11,6 +12,18 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 DEFAULT_SQLITE_URL = "sqlite:///:memory:"
 DEFAULT_ASYNC_SQLITE_URL = "sqlite+aiosqlite:///:memory:"
+
+TRIGGERS_SQL_PATH = os.path.join(
+    os.path.dirname(__file__), "migrations", "triggers.sql"
+)
+
+
+def get_triggers_sql() -> str:
+    """Read the canonical PostgreSQL trigger migration SQL script."""
+    if os.path.exists(TRIGGERS_SQL_PATH):
+        with open(TRIGGERS_SQL_PATH, encoding="utf-8") as f:
+            return f.read()
+    return ""
 
 
 def get_database_url() -> str:
@@ -31,7 +44,6 @@ def get_async_database_url(db_url: str | None = None) -> str:
     """Resolve an asynchronous database URL from a sync or raw URL."""
     url = db_url or get_database_url()
     if url.startswith("sqlite:///"):
-        # Convert sqlite:/// to sqlite+aiosqlite:///
         return url.replace("sqlite:///", "sqlite+aiosqlite:///")
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://")
@@ -49,22 +61,60 @@ def get_async_engine(db_url: str | None = None, echo: bool = False) -> AsyncEngi
     return create_async_engine(async_url, echo=echo, connect_args=connect_args)
 
 
-def init_db(engine=None) -> None:
-    """Create all SQLModel tables in database."""
-    # Ensure all models are imported before creating tables
+def apply_triggers(engine=None) -> None:
+    """Execute triggers.sql against a PostgreSQL database engine."""
+    target_engine = engine or get_engine()
+    if target_engine.dialect.name == "postgresql":
+        sql = get_triggers_sql()
+        if sql.strip():
+            with target_engine.begin() as conn:
+                # Raw driver execution for multi-statement PL/pgSQL blocks
+                raw_conn = conn.connection
+                if hasattr(raw_conn, "cursor"):
+                    raw_conn.cursor().execute(sql)
+                else:
+                    conn.execute(text(sql))
+
+
+async def apply_async_triggers(async_engine: AsyncEngine | None = None) -> None:
+    """Execute triggers.sql asynchronously against a PostgreSQL database engine."""
+    target_engine = async_engine or get_async_engine()
+    if target_engine.dialect.name == "postgresql":
+        sql = get_triggers_sql()
+        if sql.strip():
+            async with target_engine.begin() as conn:
+                def _exec_sync(sync_conn):
+                    raw_conn = sync_conn.connection
+                    if hasattr(raw_conn, "cursor"):
+                        raw_conn.cursor().execute(sql)
+                    else:
+                        sync_conn.execute(text(sql))
+
+                await conn.run_sync(_exec_sync)
+
+
+def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
+    """Create all SQLModel tables in database and bootstrap triggers on PostgreSQL."""
     import biscuit.models  # noqa: F401
 
     target_engine = engine or get_engine()
     SQLModel.metadata.create_all(target_engine)
+    if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
+        apply_triggers(target_engine)
 
 
-async def init_async_db(async_engine: AsyncEngine | None = None) -> None:
-    """Asynchronously create all SQLModel tables in database."""
+async def init_async_db(
+    async_engine: AsyncEngine | None = None,
+    apply_postgres_triggers: bool = True,
+) -> None:
+    """Asynchronously create all SQLModel tables in database and bootstrap triggers."""
     import biscuit.models  # noqa: F401
 
     target_engine = async_engine or get_async_engine()
     async with target_engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+    if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
+        await apply_async_triggers(target_engine)
 
 
 @contextmanager

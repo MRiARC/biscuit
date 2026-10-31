@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Text,
     UniqueConstraint,
@@ -135,7 +136,21 @@ class LivingDecisionDraft(UUIDModel, table=True):
     """Active discussion candidate captured before formal maintainer ruling."""
 
     __tablename__ = "living_decision_drafts"
-    __table_args__ = (Index("idx_living_drafts_thread", "source_thread_id"),)
+    __table_args__ = (
+        Index("idx_living_drafts_thread", "source_thread_id"),
+        ForeignKeyConstraint(
+            ["initiating_message_id", "source_thread_id"],
+            ["source_messages.id", "source_messages.thread_id"],
+            name="fk_living_draft_message_thread",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["initiating_message_version_id", "initiating_message_id"],
+            ["source_message_versions.id", "source_message_versions.message_id"],
+            name="fk_living_draft_message_version",
+            ondelete="RESTRICT",
+        ),
+    )
 
     switch_session_id: str = Field(
         sa_column=Column(Text, nullable=False),
@@ -147,15 +162,10 @@ class LivingDecisionDraft(UUIDModel, table=True):
         )
     )
     initiating_message_id: uuid.UUID = Field(
-        sa_column=Column(
-            ForeignKey("source_messages.id", ondelete="RESTRICT"), nullable=False
-        )
+        sa_column=Column(nullable=False)
     )
     initiating_message_version_id: uuid.UUID = Field(
-        sa_column=Column(
-            ForeignKey("source_message_versions.id", ondelete="RESTRICT"),
-            nullable=False,
-        )
+        sa_column=Column(nullable=False)
     )
     initiating_author_id: uuid.UUID = Field(
         sa_column=Column(

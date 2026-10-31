@@ -9,9 +9,9 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE OR REPLACE FUNCTION enforce_discussion_edge_evidence()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
-    ev_role evidence_role;
-    ev_stance evidence_stance;
-    ev_status verification_status;
+    ev_role TEXT;
+    ev_stance TEXT;
+    ev_status TEXT;
     ev_author UUID;
     decision_project TEXT;
 BEGIN
@@ -24,8 +24,11 @@ BEGIN
           JOIN decision_alternatives da ON da.id = NEW.target_alternative_id
           JOIN decisions d ON d.id = da.decision_id
           JOIN source_threads st ON st.id = d.source_thread_id
-         WHERE es.id = NEW.evidence_span_id;
-        IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edge needs evidence for a known alternative'; END IF;
+         WHERE es.id = NEW.evidence_span_id
+           AND es.alternative_id = NEW.target_alternative_id
+           AND (NEW.source_message_version_id IS NULL OR es.source_message_version_id = NEW.source_message_version_id)
+           AND sm.thread_id = NEW.source_thread_id;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edge needs evidence matching the target alternative, version, and thread'; END IF;
         IF NEW.edge_type = 'PROPOSES' AND ev_role <> 'PROPOSAL' THEN
             RAISE EXCEPTION 'PROPOSES requires PROPOSAL evidence';
         ELSIF NEW.edge_type = 'SUPPORTS' AND ev_stance <> 'SUPPORT' THEN
@@ -60,8 +63,8 @@ FOR EACH ROW EXECUTE FUNCTION enforce_discussion_edge_evidence();
 CREATE OR REPLACE FUNCTION enforce_ruling_signoff()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
-    ev_role evidence_role;
-    ev_status verification_status;
+    ev_role TEXT;
+    ev_status TEXT;
     ev_author UUID;
     decision_project TEXT;
 BEGIN
@@ -101,12 +104,12 @@ FOR EACH ROW EXECUTE FUNCTION enforce_ruling_signoff();
 CREATE OR REPLACE FUNCTION enforce_authoritative_alternative_rejection()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
-    ev_role evidence_role;
-    ev_status verification_status;
+    ev_role TEXT;
+    ev_status TEXT;
     ev_alternative UUID;
     ev_author UUID;
     decision_project TEXT;
-    actor_role contributor_project_role;
+    actor_role TEXT;
     signoff_count INT;
 BEGIN
     IF NEW.lifecycle_status = 'REJECTED' THEN

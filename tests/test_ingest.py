@@ -25,6 +25,7 @@ from biscuit.ingest import (
 from biscuit.ingest.base import RawMessagePayload, RawThreadPayload
 from biscuit.models.enums import MessageEditState, PlatformType
 from biscuit.models.provenance import (
+    Contributor,
     SourceMessageVersion,
     SourceThread,
 )
@@ -138,7 +139,7 @@ def test_discourse_adapter():
     p2 = thread_payload.messages[1]
     assert p2.external_message_id == "post_102"
     assert p2.author_handle == "markshannon"
-    assert p2.parent_message_id == "post_1"
+    assert p2.parent_message_id == "post_101"
 
 
 def test_mbox_adapter():
@@ -360,3 +361,156 @@ async def test_async_ingest_service():
         await session.commit()
     assert res3.versions_rotated == 1
     assert res3.versions_created == 1
+
+
+def test_enum_value_string_persistence():
+    """Verify that PlatformType is stored as its canonical string value ('DISCOURSE'), not repr."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    init_db(engine)
+
+    msg = RawMessagePayload(
+        external_message_id="post_plat_1",
+        author_platform_id="u_plat",
+        author_handle="alice",
+        author_name="Alice",
+        original_timestamp=datetime.now(UTC),
+        canonical_permalink="https://example.com/plat/1",
+        raw_content="Content",
+    )
+    thread = RawThreadPayload(
+        source_platform=PlatformType.DISCOURSE,
+        project_context="python/cpython",
+        external_thread_id="topic_plat",
+        title="Plat Test",
+        canonical_url="https://example.com/plat",
+        messages=[msg],
+    )
+
+    with Session(engine) as session:
+        IngestService.ingest_thread(session, thread)
+        session.commit()
+
+    with Session(engine) as session:
+        db_thread = session.exec(select(SourceThread)).first()
+        assert db_thread is not None
+        assert db_thread.source_platform == "DISCOURSE"
+        assert db_thread.source_platform != "PlatformType.DISCOURSE"
+
+        db_author = session.exec(select(Contributor)).first()
+        assert db_author is not None
+        assert db_author.source_platform == "DISCOURSE"
+        assert db_author.source_platform != "PlatformType.DISCOURSE"
+
+
+def test_remote_deletion_tombstone():
+    """Verify that remote deletions create an immutable tombstone version and retain prior content."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    init_db(engine)
+
+    msg = RawMessagePayload(
+        external_message_id="post_del_1",
+        author_platform_id="u_del",
+        author_handle="bob",
+        author_name="Bob",
+        original_timestamp=datetime.now(UTC),
+        canonical_permalink="https://example.com/del/1",
+        raw_content="Prior valuable content",
+    )
+    thread = RawThreadPayload(
+        source_platform=PlatformType.GITHUB_PR,
+        project_context="python/cpython",
+        external_thread_id="pr_del",
+        title="Del Test",
+        canonical_url="https://example.com/del",
+        messages=[msg],
+    )
+
+    # 1. Ingest initial active message
+    with Session(engine) as session:
+        IngestService.ingest_thread(session, thread)
+        session.commit()
+
+    # 2. Ingest deletion tombstone
+    deleted_msg = msg.model_copy(update={"is_deleted": True, "delete_reason": "Post removed by author"})
+    thread_del = thread.model_copy(update={"messages": [deleted_msg]})
+
+    with Session(engine) as session:
+        res = IngestService.ingest_thread(session, thread_del)
+        session.commit()
+
+    assert res.versions_rotated == 1
+    assert res.versions_created == 1
+
+    with Session(engine) as session:
+        versions = session.exec(select(SourceMessageVersion).order_by(SourceMessageVersion.version_number)).all()
+        assert len(versions) == 2
+
+        v1, v2 = versions[0], versions[1]
+        assert v1.version_number == 1
+        assert v1.is_current is False
+
+        assert v2.version_number == 2
+        assert v2.is_current is True
+        assert v2.edit_state == MessageEditState.DELETED
+        assert v2.deleted_at is not None
+        # Retained prior content for auditability
+        assert v2.raw_content == "Prior valuable content"
+
+    # 3. Subsequent ingestion of same deleted message is idempotent (unchanged)
+    with Session(engine) as session:
+        res2 = IngestService.ingest_thread(session, thread_del)
+        session.commit()
+    assert res2.unchanged_count == 1
+
+
+def test_discourse_pagination_and_stream():
+    """Verify DiscourseAdapter correctly detects un-fetched stream IDs and incorporates additional posts."""
+    adapter = DiscourseAdapter()
+    data = {
+        "id": 9999,
+        "title": "Long Paginated Topic",
+        "slug": "long-topic",
+        "post_stream": {
+            "posts": [
+                {"id": 1, "post_number": 1, "user_id": 1, "username": "alice", "raw": "Post 1"},
+                {"id": 2, "post_number": 2, "user_id": 2, "username": "bob", "raw": "Post 2", "reply_to_post_number": 1},
+            ],
+            "stream": [1, 2, 3, 4],
+        },
+    }
+
+    additional_posts = [
+        {"id": 3, "post_number": 3, "user_id": 3, "username": "carol", "raw": "Post 3", "reply_to_post_number": 2},
+        {"id": 4, "post_number": 4, "user_id": 4, "username": "dave", "raw": "Post 4", "deleted_at": "2023-01-01T00:00:00Z"},
+    ]
+
+    payload = adapter.parse_payload(
+        data=data,
+        project_context="python/cpython",
+        additional_posts=additional_posts,
+    )
+
+    assert len(payload.messages) == 4
+    assert payload.messages[0].external_message_id == "post_1"
+    assert payload.messages[1].external_message_id == "post_2"
+    assert payload.messages[1].parent_message_id == "post_1"
+    assert payload.messages[2].external_message_id == "post_3"
+    assert payload.messages[2].parent_message_id == "post_2"
+    assert payload.messages[3].is_deleted is True
+
+
+def test_mbox_byte_level_non_utf8():
+    """Verify MboxAdapter parses non-UTF-8 bytes without destructive pre-decoding."""
+    adapter = MboxAdapter()
+    raw_email_bytes = (
+        b"From: Author <author@example.com>\n"
+        b"Subject: Non-UTF8 Message\n"
+        b"Message-ID: <non_utf8_001@example.com>\n"
+        b"Content-Type: text/plain; charset=latin-1\n"
+        b"\n"
+        b"Character in Latin-1: \xe9\n"
+    )
+
+    thread = adapter.parse_payload(raw_email_bytes, project_context="test/repo")
+    assert len(thread.messages) == 1
+    assert "\xe9" in thread.messages[0].raw_content
