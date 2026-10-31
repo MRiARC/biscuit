@@ -391,15 +391,19 @@ BEGIN
             ), '[]'::jsonb)
         );
     END IF;
+    -- Raw PL/pgSQL INSERTs do not invoke Python-side SQLModel default
+    -- factories. Supply all non-null values that lack server-side defaults.
     INSERT INTO decision_event_log (
-        alternative_id, source_thread_id, event_type, previous_status,
-        new_status, reason, evidence_span_id, actor_contributor_id, authority_snapshot
+        id, alternative_id, source_thread_id, recurrence_number,
+        event_type, previous_status, new_status, reason,
+        evidence_span_id, actor_contributor_id, authority_snapshot, recorded_at
     ) VALUES (
-        NEW.id, discussion_thread, 'STATUS_CHANGE',
+        gen_random_uuid(), NEW.id, discussion_thread, 1,
+        'STATUS_CHANGE',
         CASE WHEN TG_OP = 'UPDATE' THEN OLD.lifecycle_status ELSE NULL END,
         NEW.lifecycle_status, explanation,
         CASE WHEN NEW.lifecycle_status = 'REJECTED' THEN NEW.ruling_evidence_id ELSE NULL END,
-        acting_contributor, snapshot
+        acting_contributor, snapshot, NOW()
     );
     RETURN NEW;
 END;
