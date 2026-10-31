@@ -12,7 +12,6 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-
 _MAINTAINER = frozenset({"maintainer", "core_maintainer", "core maintainer"})
 _CHAIR = frozenset({"working_group_chair", "working group chair", "wg_chair"})
 _MEMBER = frozenset({"working_group_member", "working group member", "wg_member"})
