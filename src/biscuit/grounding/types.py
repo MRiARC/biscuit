@@ -214,10 +214,16 @@ def lineage_storage_records(
         "traversal_strategy": event.traversal_strategy,
         "historical_path": event.old_path or result.historical_path,
         "migrated_path": event.new_path,
-        "transition_type": event.transition_type,
+        "transition_type": {
+            "DELETE": "DELETED",
+            "MODIFY": "EXACT_MATCH",
+            "UNCHANGED": "EXACT_MATCH",
+            "UNRELATED_PARENT": "EXACT_MATCH",
+        }.get(event.transition_type, event.transition_type),
         "mapping_evidence": {**event.mapping_evidence,
                              "state": event.state.value,
-                             "verified_parser": result.verified_parser},
+                             "verified_parser": result.verified_parser,
+                             "raw_transition_type": event.transition_type},
         "confidence_score": event.confidence_score,
         "recorded_at": event.recorded_at or timestamp,
     } for event in result.events)
