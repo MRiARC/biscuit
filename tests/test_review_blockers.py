@@ -15,7 +15,8 @@ from biscuit.extract.pipeline import (
     _verify_ruling_alternative_link,
 )
 from biscuit.extract.types import ProposalCandidate
-from biscuit.provenance.types import EvidenceRole, EvidenceSpan, EvidenceStance, EvidenceVerifier
+from biscuit.provenance.types import EvidenceRole, EvidenceSpan, EvidenceStance
+from biscuit.provenance.verifier import EvidenceVerifier
 
 
 def _proposal(pid: str) -> ProposalCandidate:
