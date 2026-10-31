@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Grammar/python.gram",
-      "diff": "+# Rejected alternative\n+named_expr: expression 'where:' assignment"
+      "diff": "diff --git a/Grammar/python.gram b/Grammar/python.gram\n--- a/Grammar/python.gram\n+++ b/Grammar/python.gram\n@@ -0,0 +1,2 @@\n+# Rejected alternative\n+named_expr: expression 'where:' assignment"
     }
   ],
   "fixture_origin": "SYNTHETIC"
