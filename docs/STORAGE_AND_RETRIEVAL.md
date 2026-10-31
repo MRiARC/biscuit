@@ -47,29 +47,36 @@ Per **Issue #5** and the **PR #7 Review Contract**:
 ```mermaid
 erDiagram
     SOURCE_THREADS ||--o{ SOURCE_MESSAGES : "contains"
-    SOURCE_MESSAGES ||--o{ SOURCE_MESSAGE_VERSIONS : "versions"
+    SOURCE_MESSAGES ||--|{ SOURCE_MESSAGE_VERSIONS : "has versions"
     SOURCE_MESSAGE_VERSIONS ||--o{ EVIDENCE_SPANS : "substantiates"
     DECISIONS ||--o{ DECISION_ALTERNATIVES : "evaluates"
     DECISION_ALTERNATIVES ||--o{ ARGUMENTS : "receives"
     DECISION_ALTERNATIVES ||--o{ CODE_ANCHORS : "anchors_to"
-    DECISION_ALTERNATIVES ||--o{ PROPOSAL_OCCURRENCES : "tracks"
+    DECISION_ALTERNATIVES ||--o{ PROPOSAL_OCCURRENCES : "recurs_as"
     DECISION_ALTERNATIVES ||--o{ DECISION_EVENT_LOG : "records"
+    DECISION_ALTERNATIVES ||--o{ DECISION_ALTERNATIVE_RULING_SIGNOFFS : "requires_signoffs"
     CODE_ANCHORS ||--o{ CODE_ANCHOR_LINEAGE : "traces"
     SOURCE_THREADS ||--o{ DISCUSSION_EDGES : "contains"
     SOURCE_THREADS ||--o{ EXTRACTION_RUNS : "audits"
-    CONTRIBUTORS ||--o{ SOURCE_MESSAGES : "authors"
-    CONTRIBUTORS ||--o{ ARGUMENTS : "advances"
+    SOURCE_THREADS ||--o{ LIVING_DECISION_DRAFTS : "grounds"
+    SOURCE_MESSAGES ||--o{ DISCUSSION_EDGES : "originates"
+    SOURCE_MESSAGES ||--o{ PROPOSAL_OCCURRENCES : "initiates"
+    SOURCE_MESSAGES ||--o{ LIVING_DECISION_DRAFTS : "initiates"
+    LIVING_DECISION_DRAFTS ||--o{ LIVING_DECISION_DRAFT_EVIDENCE : "cites"
+    EVIDENCE_SPANS ||--o{ LIVING_DECISION_DRAFT_EVIDENCE : "supports"
     LIVING_DECISION_DRAFTS ||--o{ HITL_APPROVAL_REQUESTS : "routes"
     DECISION_ALTERNATIVES ||--o{ HITL_APPROVAL_REQUESTS : "references"
+    HITL_APPROVAL_REQUESTS ||--o| HITL_APPROVAL_EVENTS : "decided_by"
+    CONTRIBUTORS ||--o{ SOURCE_MESSAGES : "authors"
+    CONTRIBUTORS ||--o{ ARGUMENTS : "advances"
+    CONTRIBUTORS ||--o{ DECISION_ALTERNATIVE_RULING_SIGNOFFS : "signs"
 
     SOURCE_THREADS {
         uuid id PK
         varchar source_platform
         text project_context
         text external_thread_id
-        text title
         text canonical_url
-        varchar source_revision
         jsonb ingestion_metadata
     }
 
@@ -115,7 +122,6 @@ erDiagram
         uuid id PK
         uuid source_thread_id FK
         text title
-        text context_summary
         varchar resolution_status
         varchar resolution_type
         varchar ruling_authority
@@ -127,8 +133,8 @@ erDiagram
         uuid decision_id FK
         text proposal_text
         varchar lifecycle_status
-        varchar rejection_category
-        text rejection_summary
+        varchar ruling_authority
+        uuid ruling_actor_id FK
         uuid ruling_evidence_id FK
         vector embedding
     }
@@ -138,10 +144,8 @@ erDiagram
         uuid alternative_id FK
         uuid source_thread_id FK
         uuid initiating_message_id FK
-        timestamptz occurred_at
-        text proposal_wording_version
-        text occurrence_context
-        varchar occurrence_outcome
+        uuid initiating_message_version_id FK
+        uuid linkage_evidence_span_id FK
         float linkage_similarity
         varchar linkage_status
     }
@@ -151,32 +155,98 @@ erDiagram
         uuid source_thread_id FK
         uuid from_message_id FK
         uuid to_message_id FK
+        uuid source_message_version_id FK
+        uuid target_decision_id FK
+        uuid target_alternative_id FK
+        uuid evidence_span_id FK
         varchar edge_type
         varchar edge_provenance
         float confidence_score
     }
 
+    CODE_ANCHORS {
+        uuid id PK
+        uuid alternative_id FK
+        varchar parser_version
+        varchar grammar_version
+        varchar ast_normalization_version
+        varchar anchor_state
+        float mapping_confidence
+    }
+
+    CODE_ANCHOR_LINEAGE {
+        uuid id PK
+        uuid code_anchor_id FK
+        varchar historical_commit_sha
+        varchar transition_commit_sha
+        varchar compared_parent_sha
+        int parent_index
+        jsonb mapping_evidence
+        float confidence_score
+    }
+
+    EXTRACTION_RUNS {
+        uuid id PK
+        uuid source_thread_id FK
+        varchar schema_version
+        jsonb run_config
+        varchar run_config_sha256
+        varchar environment_lock_sha256
+        varchar source_thread_snapshot_sha256
+    }
+
+    DECISION_EVENT_LOG {
+        uuid id PK
+        uuid alternative_id FK
+        uuid proposal_occurrence_id FK
+        uuid evidence_span_id FK
+        uuid actor_contributor_id FK
+        varchar event_type
+        varchar new_status
+    }
+
+    DECISION_ALTERNATIVE_RULING_SIGNOFFS {
+        uuid alternative_id FK
+        uuid contributor_id FK
+        uuid evidence_span_id FK
+        timestamptz signed_at
+    }
+
     LIVING_DECISION_DRAFTS {
         uuid id PK
-        text switch_session_id
-        varchar source_platform
-        text channel_id
-        text thread_ts
-        text topic
+        uuid source_thread_id FK
+        uuid initiating_message_id FK
+        uuid initiating_message_version_id FK
+        uuid initiating_author_id FK
         varchar draft_status
-        text proposal_text
-        text target_subsystem
+        varchar proposed_lifecycle
+    }
+
+    LIVING_DECISION_DRAFT_EVIDENCE {
+        uuid living_draft_id FK
+        uuid evidence_span_id FK
     }
 
     HITL_APPROVAL_REQUESTS {
         uuid id PK
-        text switch_approval_id
+        varchar switch_approval_id
         varchar action_type
+        varchar target_repository
         int target_pr_number
+        varchar target_commit_sha
         uuid living_draft_id FK
         uuid decision_alternative_id FK
-        varchar maintainer_decision
-        text maintainer_user_id
+        varchar action_payload_sha256
+        varchar status
+    }
+
+    HITL_APPROVAL_EVENTS {
+        uuid id PK
+        uuid approval_request_id FK
+        uuid actor_contributor_id FK
+        varchar action_taken
+        varchar payload_signature
+        varchar callback_body_sha256
     }
 ```
 
