@@ -7,9 +7,9 @@ shipping mutable repository state.
 
 | Scenario | Test | Invariant |
 |---|---|---|
-| exact filename rename (`-M80%`) | `test_forward_rename_is_detected` | `RENAME_M` and new relative path |
+| exact filename rename (`-M80%`) | `test_forward_rename_and_immutable_mapping_evidence` | `RENAME_M` and new relative path |
 | Git similarity score R081 vs R079 | `test_git_similarity_boundary_79_vs_81` | threshold is 80%, not 79% |
-| Python symbol moved across files | `test_symbol_moves_between_files` | require structural identity |
+| Python symbol moved across files | `test_symbol_moves_into_another_module_without_git_file_rename` | require structural identity |
 | copying while original survives | `test_copy_with_original_remaining_requires_abstention` | `AMBIGUOUS`, no automatic migration |
 | Git-detected copy | `test_exact_git_copy_is_classified_copy_c` | `COPY_C` event recorded |
 | total rewrite / lost symbol | `test_file_rewrite_without_symbol_is_classified_and_deleted` | `REWRITE_SPLIT_B` is a conservative **symbol-vanish heuristic**, not a Git `B` name-status (Git 2.47 `--name-status` does not emit `B`) |
@@ -25,7 +25,8 @@ shipping mutable repository state.
 **Ruling requested — first-parent exception:** When merge resolution entirely removes a
 historical symbol from the merge tree, the result is `DELETED`; it must **not** resurrect
 P1's deleted symbol. If the merge tree retains P1's bytes exactly, a
-`first_parent_selected` evidence flag is emitted. This is a safety-motivated deviation
+`first_parent_selected` evidence flag is emitted only if both parents changed the
+symbol relative to their merge base (a clean one-sided merge is not a human conflict choice). This is a safety-motivated deviation
 from issue §D.2 and needs explicit maintainer acceptance.
 
 **Integration boundaries:** Stream 1 owns SQLModel database transactions/persistence,
