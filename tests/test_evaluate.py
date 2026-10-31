@@ -496,3 +496,20 @@ def test_audit_records_explain_authorization_and_migrate_legacy_db(tmp_path) -> 
             "WHERE reason_code='AMBIGUOUS_ABSTENTION'"
         ).fetchone()[0]
         assert abstained == 5
+
+
+def test_all_twenty_patches_have_valid_unified_diff_hunks() -> None:
+    from biscuit.evaluate.fixtures import _validate_unified_diff
+
+    cases = load_pr_cases()
+    assert len(cases) == 20
+    for case in cases:
+        for file in case["files"]:
+            assert file["diff"].startswith(
+                f"diff --git a/{file['path']} b/{file['path']}\\n"
+            )
+            _validate_unified_diff(file)
+            corrupted = dict(file)
+            corrupted["diff"] = corrupted["diff"].replace("@@ -", "@@ -999", 1)
+            with pytest.raises(ValueError, match="line counts"):
+                _validate_unified_diff(corrupted)
