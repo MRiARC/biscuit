@@ -12,6 +12,7 @@ from biscuit.evaluate.fixtures import (
     canonical_thread_bytes,
     load_ground_truth,
     load_pr_cases,
+    load_pr_authorization_oracle,
     load_pr_expected_alternatives,
     load_pr_labels,
     load_simulated_predictions,
@@ -269,6 +270,7 @@ def test_heldout_warning_wrong_rejected_alternative_is_false_positive() -> None:
         labels,
         [entry["case_id"] for entry in bad],
         warning_records=bad, expected_alternatives=expected,
+        expected_rulings=load_pr_authorization_oracle(),
     )
     assert score["tp"] == 4 and score["fp"] == 1 and score["fn"] == 1
     assert score["precision"] == pytest.approx(4 / 5)
@@ -317,3 +319,34 @@ def test_three_synthetic_fixture_manifests_and_replay_are_valid(pep) -> None:
     assert evaluated.prediction_source == "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL"
     assert evaluated.verdict == "PASSED"
     assert evaluated.counts["rationale"]["embedding_method"].endswith("NOT_SEMANTIC")
+
+
+def test_wrong_ruling_source_or_digest_never_gets_warning_credit() -> None:
+    data = load_simulated_predictions("pep-505")
+    expected = load_pr_expected_alternatives()
+    proofs = load_pr_authorization_oracle()
+    corrupted = [*data["warning_records"]]
+    corrupted[0] = {**corrupted[0], "ruling_quote_sha256": "0" * 64}
+    scored = pr_warning_metrics(
+        load_pr_labels(), data["warned_pr_ids"], warning_records=corrupted,
+        expected_alternatives=expected, expected_rulings=proofs,
+    )
+    assert scored["tp"] == 4
+    assert scored["fp"] == 1
+    assert scored["fn"] == 1
+
+
+def test_model_local_proposal_ids_are_matched_by_name() -> None:
+    data = load_simulated_predictions("pep-505")
+    for index, proposal in enumerate(data["proposals"]):
+        old = proposal["proposal_id"]
+        new = f"extract-{index}"
+        proposal["proposal_id"] = new
+        for anchor in proposal["code_anchors"]:
+            assert anchor["proposal_id"] == old
+            anchor["proposal_id"] = new
+    evaluated = run_benchmark("pep-505", predictor=lambda _: data)
+    assert evaluated.verdict == "PASSED"
+    assert evaluated.counts["proposals"]["proposal_id_mapping"] == {
+        "extract-0": "S1", "extract-1": "S2",
+    }

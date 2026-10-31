@@ -93,6 +93,11 @@ def load_simulated_predictions(name: str, root: Path | None = None) -> dict[str,
     return data
 
 
+def load_pr_authorization_oracle(root: Path | None = None) -> dict[str, dict[str, str]]:
+    """Scorer-only expected ruling source and cryptographic quote hash."""
+    return _json_file((root or DEFAULT_FIXTURE_ROOT) / "pr_authorization_oracle.json")
+
+
 def load_pr_expected_alternatives(root: Path | None = None) -> dict[str, str]:
     """Scorer-only PR-to-rejected-alternative answer key."""
     return _json_file((root or DEFAULT_FIXTURE_ROOT) / "pr_expected_alternatives.json")

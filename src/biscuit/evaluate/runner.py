@@ -13,6 +13,7 @@ from .audit import write_pr_audit
 from .fixtures import (
     DEFAULT_FIXTURE_ROOT,
     load_ground_truth,
+    load_pr_authorization_oracle,
     load_pr_expected_alternatives,
     load_pr_labels,
     load_simulated_predictions,
@@ -116,6 +117,7 @@ def run_benchmark(
     truth = load_ground_truth(benchmark_id, root)
     labels = load_pr_labels(root)
     expected_warning_alternatives = load_pr_expected_alternatives(root)
+    expected_rulings = load_pr_authorization_oracle(root)
     if len(labels) != 20 or sorted(labels.values()).count("violation") != 5:
         raise ValueError("The held-out PR set must contain exactly 5 violations")
     if list(labels.values()).count("benign") != 10 or list(labels.values()).count("ambiguous") != 5:
@@ -197,6 +199,7 @@ def run_benchmark(
             predictions.get("warned_pr_ids", []),
             warning_records=warning_records,
             expected_alternatives=expected_warning_alternatives,
+            expected_rulings=expected_rulings,
         )
         if audit_db is not None:
             run_hash = hashlib.sha256(
