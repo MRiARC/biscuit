@@ -314,9 +314,7 @@ def pr_warning_metrics(
             continue
         if allow_simulated_authorization and record.get("authorization") == (
             "SIMULATED_VERIFIED_RULING"
-        ):
-            correct_warnings.add(case_id)
-        elif verify_production_warning(
+        ) or verify_production_warning(
             record,
             trusted_proofs=trusted_ruling_proofs,
             verified_project_roles=verified_project_roles,
