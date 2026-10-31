@@ -178,6 +178,9 @@ class FakeCursor:
     def execute(self, sql, args):
         self.executed.append((sql, args))
 
+    def fetchone(self):
+        return ("e" * 64,)
+
     def close(self):
         self.closed = True
 
@@ -215,7 +218,13 @@ def test_postgres_writer_uses_parameterized_extraction_runs_upsert():
     PostgresExtractionAuditWriter(conn).write(record)
     assert conn.commits == 1 and conn.rollbacks == 0
     assert conn.cursor_obj.closed is True
-    sql, args = conn.cursor_obj.executed[0]
+    assert len(conn.cursor_obj.executed) == 2
+    hash_sql, hash_args = conn.cursor_obj.executed[0]
+    assert "::jsonb" in hash_sql and "digest" in hash_sql
+    assert hash_args == ('{"mock_mode":true}',)
+    sql, args = conn.cursor_obj.executed[1]
     assert "ON CONFLICT" in sql and "extraction_runs" in sql
     assert len(args) == 20
     assert args[4] == '{"mock_mode":true}'
+    assert args[5] == "e" * 64
+    assert record["run_config_sha256"] == "e" * 64
