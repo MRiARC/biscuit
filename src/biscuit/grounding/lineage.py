@@ -241,6 +241,9 @@ def trace_lineage(
     exemplar = matches[0]
     commits = forward_commits(root, past, current)
     states: dict[str, set[str]] = {past: {historical_path}}
+    # Per-commit identity exemplars must evolve with verified same-path edits:
+    # a later relocation is compared against the *latest* confirmed shape.
+    exemplars: dict[str, Symbol] = {past: exemplar}
     events: list[LineageEvent] = []
     changed = False
     ambiguous = False
@@ -260,7 +263,8 @@ def trace_lineage(
                 next_candidates, kind, old_p, new_p = set(), "UNRELATED_PARENT", None, None
             else:
                 next_candidates, kind, old_p, new_p, digest = _transition(
-                    root, parent, commit, prev, language, exemplar, require_tree_sitter
+                    root, parent, commit, prev, language,
+                    exemplars.get(parent, exemplar), require_tree_sitter
                 )
             result_sets.append(next_candidates)
             records.append((parent, index, prev, next_candidates, kind, old_p, new_p, digest))
@@ -283,16 +287,24 @@ def trace_lineage(
                 p.decode("utf-8", "surrogateescape")
                 for p in combined_names.split(b"\0") if p
             }))
-            final_candidates = _matching_paths(root, commit, paths, language, exemplar,
-                                               require_tree_sitter)
+            final_candidates = set()
+            for parent in parents:
+                parent_exemplar = exemplars.get(parent)
+                if parent_exemplar is not None:
+                    final_candidates |= _matching_paths(
+                        root, commit, paths, language, parent_exemplar, require_tree_sitter
+                    )
             resolution = resolve_merge_parents(result_sets, final_candidates)
             merge_reason = resolution.reason
             if (set(combined_changed_paths) & set(final_candidates)
                     and len([x for x in result_sets if x]) > 1
-                    and any(_symbol_at(root, commit, p, language, exemplar,
-                                       require_tree_sitter=require_tree_sitter,
-                                       require_identity=True) is None
-                            for p in final_candidates)):
+                    and any(not any(
+                        _symbol_at(
+                            root, commit, p, language, exemplars[parent],
+                            require_tree_sitter=require_tree_sitter, require_identity=True,
+                        ) is not None
+                        for parent in parents if parent in exemplars
+                    ) for p in final_candidates)):
                 # The human-created merge result differs structurally from
                 # the historical anchor. Without verification, abstain.
                 ambiguous = True
@@ -310,23 +322,53 @@ def trace_lineage(
                 selected_path = next(iter(paths))
                 merged_bytes = _commit_bytes(root, commit, selected_path)
                 mainline_bytes = _commit_bytes(root, parents[0], selected_path)
-                first_parent_selected = (
-                    merged_bytes is not None and merged_bytes == mainline_bytes
-                    and any(_commit_bytes(root, p, selected_path) != merged_bytes
-                            for p in parents[1:])
-                )
+                # A combined diff does NOT include a conflict resolution that
+                # selects P1's exact bytes. Detect actual competing edits by
+                # checking both sides against their merge base. If P2 never
+                # touched the symbol, this must not claim a human P1 decision.
+                first_parent_selected = False
+                if merged_bytes is not None and merged_bytes == mainline_bytes:
+                    for other_parent in parents[1:]:
+                        common = _git(root, "merge-base", parents[0], other_parent)
+                        base_sha = common.decode("ascii").splitlines()[0]
+                        original_bytes = _commit_bytes(root, base_sha, selected_path)
+                        other_bytes = _commit_bytes(root, other_parent, selected_path)
+                        if (original_bytes != mainline_bytes
+                                and original_bytes != other_bytes
+                                and other_bytes != merged_bytes):
+                            first_parent_selected = True
+                            break
         if len(paths) > 1:
             ambiguous, split = True, True
+        # Only accept a new exemplar after this commit retains one uniquely
+        # verified path; it is never learned from an ambiguous merge.
+        if len(paths) == 1 and not ambiguous:
+            target = next(iter(paths))
+            for parent in parents:
+                shape = exemplars.get(parent)
+                if shape is None:
+                    continue
+                updated = _symbol_at(
+                    root, commit, target, language, shape,
+                    require_tree_sitter=require_tree_sitter,
+                )
+                if updated is not None:
+                    exemplars[commit] = updated
+                    break
         # Once ambiguous, never silently become 'safe' due to a later delete.
         states[commit] = paths
         for parent, index, prev, after, kind, old_p, new_p, digest in records:
+            # Do not persist empty/no-op transitions on ordinary commits.
+            # In particular, a dead lineage cannot become CURRENT again.
+            if len(parents) == 1 and (kind in ("UNCHANGED", "UNRELATED_PARENT")):
+                continue
             if kind not in ("UNCHANGED", "UNRELATED_PARENT"):
                 changed = True
             if kind in ("RENAME_M", "COPY_C", "REWRITE_SPLIT_B", "MODIFY"):
                 changed = True
             state = (AnchorState.AMBIGUOUS if ambiguous else
                      AnchorState.SPLIT if len(after) > 1 else
-                     AnchorState.DELETED if not after and prev else
+                     AnchorState.DELETED if not after else
                      AnchorState.MIGRATED if kind in ("RENAME_M", "COPY_C", "REWRITE_SPLIT_B") else
                      AnchorState.CURRENT)
             events.append(LineageEvent(
@@ -338,9 +380,9 @@ def trace_lineage(
                     "diff_patch_sha256": digest, "symbol_name": exemplar.qualified_name,
                     "historical_commit_sha": past,
                     "parser_backend": exemplar.parser_backend,
-                    "parser_version": exemplar.parser_version,
-                    "grammar_version": exemplar.grammar_version,
-                    "normalization_version": exemplar.normalization_version,
+                    "parser_version": exemplars.get(parent, exemplar).parser_version,
+                    "grammar_version": exemplars.get(parent, exemplar).grammar_version,
+                    "normalization_version": exemplars.get(parent, exemplar).normalization_version,
                     "parent_paths": sorted(prev), "result_paths": sorted(after),
                     "parent_count": len(parents),
                     "combined_diff_sha256": combined_diff_digest,
