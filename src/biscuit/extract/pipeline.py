@@ -147,20 +147,24 @@ def _verify_ruling_alternative_link(
     if quote_matches:
         return True
 
-    if target_prop and target_prop.syntax_or_api and len(target_prop.syntax_or_api) >= 2:
-        if target_prop.syntax_or_api.lower() in quote_lower:
-            return True
+    if (
+        target_prop
+        and target_prop.syntax_or_api
+        and len(target_prop.syntax_or_api) >= 2
+        and target_prop.syntax_or_api.lower() in quote_lower
+    ):
+        return True
 
     msg_matches = any(bool(re.search(pat, msg_lower)) for pat in target_patterns)
     if msg_matches:
         return True
 
-    if target_prop and target_prop.syntax_or_api and len(target_prop.syntax_or_api) >= 2:
-        if target_prop.syntax_or_api.lower() in msg_lower:
-            return True
-
-    # Ambiguous: no verified link to target proposal in either quote or message context
-    return False
+    return bool(
+        target_prop
+        and target_prop.syntax_or_api
+        and len(target_prop.syntax_or_api) >= 2
+        and target_prop.syntax_or_api.lower() in msg_lower
+    )
 
 
 class ExtractionPipeline:
