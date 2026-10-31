@@ -12,7 +12,7 @@ import copy
 import hashlib
 from dataclasses import dataclass, field
 
-NORMALIZATION_VERSION = "python-ast-mask-v2-scoped"
+NORMALIZATION_VERSION = "python-ast-mask-v3-comp-scoped"
 
 
 @dataclass
@@ -28,6 +28,7 @@ class IdentifierMasker(ast.NodeTransformer):
     def __init__(self) -> None:
         self.scopes = [_Scope("")]
         self.scope_number = 0
+        self.comprehension_enclosing: list[_Scope] = []
 
     def _scope(self) -> _Scope:
         return self.scopes[-1]
@@ -86,6 +87,63 @@ class IdentifierMasker(ast.NodeTransformer):
             return self.generic_visit(node)
         finally:
             self._pop()
+
+
+
+    def _visit_comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    ) -> ast.AST:
+        """Bind targets before result/filter loads; the first iterable is external.
+
+        Subsequent iterables use preceding comprehension bindings. NamedExpr
+        targets bind in the enclosing function scope, not the comprehension.
+        """
+        if not node.generators:
+            return self.generic_visit(node)
+        first = node.generators[0]
+        first.iter = self.visit(first.iter)
+        enclosing = self._scope()
+        self._push()
+        self.comprehension_enclosing.append(enclosing)
+        try:
+            for i, generator in enumerate(node.generators):
+                if i:
+                    generator.iter = self.visit(generator.iter)
+                generator.target = self.visit(generator.target)
+                generator.ifs = [self.visit(test) for test in generator.ifs]
+            if isinstance(node, ast.DictComp):
+                node.key = self.visit(node.key)
+                node.value = self.visit(node.value)
+            else:
+                node.elt = self.visit(node.elt)
+        finally:
+            self.comprehension_enclosing.pop()
+            self._pop()
+        return node
+
+    def visit_ListComp(self, node: ast.ListComp) -> ast.AST:
+        return self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> ast.AST:
+        return self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> ast.AST:
+        return self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.AST:
+        return self._visit_comprehension(node)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> ast.NamedExpr:
+        if self.comprehension_enclosing and isinstance(node.target, ast.Name):
+            scope = self.comprehension_enclosing[-1]
+            original = node.target.id
+            if original not in scope.args:
+                scope.locals.setdefault(original, f"{scope.prefix}$VAR_{len(scope.locals)}")
+            node.target.id = scope.args.get(original, scope.locals.get(original))
+        else:
+            node.target = self.visit(node.target)
+        node.value = self.visit(node.value)
+        return node
 
 
 def normalized_python_ast(source_or_node: str | ast.AST) -> str:
