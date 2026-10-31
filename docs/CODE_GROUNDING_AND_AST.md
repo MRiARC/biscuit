@@ -26,6 +26,10 @@ In our canonical data model, **code anchors attach directly to `decision_alterna
 
 When a pull request modifies `Python/bltinmodule.c`, Biscuit evaluates *only* Alternative 2 (`coalesce()`). It does **not** evaluate Alternative 1 (the parser change), eliminating false cross-alternative associations.
 
+### Dual Grounding Lifecycles (The Past vs. Day 1+):
+* **Historical Anchors (Pillar 1):** Anchored at the historical debate commit $C_{\text{past}}$. Traced forward to modern `HEAD` via forward commit-DAG diff traversal (`git diff-tree -M80% -C -B`), assigning `anchor_state = 'MIGRATED'`.
+* **Living Day 1+ Anchors (Pillar 2):** When a living decision is approved by maintainers via a Switch approval card (`living_decision_drafts`), Biscuit parses the affected subsystem files at modern `HEAD` using Tree-sitter, immediately establishing active `code_anchors` with `anchor_state = 'CURRENT'`.
+
 ---
 
 ## 2. The 4-Tier Code Grounding Engine

@@ -187,3 +187,28 @@ Every extraction execution writes a permanent audit record into `extraction_runs
 * `prompt_templates_hash`: SHA-256 of all prompt templates used.
 * `source_thread_snapshot_sha256`: Digest of raw thread snapshot.
 * `run_status`: `SUCCESS`, `FAILED`, or `PARTIAL`.
+
+---
+
+## 8. Day 1+ Real-Time Streaming Ingestion via Switch
+
+While Sections 1–7 govern **Mode A: Historical Batch Ingestion**, Biscuit supports **Mode B: Day 1+ Real-Time Streaming Ingestion** powered by Switch:
+
+```mermaid
+flowchart LR
+    LiveChat["Live CNCF Slack / Discord<br/>Working Group (#sig-node)"] --> SwitchGW["Switch WebSocket Gateway"]
+    SwitchGW --> StreamIngest["biscuit.switch_agent<br/>Live Thread Buffer"]
+    StreamIngest --> RollingDAG["Rolling discussion_edges<br/>(PROPOSES, OBJECTS, SUPPORTS)"]
+    RollingDAG --> ConsensusGate{"Autonomous Consensus or<br/>@biscuit record-decision"}
+    ConsensusGate --> LivingDraft["Synthesize living_decision_drafts"]
+    LivingDraft --> HITLCard["Switch Block Kit Approval Card"]
+```
+
+### Key Differences Between Ingestion Modes:
+| Dimension | Mode A: Historical Batch Ingestion | Mode B: Day 1+ Streaming Ingestion (Switch) |
+|---|---|---|
+| **Primary Source** | Discourse archives, mbox, closed PR reviews | CNCF Slack, Discord, Zulip working groups |
+| **Ingestion Protocol** | REST batch pagination (`/t/{id}.json`) | WebSocket / FastMCP real-time events |
+| **Storage Destination** | `source_threads` + `source_messages` | `source_threads` + `living_decision_drafts` |
+| **Extraction Trigger** | Offline batch evaluation job | Autonomous agreement detection / `@biscuit` ping |
+| **Verification Gate** | Zero-based character offset verifier | Switch Interactive HITL Approval Card in chat |

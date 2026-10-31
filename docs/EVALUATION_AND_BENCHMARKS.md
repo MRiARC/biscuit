@@ -170,6 +170,18 @@ $$\text{Abstention Rate} = \frac{|\text{Ambiguous / Disputed Cases Where Watchdo
 
 ---
 
+### Metric Suite 7: Day 1+ Living Decision & HITL Dispatch Performance (Pillar 2)
+Evaluates real-time deliberation interception and Switch Human-in-the-Loop approval workflows:
+
+$$\text{Consensus Detection Precision} = \frac{|\text{Accurately Detected Chat Consensus Threads}|}{|\text{Total Triggered Living Decision Drafts}|}$$
+
+$$\text{HITL Card Dispatch Latency} = t_{\text{rendered in Slack}} - t_{\text{consensus detected}}$$
+
+* **Target:** $\text{Consensus Detection Precision} \ge 0.88$, $\text{HITL Card Dispatch Latency} < 2.0\text{s}$.
+* **Zero Unverified Post Invariant:** $100\%$ of PR warnings routed in `INTERACTIVE_HITL` mode must await maintainer approval before an in-line GitHub comment is published.
+
+---
+
 ## 4. Fixture Data Schemas
 
 Ground-truth evaluation fixtures are structured in auditable JSON format:

@@ -59,6 +59,8 @@ erDiagram
     SOURCE_THREADS ||--o{ EXTRACTION_RUNS : "audits"
     CONTRIBUTORS ||--o{ SOURCE_MESSAGES : "authors"
     CONTRIBUTORS ||--o{ ARGUMENTS : "advances"
+    LIVING_DECISION_DRAFTS ||--o{ HITL_APPROVAL_REQUESTS : "routes"
+    DECISION_ALTERNATIVES ||--o{ HITL_APPROVAL_REQUESTS : "references"
 
     SOURCE_THREADS {
         uuid id PK
@@ -152,6 +154,29 @@ erDiagram
         varchar edge_type
         varchar edge_provenance
         float confidence_score
+    }
+
+    LIVING_DECISION_DRAFTS {
+        uuid id PK
+        text switch_session_id
+        varchar source_platform
+        text channel_id
+        text thread_ts
+        text topic
+        varchar draft_status
+        text proposal_text
+        text target_subsystem
+    }
+
+    HITL_APPROVAL_REQUESTS {
+        uuid id PK
+        text switch_approval_id
+        varchar action_type
+        int target_pr_number
+        uuid living_draft_id FK
+        uuid decision_alternative_id FK
+        varchar maintainer_decision
+        text maintainer_user_id
     }
 ```
 
@@ -544,6 +569,62 @@ CREATE TABLE decision_event_log (
     evidence_span_id UUID REFERENCES evidence_spans(id),
     recorded_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ─────────────────────────────────────────────────────────────
+-- 12. DAY 1+ LIVING DECISION DRAFTS (SWITCH INTERCEPTION)
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE living_decision_state AS ENUM (
+    'DRAFT_PENDING_APPROVAL',
+    'MAINTAINER_APPROVED',
+    'MAINTAINER_REJECTED',
+    'EDIT_REQUESTED'
+);
+
+CREATE TABLE living_decision_drafts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    switch_session_id TEXT NOT NULL,
+    source_platform VARCHAR(32) NOT NULL,  -- 'slack', 'discord', 'mattermost'
+    channel_id TEXT NOT NULL,
+    thread_ts TEXT NOT NULL,
+    initiating_author_handle TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    draft_status living_decision_state NOT NULL DEFAULT 'DRAFT_PENDING_APPROVAL',
+    proposed_lifecycle proposal_lifecycle NOT NULL DEFAULT 'PROPOSED',
+    proposal_text TEXT NOT NULL,
+    rejection_summary TEXT,
+    target_subsystem TEXT,
+    raw_transcript_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- 13. DAY 1+ SWITCH HUMAN-IN-THE-LOOP (HITL) APPROVALS
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TYPE hitl_action_type AS ENUM (
+    'APPROVE_LIVING_DECISION',
+    'AUTHORIZE_PR_WARNING',
+    'DISMISS_PR_WARNING'
+);
+
+CREATE TABLE hitl_approval_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    switch_approval_id TEXT NOT NULL UNIQUE, -- Switch host-side approval request ID
+    action_type hitl_action_type NOT NULL,
+    target_pr_number INT,
+    target_repository TEXT,
+    living_draft_id UUID REFERENCES living_decision_drafts(id),
+    decision_alternative_id UUID REFERENCES decision_alternatives(id),
+    card_rendered_payload JSONB NOT NULL,
+    maintainer_decision VARCHAR(32),        -- 'APPROVED', 'REJECTED', 'DISMISSED'
+    maintainer_user_id TEXT,
+    decided_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_hitl_approval_switch ON hitl_approval_requests(switch_approval_id);
 ```
 
 ---
