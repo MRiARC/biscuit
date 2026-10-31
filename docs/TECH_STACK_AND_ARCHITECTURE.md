@@ -153,7 +153,7 @@ flowchart TD
 
 ### Module 1: `biscuit.ingest` (Universal Ingestion & Versioning)
 * **When:** Ingesting historical archives or streaming live webhook payloads.
-* **How:** Ingests raw JSON/mbox threads into `source_threads` and `source_messages`. Each capture is stored in `source_message_versions` with a monotonic `version_number` and SHA-256 `content_hash`. Raw content is preserved byte-for-byte exact as received over the wire (no CRLF modification on raw text). CRLF normalization occurs strictly on derived representations (`derived_cleaned_content`). Remote edits or deletions append new versions ($v_2, v_3$) with `edit_state = 'EDITED'` or `'DELETED'`, leaving historical captures untouched.
+* **How:** Ingests source threads and exact decoded message-content fields into `source_threads`, `source_messages`, and append-only `source_message_versions`. It preserves original line endings and Unicode; `content_hash` is SHA-256 over the UTF-8 bytes of exact `raw_content`. CRLF normalization/noise filtering occurs only in derived views, never in source hashes or evidence offsets. Remote edits/deletions append new versions or tombstones while retaining prior captures.
 * **Why:** Guarantees tamper-proof provenance. Evidence spans link directly to `source_message_version_id`, preventing broken citations when forum posts are edited years later.
 
 ### Module 2: `biscuit.deliberation` (Graph Reconstruction & Occurrences)
@@ -171,7 +171,7 @@ flowchart TD
   * **Pass 2 (Deterministic DAG Slicer):** Traces `discussion_edges` to produce isolated sub-threads per proposal.
   * **Pass 3 (`phi-3.5-mini-instruct`):** Classifies comments into individual `arguments` (objections/support) versus authoritative `ruling_evidence` (maintainer consensus). `MODEL_INFERRED` is never treated as an authoritative ruling.
   * **Pass 4 (`qwen2.5-coder-7b-instruct`):** Synthesizes MADR records and identifies zero-based character offsets `[start_char, end_char)`.
-  * Logs full run metadata (model revisions, prompt template hashes, thread snapshot SHA) into `extraction_runs`.
+  * Logs model revisions, prompt/template hash, source snapshot digest, schema version, deterministic slicer/normalizer versions and parameters, seeds, decoding settings, runtime options, and environment-lock digest into `extraction_runs`.
 * **Why:** Decouples individual objections from formal rejections and ensures 100% reproducible execution runs.
 
 ### Module 4: `biscuit.provenance` (Zero-Based Substring Verifier)
@@ -217,16 +217,6 @@ flowchart TD
 ```
 Implementation Sequence:
 ├── PR #7: (OPEN) Architecture Specifications & Data Contracts (Pending Review Corrections)
-├── PR #8: Core Database Models & Migrations (SQLModel, PostgreSQL/pgvector, typed FKs)
-├── PR #9: Ingestion Engine & Message Versioning (Discourse/GitHub adapters, SHA-256 hasher)
-├── PR #10: Deliberation Graph & Recurrence Tracker (discussion_edges, proposal_occurrences)
-├── PR #11: Multi-Pass Local LLM Pipeline (Ollama client, sequential memory loader, prompts)
-├── PR #12: Provenance Verifier & Offset Matcher (Substring verification, UNVERIFIED default)
-├── PR #13: Tree-sitter Code Grounding & Forward DAG Lineage (AST symbol queries, git diff-tree -M)
-├── PR #14: PR Diff Watchdog & Guardrail Authorization (4 Invariants, dry-run audit logging)
-├── PR #15: Switch FastMCP Server Integration (MCP tools, Slack/Discord HITL approval cards)
-└── PR #16: PEP 505 Benchmark Fixtures & CLI Runner (Reproducible evaluation suite, scorecards)
-```
 ├── PR #8: Core Database Models & Migrations (SQLModel, PostgreSQL/pgvector, typed FKs)
 ├── PR #9: Ingestion Engine & Message Versioning (Discourse/GitHub adapters, SHA-256 hasher)
 ├── PR #10: Deliberation Graph & Recurrence Tracker (discussion_edges, proposal_occurrences)
