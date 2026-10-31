@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 function BiscuitMark({ small = false }: { small?: boolean }) {
   return (
@@ -145,7 +146,7 @@ const principles = [
   },
 ];
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({ children }: { children: ReactNode }) {
   return <div className="section-label"><span />{children}</div>;
 }
 
