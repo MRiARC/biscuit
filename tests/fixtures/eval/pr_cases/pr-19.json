@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Parser/parser.c",
-      "diff": "diff --git a/Parser/parser.c b/Parser/parser.c\n--- a/Parser/parser.c\n+++ b/Parser/parser.c\n@@ -0,0 +1,2 @@\n<<<<<<< branch-a\n+parser tweak\n=======\n+other parser tweak\n>>>>>>> branch-b"
+      "diff": "diff --git a/Parser/parser.c b/Parser/parser.c\n--- a/Parser/parser.c\n+++ b/Parser/parser.c\n@@ -0,0 +1,5 @@\n+<<<<<<< branch-a\n+parser tweak\n+=======\n+other parser tweak\n+>>>>>>> branch-b"
     }
   ],
   "fixture_origin": "SYNTHETIC"
