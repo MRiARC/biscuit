@@ -28,6 +28,7 @@ if typer is not None:
     def evaluate(
         benchmark: str = typer.Option("pep-505", "--benchmark"),
         all_benchmarks: bool = typer.Option(False, "--all"),
+        simulate: bool = typer.Option(True, "--simulate/--no-simulate"),
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
         fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
@@ -68,6 +69,7 @@ if typer is not None:
                     ),
                     fixtures_root=root,
                     audit_db=audit_db,
+                    recorded_replay=predictions is None and simulate,
                 )
                 for name in names
             ]

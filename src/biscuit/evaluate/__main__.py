@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict-offsets", action="store_true")
     parser.add_argument("--audit-db", type=Path, help="SQLite per-PR audit database")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--no-simulate", action="store_true", help="Return NOT_MEASURED unless predictions supplied")
     args = parser.parse_args(argv)
 
     if args.all:
@@ -46,7 +47,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = run_benchmark(
                 name, fixtures_root=args.fixtures_root, predictions_path=prediction_file,
-                audit_db=args.audit_db
+                audit_db=args.audit_db,
+                recorded_replay=args.predictions is None and not args.no_simulate,
             )
             outputs.append(result.to_dict())
     except (ValueError, OSError, KeyError, TypeError) as exc:

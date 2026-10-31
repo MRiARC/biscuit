@@ -67,9 +67,9 @@ def test_typer_evaluate_and_scorecard(tmp_path) -> None:
     runner = CliRunner()
     output = tmp_path / "scorecard.json"
     result = runner.invoke(app, ["evaluate", "--benchmark", "pep-505", "--output", str(output)])
-    assert result.exit_code == 2
+    assert result.exit_code == 0, result.output
     assert output.exists()
-    assert "NOT_MEASURED" in result.output
+    assert "RECORDED_SYNTHETIC_REPLAY" in result.output
 
 
 def test_typer_decisions_list_and_export(tmp_path) -> None:
@@ -155,10 +155,11 @@ def test_stdlib_benchmark_cli_runs_without_typer(tmp_path) -> None:
         "--benchmark", "pep-505", "--output", "json",
     ]
     executed = subprocess.run(command, capture_output=True, text=True, check=False)
-    assert executed.returncode == 2
+    assert executed.returncode == 0, executed.stderr
     payload = json.loads(executed.stdout)
-    assert payload["verdict"] == "NOT_MEASURED"
-    assert payload["dataset_kind"] == "SYNTHETIC_SMOKE_NOT_HISTORICAL"
+    assert payload["verdict"] == "PASSED"
+    assert payload["dataset_kind"] == "SYNTHETIC_REPLAY_NOT_HISTORICAL"
+    assert payload["prediction_source"] == "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL"
 
 
 def test_stdlib_cli_strict_offsets_rejects_unmeasured_fixture() -> None:
@@ -166,7 +167,7 @@ def test_stdlib_cli_strict_offsets_rejects_unmeasured_fixture() -> None:
     import sys
 
     result = subprocess.run(
-        [sys.executable, "-m", "biscuit.evaluate", "--strict-offsets", "--output", "json"],
+        [sys.executable, "-m", "biscuit.evaluate", "--strict-offsets", "--output", "json", "--no-simulate"],
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 1
@@ -219,3 +220,32 @@ def test_decision_schema_migrates_existing_local_cache(tmp_path) -> None:
     with connect_db(db) as conn:
         fields = {row[1] for row in conn.execute("PRAGMA table_info(decisions)")}
         assert "record_json" in fields
+
+
+def test_cli_all_uses_three_synthetic_fixtures_without_false_history(tmp_path) -> None:
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "biscuit.evaluate", "--all", "--output", "json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert len(data["benchmarks"]) == 3
+    assert {entry["benchmark_id"] for entry in data["benchmarks"]} == {
+        "pep-505", "pep-557", "pep-572",
+    }
+    assert all("SYNTHETIC" in item["dataset_kind"] for item in data["benchmarks"])
+    assert data["verdict"] == "PASSED"
+
+
+def test_typer_cli_no_simulate_remains_unmeasured(tmp_path) -> None:
+    from typer.testing import CliRunner
+    from biscuit.cli.main import app
+
+    response = CliRunner().invoke(
+        app, ["evaluate", "--no-simulate", "--output", str(tmp_path / "none.json")]
+    )
+    assert response.exit_code == 2
+    assert "NOT_MEASURED" in response.output

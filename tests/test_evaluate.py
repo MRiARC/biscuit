@@ -13,6 +13,9 @@ from biscuit.evaluate.fixtures import (
     load_ground_truth,
     load_pr_cases,
     load_pr_labels,
+    load_pr_expected_alternatives,
+    load_simulated_predictions,
+    verify_manifest,
     load_thread,
     predictor_input,
     thread_digest,
@@ -20,6 +23,8 @@ from biscuit.evaluate.fixtures import (
 )
 from biscuit.evaluate.metrics import (
     ast_grounding_precision,
+    alternative_disambiguation_rate,
+    hashed_text_embedding,
     causal_rationale_alignment,
     cosine_similarity,
     exact_evidence_match,
@@ -163,31 +168,8 @@ def test_predictor_receives_no_ground_truth_or_pr_labels() -> None:
 
 
 def _synthetic_predictions() -> dict:
-    """Unit-test oracle output only: NOT evidence of a production model run."""
-    truth = load_ground_truth("pep-505")
-    raw = load_thread("pep-505")
-    quote = raw["messages"][1]["raw_text"]
-    return {
-        "proposals": [
-            {
-                "proposal_id": item["proposal_id"],
-                "status": item["ground_truth_status"],
-                "code_anchors": item["code_anchors"],
-                "rationale_embedding": item["rationale_embedding"],
-            }
-            for item in truth["proposals"]
-        ],
-        "evidence": [{
-            "message_id": "post-s1",
-            "start_char": 0,
-            "end_char": len(quote),
-            "quote": quote,
-            "sha256": hashlib.sha256(quote.encode()).hexdigest(),
-        }],
-        "warned_pr_ids": [
-            case_id for case_id, label in load_pr_labels().items() if label == "violation"
-        ],
-    }
+    """Independent recorded mock data: no oracle import or ground-truth copying."""
+    return load_simulated_predictions("pep-505")
 
 
 def test_runner_scores_supplied_synthetic_predictions_and_writes_json(tmp_path) -> None:
@@ -195,7 +177,7 @@ def test_runner_scores_supplied_synthetic_predictions_and_writes_json(tmp_path) 
     predictions.write_text(json.dumps(_synthetic_predictions()), encoding="utf-8")
     destination = tmp_path / "scorecard.json"
     result = run_benchmark("pep-505", predictions_path=predictions, output_path=destination)
-    assert result.dataset_kind == "SYNTHETIC_SMOKE_NOT_HISTORICAL"
+    assert result.dataset_kind == "SYNTHETIC_REPLAY_NOT_HISTORICAL"
     assert result.verdict == "PASSED"
     assert all(m.status == "PASSED" for m in result.metrics)
     payload = json.loads(destination.read_text(encoding="utf-8"))
@@ -261,9 +243,77 @@ def test_audit_database_stores_20_case_abstentions_idempotently(tmp_path) -> Non
     assert len(rows) == 20
     assert sum(cls == "benign" and action == "ABSTAIN" for cls, action in rows) == 10
     assert sum(cls == "ambiguous" and action == "ABSTAIN" for cls, action in rows) == 5
-    modified = {**predictions, "warned_pr_ids": [*predictions["warned_pr_ids"], "pr-06"]}
+    modified = {
+        **predictions,
+        "warned_pr_ids": [*predictions["warned_pr_ids"], "pr-06"],
+        "warning_records": [
+            *predictions["warning_records"],
+            {"case_id": "pr-06", "alternative_id": "pep-505:S1",
+             "authorization": "SIMULATED_VERIFIED_RULING"},
+        ],
+    }
     run_benchmark("pep-505", predictor=lambda _: modified, audit_db=db)
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM pr_watchdog_audit_log"
         ).fetchone()[0] == 40
+
+
+def test_heldout_warning_wrong_rejected_alternative_is_false_positive() -> None:
+    labels = load_pr_labels()
+    expected = load_pr_expected_alternatives()
+    good = load_simulated_predictions("pep-505")["warning_records"]
+    bad = [*good]
+    bad[0] = {**bad[0], "alternative_id": "pep-572:P4"}
+    score = pr_warning_metrics(
+        labels,
+        [entry["case_id"] for entry in bad],
+        warning_records=bad, expected_alternatives=expected,
+    )
+    assert score["tp"] == 4 and score["fp"] == 1 and score["fn"] == 1
+    assert score["precision"] == pytest.approx(4 / 5)
+    assert score["audit_rows"][0]["correct"] is False
+
+
+def test_alternative_disambiguation_requires_nonoverlapping_symbols() -> None:
+    different = [
+        {"proposal_id": "P1", "file_path": "file.py", "ast_node_type": "FunctionDef"},
+        {"proposal_id": "P2", "file_path": "file.py", "ast_node_type": "ClassDef"},
+    ]
+    assert alternative_disambiguation_rate(different, ["P1", "P2"])["rate"] == 1.0
+    collided = [dict(different[0]), dict(different[0], proposal_id="P2")]
+    assert alternative_disambiguation_rate(collided, ["P1", "P2"])["rate"] == 0.0
+
+
+def test_deterministic_text_embedding_is_local_and_rationale_distinguishing() -> None:
+    same = hashed_text_embedding("Unsafe grammar collision")
+    assert len(same) == 256
+    assert same == hashed_text_embedding("Unsafe grammar collision")
+    assert cosine_similarity(same, hashed_text_embedding("grammar collision unsafe")) == pytest.approx(1.0)
+    assert cosine_similarity(same, hashed_text_embedding("different unrelated concepts")) < 0.82
+
+
+@pytest.mark.parametrize("pep", ["pep-505", "pep-572", "pep-557"])
+def test_three_synthetic_fixture_manifests_and_replay_are_valid(pep) -> None:
+    source = load_thread(pep)
+    manifest = verify_manifest(pep, source)
+    assert manifest["thread_sha256"] == source["thread_sha256"]
+    assert manifest["reviewer"] == "PENDING_INDEPENDENT_REVIEW"
+    assert manifest["historical_data"] is False
+    oracle = load_ground_truth(pep)
+    for proposal in oracle["proposals"]:
+        assert proposal["name"] and proposal["rationale_text"]
+        if proposal["ground_truth_status"] == "REJECTED":
+            ruling = proposal["authoritative_ruling"]
+            text = next(
+                m["raw_text"] for m in source["messages"]
+                if m["message_id"] == ruling["source_message_id"]
+            )
+            assert text[ruling["start_char"]:ruling["end_char"]] == ruling["exact_quote"]
+            assert hashlib.sha256(ruling["exact_quote"].encode()).hexdigest() == (
+                ruling["content_sha256"]
+            )
+    evaluated = run_benchmark(pep, recorded_replay=True)
+    assert evaluated.prediction_source == "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL"
+    assert evaluated.verdict == "PASSED"
+    assert evaluated.counts["rationale"]["embedding_method"].endswith("NOT_SEMANTIC")
