@@ -138,6 +138,17 @@ def test_symbol_split_marks_ambiguous(tmp_path: Path) -> None:
     assert not result.safe_for_automatic_migration
 
 
+def test_copy_with_original_remaining_requires_abstention(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    write(root, "new/copy.py", "def tok_get(other):\n    return other + 1\n")
+    commit(root, "copy symbol without deleting original")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert result.resolved_path is None
+    assert set(result.candidates) == {"old/parser.py", "new/copy.py"}
+    assert result.mapping_confidence is None
+
+
 def test_clean_two_parent_merge(tmp_path: Path) -> None:
     root, past = initialize_repo(tmp_path)
     git(root, "checkout", "-qb", "feature")

@@ -170,9 +170,10 @@ def _transition(
         candidates |= _matching_paths(repo, commit, set(next_paths), language, exemplar,
                                       require_tree_sitter)
     # Symbol moves/splits may not be recognized by Git's file similarity score.
-    # Scan only touched source files, never the entire repository as an assumed match.
+    # Scan only touched source files, including new copies while the source
+    # still exists. Otherwise a silent copy would be falsely marked unique.
     extension = ".py" if language == "python" else ".c"
-    if touched and (not candidates or operation == "COPY_C"):
+    if touched:
         scan = {p for p in touched if p.endswith(extension)}
         candidates |= _matching_paths(repo, commit, scan, language, exemplar,
                                       require_tree_sitter)
