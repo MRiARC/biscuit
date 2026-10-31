@@ -510,6 +510,6 @@ def test_all_twenty_patches_have_valid_unified_diff_hunks() -> None:
             )
             _validate_unified_diff(file)
             corrupted = dict(file)
-            corrupted["diff"] = corrupted["diff"].replace("@@ -", "@@ -999", 1)
+            corrupted["diff"] = corrupted["diff"] + "\n+extra"
             with pytest.raises(ValueError, match="line counts"):
                 _validate_unified_diff(corrupted)
