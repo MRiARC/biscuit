@@ -17,8 +17,9 @@ Enforces non-negotiable provenance and authority invariants:
 
 import re
 from typing import Any
-from biscuit.extract.audit import AuditWriter, sha256_json
 from uuid import UUID, uuid4
+
+from biscuit.extract.audit import AuditWriter, sha256_json
 
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
