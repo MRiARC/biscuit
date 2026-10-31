@@ -73,7 +73,6 @@ def test_typer_evaluate_and_scorecard(tmp_path) -> None:
 
 
 def test_typer_decisions_list_and_export(tmp_path) -> None:
-    import typer
     from typer.testing import CliRunner
 
     from biscuit.cli.main import app
