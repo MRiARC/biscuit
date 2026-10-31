@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Lib/test/test_grammar.py",
-      "diff": "-assert actual == 1\n+assert actual == expected"
+      "diff": "diff --git a/Lib/test/test_grammar.py b/Lib/test/test_grammar.py\n--- a/Lib/test/test_grammar.py\n+++ b/Lib/test/test_grammar.py\n@@ -1,1 +1,1 @@\n-assert actual == 1\n+assert actual == expected"
     }
   ],
   "fixture_origin": "SYNTHETIC"
