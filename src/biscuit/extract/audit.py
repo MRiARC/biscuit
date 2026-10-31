@@ -39,7 +39,7 @@ class PostgresExtractionAuditWriter:
 
     def write(self, record: dict[str, Any]) -> None:
         if not isinstance(record.get("source_thread_id"), UUID):
-            raise ValueError("Persisted audit requires an actual source_thread_id UUID")
+            raise TypeError("Persisted audit requires an actual source_thread_id UUID")
         try:
             cursor = self.connection.cursor()
             try:
