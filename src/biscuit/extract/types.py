@@ -80,6 +80,7 @@ class ExtractedMADR(BaseModel):
     considered_alternatives: list[dict[str, Any]] = Field(default_factory=list)
     decision_outcome: dict[str, Any] | None = None
     evidence_quotes: list[dict[str, Any]] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
 
 
 class ExtractionRunResult(BaseModel):
