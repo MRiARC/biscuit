@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
 from sqlalchemy import event, text
+from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine
@@ -261,6 +262,28 @@ async def apply_async_triggers(async_engine: AsyncEngine | None = None) -> None:
                     await conn.execute(text(stmt))
 
 
+def _bootstrap_sqlite_schema(conn) -> None:
+    """Create SQLite tables with every declared FK inline, including cyclic FKs.
+
+    SQLAlchemy's normal metadata.create_all() defers cyclic foreign keys to
+    ALTER TABLE; SQLite does not support ALTER ADD CONSTRAINT, so those FKs
+    are otherwise silently missing. SQLite permits forward FK references in
+    CREATE TABLE, allowing us to emit the complete table DDL up front.
+    Keep this path idempotent and create all SQLModel secondary indexes.
+    """
+    for table in SQLModel.metadata.tables.values():
+        conn.execute(
+            CreateTable(
+                table,
+                if_not_exists=True,
+                include_foreign_key_constraints=list(table.foreign_key_constraints),
+            )
+        )
+    for table in SQLModel.metadata.tables.values():
+        for index in table.indexes:
+            conn.execute(CreateIndex(index, if_not_exists=True))
+
+
 def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
     """Create all SQLModel tables in database and bootstrap triggers on PostgreSQL.
 
@@ -273,7 +296,11 @@ def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
     if target_engine.dialect.name == "postgresql":
         bootstrap_postgres_extensions(target_engine)
 
-    SQLModel.metadata.create_all(target_engine)
+    if target_engine.dialect.name == "sqlite":
+        with target_engine.begin() as conn:
+            _bootstrap_sqlite_schema(conn)
+    else:
+        SQLModel.metadata.create_all(target_engine)
 
     if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
         apply_triggers(target_engine)
@@ -295,7 +322,10 @@ async def init_async_db(
         await bootstrap_async_postgres_extensions(target_engine)
 
     async with target_engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
+        if target_engine.dialect.name == "sqlite":
+            await conn.run_sync(_bootstrap_sqlite_schema)
+        else:
+            await conn.run_sync(SQLModel.metadata.create_all)
 
     if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
         await apply_async_triggers(target_engine)
