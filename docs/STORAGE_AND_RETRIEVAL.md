@@ -890,7 +890,7 @@ BEGIN
         ELSIF NEW.edge_type = 'RESOLVES'
           AND (ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
                OR NEW.edge_provenance = 'MODEL_INFERRED'
-               OR ruling_author_role NOT IN ('BDFL', 'Core Maintainer', 'Working Group Chair')) THEN
+               OR ruling_author_role IS NULL OR ruling_author_role NOT IN ('BDFL', 'Core Maintainer', 'Working Group Chair')) THEN
             RAISE EXCEPTION 'RESOLVES requires VERIFIED_EXACT RULING evidence authored by an identified human authority';
         END IF;
     END IF;
