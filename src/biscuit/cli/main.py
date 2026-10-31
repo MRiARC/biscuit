@@ -31,6 +31,7 @@ if typer is not None:
         all_benchmarks: bool = typer.Option(False, "--all"),
         simulate: bool = typer.Option(True, "--simulate/--no-simulate"),
         stream3: bool = typer.Option(False, "--stream3"),
+        semantic_embeddings: bool = typer.Option(False, "--semantic-embeddings"),
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
         fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
@@ -60,6 +61,11 @@ if typer is not None:
                     + str(exc), err=True,
                 )
                 raise typer.Exit(1) from exc
+        embedder = None
+        if semantic_embeddings:
+            from biscuit.evaluate.embeddings import LocalOllamaEmbedder
+
+            embedder = LocalOllamaEmbedder()
         root = fixtures_root or DEFAULT_FIXTURE_ROOT
         if output_format not in {"rich", "json"}:
             typer.echo("--format must be rich or json", err=True)
@@ -87,6 +93,7 @@ if typer is not None:
                     ),
                     fixtures_root=root,
                     predictor=predictor,
+                    semantic_embedder=embedder,
                     audit_db=audit_db or _default_db(),
                     recorded_replay=predictions is None and simulate and not stream3,
                 )
