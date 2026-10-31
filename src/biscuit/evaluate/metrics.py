@@ -8,6 +8,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
+JUDGED_STATES = frozenset({
+    "ACCEPTED", "REJECTED", "UNRESOLVED", "DISPUTED",
+    "WITHDRAWN", "DEFERRED", "SUPERSEDED", "ACCEPTED_WITH_MODIFICATION",
+})
+
+
 def _ratio(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
 
@@ -37,6 +43,9 @@ def lifecycle_accuracy(
     predicted: Mapping[str, str], expected: Mapping[str, str]
 ) -> dict[str, Any]:
     """Unrecovered proposals count as incorrect, not as abstained successes."""
+    unknown = (set(expected.values()) | set(predicted.values())) - JUDGED_STATES
+    if unknown:
+        raise ValueError("Unsupported judged lifecycle state(s): " + ", ".join(sorted(unknown)))
     correct = sum(predicted.get(key) == state for key, state in expected.items())
     non_rejected = [key for key, state in expected.items() if state != "REJECTED"]
     false_rejections = sum(predicted.get(key) == "REJECTED" for key in non_rejected)
@@ -107,7 +116,13 @@ def ast_grounding_precision(
 ) -> dict[str, Any]:
     """Alternative, historical commit, file AND symbol/AST identity must agree."""
     truth = {_anchor_key(anchor) for anchor in expected}
-    matches = sum(_anchor_key(anchor) in truth for anchor in predicted)
+    seen: set[tuple[str, str, str, str, str]] = set()
+    matches = 0
+    for anchor in predicted:
+        key = _anchor_key(anchor)
+        if key in truth and key not in seen:
+            matches += 1
+        seen.add(key)
     return {
         "precision": _ratio(matches, len(predicted)),
         "matched": matches,
