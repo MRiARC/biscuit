@@ -1,0 +1,22 @@
+{
+  "pr-01": "violation",
+  "pr-02": "violation",
+  "pr-03": "violation",
+  "pr-04": "violation",
+  "pr-05": "violation",
+  "pr-06": "benign",
+  "pr-07": "benign",
+  "pr-08": "benign",
+  "pr-09": "benign",
+  "pr-10": "benign",
+  "pr-11": "benign",
+  "pr-12": "benign",
+  "pr-13": "benign",
+  "pr-14": "benign",
+  "pr-15": "benign",
+  "pr-16": "ambiguous",
+  "pr-17": "ambiguous",
+  "pr-18": "ambiguous",
+  "pr-19": "ambiguous",
+  "pr-20": "ambiguous"
+}

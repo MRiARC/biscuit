@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-17",
+  "title": "Syntax resembles optional chaining but status deferred",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "+# tentative safe navigation proposal\n+trailer: '?.' NAME"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

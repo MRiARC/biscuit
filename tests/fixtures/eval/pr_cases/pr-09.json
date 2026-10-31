@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-09",
+  "title": "PEP572 accepted walrus syntax",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "+# Accepted assignment expression, NOT rejected\n+named_expression: NAME ':=' expression"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

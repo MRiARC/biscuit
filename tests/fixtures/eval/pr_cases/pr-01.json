@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-01",
+  "title": "PEP505 unary operator inserted",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "+# Rejected syntax experiment\n+unary_expr: '?' NAME"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

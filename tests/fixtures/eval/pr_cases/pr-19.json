@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-19",
+  "title": "Multiple parents on parser change",
+  "files": [
+    {
+      "path": "Parser/parser.c",
+      "diff": "<<<<<<< branch-a\n+parser tweak\n=======\n+other parser tweak\n>>>>>>> branch-b"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

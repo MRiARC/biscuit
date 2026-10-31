@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-02",
+  "title": "Rejected assignment proposal with expression equals",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "+# Invalid expression assignment proposal\n+expression: NAME '=' expression"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

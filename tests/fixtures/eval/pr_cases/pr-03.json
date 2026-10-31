@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-03",
+  "title": "Rejected where-block grammar",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "+# Rejected alternative\n+named_expr: expression 'where:' assignment"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

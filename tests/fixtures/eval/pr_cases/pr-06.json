@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-06",
+  "title": "Change Python comment",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "-# argument parsing\n+# Parser argument handling"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

@@ -1,0 +1,42 @@
+{
+  "benchmark_id": "pep-505",
+  "dataset_kind": "SYNTHETIC_SMOKE_NOT_HISTORICAL",
+  "title": "Synthetic PEP 505-themed two-message unit fixture",
+  "notice": "NOT the 234-post Discourse discussion; no real-world model accuracy claim is possible",
+  "proposals": [
+    {
+      "proposal_id": "S1",
+      "ground_truth_status": "REJECTED",
+      "rationale_embedding": [
+        1,
+        0
+      ],
+      "code_anchors": [
+        {
+          "proposal_id": "S1",
+          "file_path": "Grammar/python.gram",
+          "symbol_identifier": "",
+          "ast_node_type": "unary_op",
+          "historical_commit": "synthetic-commit-a"
+        }
+      ]
+    },
+    {
+      "proposal_id": "S2",
+      "ground_truth_status": "DEFERRED",
+      "rationale_embedding": [
+        0,
+        1
+      ],
+      "code_anchors": [
+        {
+          "proposal_id": "S2",
+          "file_path": "Python/ast.c",
+          "symbol_identifier": "ast_for_atom_expr",
+          "ast_node_type": "",
+          "historical_commit": "synthetic-commit-b"
+        }
+      ]
+    }
+  ]
+}

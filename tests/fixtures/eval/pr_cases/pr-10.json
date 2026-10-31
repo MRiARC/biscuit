@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-10",
+  "title": "Parser function rename",
+  "files": [
+    {
+      "path": "Parser/parser.c",
+      "diff": "-int parse_args(void)\n+int parse_arguments(void)"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

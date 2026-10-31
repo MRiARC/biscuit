@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-08",
+  "title": "Docstring wording update",
+  "files": [
+    {
+      "path": "Lib/dataclasses.py",
+      "diff": "-\"\"\"A helper\"\"\"\n+\"\"\"A typed helper\"\"\""
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

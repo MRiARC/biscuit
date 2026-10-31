@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-14",
+  "title": "Improve exception message",
+  "files": [
+    {
+      "path": "Lib/dataclasses.py",
+      "diff": "-raise ValueError('bad')\n+raise ValueError('invalid field')"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

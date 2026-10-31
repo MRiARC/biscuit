@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-20",
+  "title": "Unknown replacement coalesce helper",
+  "files": [
+    {
+      "path": "Python/bltinmodule.c",
+      "diff": "+# semantics not established\n+coalesce_with_lazy_thunks(left, right)"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

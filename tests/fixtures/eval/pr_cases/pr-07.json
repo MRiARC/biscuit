@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-07",
+  "title": "Ternary expression whitespace",
+  "files": [
+    {
+      "path": "Lib/test/test_grammar.py",
+      "diff": "-x if cond else y\n+x  if cond  else y"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

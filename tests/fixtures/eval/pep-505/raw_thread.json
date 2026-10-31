@@ -1,0 +1,24 @@
+{
+  "thread_id": "pep-505-synthetic",
+  "source_platform": "SYNTHETIC",
+  "external_url": null,
+  "expected_source_message_count": 2,
+  "canonicalization_version": 1,
+  "messages": [
+    {
+      "message_id": "post-s2",
+      "author_handle": "fixture-author-b",
+      "created_at": "2026-01-02T00:00:00Z",
+      "raw_text": "The safe-navigation alternative remains deferred pending grammar work.",
+      "content_sha256": "431b78b07ee224887a70dedd7a46bf785d40224d3ca47dc95a818b27295667e6"
+    },
+    {
+      "message_id": "post-s1",
+      "author_handle": "fixture-author-a",
+      "created_at": "2026-01-01T00:00:00Z",
+      "raw_text": "For this synthetic design review, unary ? is rejected because it conflicts with conditional parsing.",
+      "content_sha256": "e4ffc907d6fd43337ee3ff2432088ae1fa3ca2a82019baeaca0d7c8b34c25b29"
+    }
+  ],
+  "thread_sha256": "6c0eac22724e36ee57e01656df8f36bda1d20e4dd2052c5c1f9a3247b23bec24"
+}

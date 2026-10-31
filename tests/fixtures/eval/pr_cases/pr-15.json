@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-15",
+  "title": "Update test assertion",
+  "files": [
+    {
+      "path": "Lib/test/test_grammar.py",
+      "diff": "-assert actual == 1\n+assert actual == expected"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-13",
+  "title": "Reformat parentheses",
+  "files": [
+    {
+      "path": "Python/ast.c",
+      "diff": "-return (left+right);\n+return (left + right);"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}
