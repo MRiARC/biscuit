@@ -89,7 +89,10 @@ def exact_evidence_match(
             and isinstance(supplied_hash, str)
             and hashlib.sha256(quote.encode("utf-8")).hexdigest() == supplied_hash
         )
-        verified = bool(exact and digest_ok)
+        provenance_status = span.get("verification_status")
+        verified = bool(
+            exact and digest_ok and provenance_status in (None, "VERIFIED_EXACT")
+        )
         valid += verified
         results.append({"index": i, "message_id": span.get("message_id"), "verified": verified})
     return {
