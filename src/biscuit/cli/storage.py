@@ -44,7 +44,7 @@ def _read_topic_json(url: str, allowed_host: str) -> dict:
             raise ValueError("Discourse response exceeds 8 MB")
     payload = json.loads(data)
     if not isinstance(payload, dict):
-        raise ValueError("Discourse response must be a JSON object")
+        raise TypeError("Discourse response must be a JSON object")
     return payload
 
 

@@ -57,7 +57,7 @@ if typer is not None:
             raise typer.Exit(2)
         try:
             count = ingest_discourse(url, db or _default_db())
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             typer.echo(f"Ingestion failed: {exc}", err=True)
             raise typer.Exit(1) from exc
         typer.echo(f"Saved {count} messages. Decisions require separate verified extraction.")
