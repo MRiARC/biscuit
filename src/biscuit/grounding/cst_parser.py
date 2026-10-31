@@ -233,7 +233,7 @@ def _c_restricted_lexer(source: bytes, file_path: str) -> list[Symbol]:
     result: list[Symbol] = []
     # This lexer intentionally does not support preprocessor-heavy, macro-based,
     # or GNU-extension declarations; callers must inspect parser_backend.
-    pattern = re.compile(r"\b(?:[\w*]+\s+)+([A-Za-z_]\w*)\s*\(([^;{}]*)\)\s*\{", re.M)
+    pattern = re.compile(r"\b(?:[\w*]+\s+)+([A-Za-z_]\w*)\s*\(([^;{}]*)\)\s*\{", re.MULTILINE)
     for match in pattern.finditer(text):
         level = 1
         pos = match.end()
