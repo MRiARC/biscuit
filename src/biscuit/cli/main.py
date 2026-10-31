@@ -50,8 +50,8 @@ if typer is not None:
         predictor = None
         if stream3:
             try:
-                from biscuit.extract.pipeline import ExtractionPipeline
                 from biscuit.evaluate.stream3_adapter import stream3_predictor
+                from biscuit.extract.pipeline import ExtractionPipeline
 
                 predictor = stream3_predictor(ExtractionPipeline())
             except ImportError as exc:
