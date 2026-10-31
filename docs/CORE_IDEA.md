@@ -173,9 +173,9 @@ During the pitch and judging:
 ---
 
 ## 7. Specifications Map
-- [`docs/TECH_STACK_AND_ARCHITECTURE.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/TECH_STACK_AND_ARCHITECTURE.md): Complete tech stack justifications and module architecture.
-- [`docs/LIVING_DECISION_INTELLIGENCE.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/LIVING_DECISION_INTELLIGENCE.md): Day 1+ live CNCF Slack/Discord interception, Switch FastMCP, and HITL approval cards.
-- [`docs/STORAGE_AND_RETRIEVAL.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/STORAGE_AND_RETRIEVAL.md): Relational DDL, message versions, typed edges, and vector schema.
-- [`docs/INGESTION_AND_EXTRACTION.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/INGESTION_AND_EXTRACTION.md): Universal adapters, noise filtering, and 4-pass extraction.
-- [`docs/CODE_GROUNDING_AND_AST.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/CODE_GROUNDING_AND_AST.md): Tree-sitter AST grounding and forward commit-DAG lineage.
-- [`docs/EVALUATION_AND_BENCHMARKS.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/EVALUATION_AND_BENCHMARKS.md): Quantitative metric suites and target benchmark specifications.
+- [`docs/TECH_STACK_AND_ARCHITECTURE.md`](./TECH_STACK_AND_ARCHITECTURE.md): Complete tech stack justifications and module architecture.
+- [`docs/LIVING_DECISION_INTELLIGENCE.md`](./LIVING_DECISION_INTELLIGENCE.md): Day 1+ live CNCF Slack/Discord interception, Switch FastMCP, and HITL approval cards.
+- [`docs/STORAGE_AND_RETRIEVAL.md`](./STORAGE_AND_RETRIEVAL.md): Relational DDL, message versions, typed edges, and vector schema.
+- [`docs/INGESTION_AND_EXTRACTION.md`](./INGESTION_AND_EXTRACTION.md): Universal adapters, noise filtering, and 4-pass extraction.
+- [`docs/CODE_GROUNDING_AND_AST.md`](./CODE_GROUNDING_AND_AST.md): Tree-sitter AST grounding and forward commit-DAG lineage.
+- [`docs/EVALUATION_AND_BENCHMARKS.md`](./EVALUATION_AND_BENCHMARKS.md): Quantitative metric suites and target benchmark specifications.

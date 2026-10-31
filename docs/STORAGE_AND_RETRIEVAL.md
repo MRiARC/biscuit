@@ -584,20 +584,21 @@ CREATE TYPE living_decision_state AS ENUM (
 CREATE TABLE living_decision_drafts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     switch_session_id TEXT NOT NULL,
-    source_platform VARCHAR(32) NOT NULL,  -- 'slack', 'discord', 'mattermost'
-    channel_id TEXT NOT NULL,
-    thread_ts TEXT NOT NULL,
-    initiating_author_handle TEXT NOT NULL,
+    source_thread_id UUID NOT NULL REFERENCES source_threads(id) ON DELETE CASCADE,
+    initiating_message_version_id UUID NOT NULL REFERENCES source_message_versions(id) ON DELETE RESTRICT,
+    initiating_author_id UUID REFERENCES contributors(id),
     topic TEXT NOT NULL,
     draft_status living_decision_state NOT NULL DEFAULT 'DRAFT_PENDING_APPROVAL',
     proposed_lifecycle proposal_lifecycle NOT NULL DEFAULT 'PROPOSED',
     proposal_text TEXT NOT NULL,
     rejection_summary TEXT,
     target_subsystem TEXT,
-    raw_transcript_json JSONB NOT NULL,
+    draft_evidence_span_ids JSONB DEFAULT '[]'::jsonb, -- Array of evidence_spans(id) backing the claims
     created_at TIMESTAMPTZ DEFAULT NOW(),
     resolved_at TIMESTAMPTZ
 );
+
+CREATE INDEX idx_living_drafts_thread ON living_decision_drafts(source_thread_id);
 
 -- ─────────────────────────────────────────────────────────────
 -- 13. DAY 1+ SWITCH HUMAN-IN-THE-LOOP (HITL) APPROVALS
@@ -609,22 +610,47 @@ CREATE TYPE hitl_action_type AS ENUM (
     'DISMISS_PR_WARNING'
 );
 
+CREATE TYPE hitl_request_status AS ENUM (
+    'PENDING',
+    'DECIDED',
+    'EXPIRED',
+    'REVOKED'
+);
+
 CREATE TABLE hitl_approval_requests (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     switch_approval_id TEXT NOT NULL UNIQUE, -- Switch host-side approval request ID
     action_type hitl_action_type NOT NULL,
+    status hitl_request_status NOT NULL DEFAULT 'PENDING',
+    idempotency_key VARCHAR(64) NOT NULL UNIQUE, -- Prevents replayed webhook callbacks
     target_pr_number INT,
     target_repository TEXT,
     living_draft_id UUID REFERENCES living_decision_drafts(id),
     decision_alternative_id UUID REFERENCES decision_alternatives(id),
     card_rendered_payload JSONB NOT NULL,
-    maintainer_decision VARCHAR(32),        -- 'APPROVED', 'REJECTED', 'DISMISSED'
-    maintainer_user_id TEXT,
-    decided_at TIMESTAMPTZ,
+    authorized_roles TEXT[] NOT NULL DEFAULT ARRAY['BDFL', 'Core Maintainer'],
+    callback_hmac_secret_id VARCHAR(64) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '72 hours'),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_hitl_approval_switch ON hitl_approval_requests(switch_approval_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- 14. DAY 1+ APPEND-ONLY APPROVAL AUDIT LOG
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE hitl_approval_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    approval_request_id UUID NOT NULL REFERENCES hitl_approval_requests(id) ON DELETE CASCADE,
+    actor_platform_id TEXT NOT NULL,
+    actor_contributor_id UUID REFERENCES contributors(id),
+    action_taken VARCHAR(32) NOT NULL,       -- 'APPROVE_DRAFT', 'REJECT_DRAFT', 'AUTHORIZE_PR_COMMENT', 'DISMISS_PR_COMMENT'
+    payload_signature VARCHAR(64) NOT NULL,  -- HMAC-SHA256 signature of callback payload
+    recorded_at TIMESTAMPTZ DEFAULT NOW()    -- Immutable append-only record
+);
+
+CREATE INDEX idx_hitl_events_request ON hitl_approval_events(approval_request_id);
 ```
 
 ---

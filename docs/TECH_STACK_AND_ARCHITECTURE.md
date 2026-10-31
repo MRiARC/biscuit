@@ -56,7 +56,7 @@ Biscuit addresses **Problem 06: Open Source Decision Intelligence and Knowledge 
 ### Why Python 3.12 Over Golang:
 
 1. **Native Parity with Switch:**
-   Inspection of [`sandbox-quantum/switch`](file:///Users/adarshchauhan/Downloads/hacktober%20/switch/core/pyproject.toml) demonstrates that `switch-core` is built directly on **Python 3.12, FastAPI, Pydantic v2, SQLAlchemy Async, and MCP**. Choosing Python ensures 1:1 data model compatibility and allows Biscuit to run as a native Python agent or FastMCP service with zero translation friction.
+   Inspection of [`sandbox-quantum/switch` (v0.31.0)](https://github.com/sandbox-quantum/switch) demonstrates that `switch-core` is built directly on **Python 3.12, FastAPI, Pydantic v2, SQLAlchemy Async, and MCP**. Choosing Python ensures 1:1 data model compatibility and allows Biscuit to run as a native Python agent or FastMCP service with zero translation friction.
 2. **The LLM Latency Bottleneck:**
    A local 7B-parameter model inference call takes **$1,500 \text{ ms} - 3,000 \text{ ms}$**. Vector retrieval takes **$5 \text{ ms} - 15 \text{ ms}$**. Glue code execution in Python takes **$< 2 \text{ ms}$**. Because $>98\%$ of wall-clock time is spent in local model matrix calculations, Go's microsecond advantage is imperceptible.
 3. **AST Grounding & Tree-sitter Tooling:**
@@ -198,7 +198,7 @@ flowchart TD
 ### Module 7: `biscuit.switch_agent` (Switch FastMCP Bridge & Day 1+ Living Intelligence)
 * **When:** Continuous daemon / MCP bridge.
 * **How:** Exposes FastMCP endpoints (`query_decisions`, `check_pr_diff`, `draft_living_decision`) to `sandbox-quantum/switch`. When maintainers debate in Slack or Discord, Switch streams messages to Biscuit to create living ADR drafts in `living_decision_drafts`. In `INTERACTIVE_HITL` mode, PR warnings and decision approvals are routed to Slack/Discord Block Kit cards via `hitl_approval_requests` for maintainer confirmation before commenting or publishing.
-* **Why:** Connects Biscuit to living team communication channels without writing bespoke bot code for every platform. Fully detailed in [`docs/LIVING_DECISION_INTELLIGENCE.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/LIVING_DECISION_INTELLIGENCE.md).
+* **Why:** Connects Biscuit to living team communication channels without writing bespoke bot code for every platform. Fully detailed in [`docs/LIVING_DECISION_INTELLIGENCE.md`](./LIVING_DECISION_INTELLIGENCE.md).
 
 ### Module 8: `biscuit.evaluate` (Reproducible Benchmark Harness)
 * **When:** CI/CD test runs and validation benchmarks.
