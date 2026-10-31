@@ -89,3 +89,46 @@ compliance: representative workloads, all per-service RSS/PSS, swapping, OOM
 behavior, container boundaries and CPU/GPU hardware must still be profiled
 on the target deployment. The fixture replay mode does not make a fake
 measured-memory claim.
+
+## Acceptance gate: rationale completeness and production watchdog evidence
+
+The benchmark now requires `Causal rationale coverage = 100%` **in addition
+to** CRA cosine similarity ≥0.82. Coverage counts all ground-truth alternatives
+with annotated rationale; missing predicted rationales fail even when the
+surviving similarity is 1.0. Missing model-matched semantic reference vectors
+produce `NOT_MEASURED` when none exist, or failed coverage when only a
+subset exists. A synthetic replay pass still does not certify real semantic
+model quality.
+
+The runner accepts `trusted_ruling_proofs` and `verified_project_roles`
+**only as scorer-side Python API inputs**, never via the prediction payload.
+Real warning records must declare `authorization="VERIFIED_HUMAN_RULING"`,
+`alternative_id`, `ruling_source_message_id`, `ruling_source_message_version_id`,
+and `ruling_quote_sha256`.
+
+For each alternative, the independent trusted proof list includes
+`source_message_id`, `source_message_version_id`, `alternative_id`,
+`author_handle`, `raw_text`, `source_content_sha256`, exact
+`[start_char,end_char)` offsets, `quote_sha256`, `evidence_role` (RULING or
+SIGNOFF), `review_status="HUMAN_VERIFIED"`, and `is_edited=false`.
+The evaluator verifies the complete content digest and exact quoted span;
+ruling evidence must match the withheld expected alternative, source, and
+quote digest. Role grants come from a separately trusted project authority
+map. Verified BDFL rulings pass directly; maintainer consensus requires a
+distinct verified maintainer sign-off; WG chair rulings require a distinct
+verified WG member or maintainer sign-off. Unreviewed, edited, unbound,
+misattributed, or model-inferred proofs fail closed.
+
+**Security boundary:** An independently verified storage connector must
+populate those scorer-only arguments from immutable source-message versions
+and human-reviewed, alternative-bound annotations. Do not load them from the
+LLM, its generated warning records, or a model-accessible fixture directory.
+The supplied isolated unit tests emulate that connector; they are NOT proof
+that a production storage backend is already wired in.
+
+The `SIMULATED_VERIFIED_RULING` marker is accepted for explicitly
+synthetic fixture evaluation only. Supplied hand-authored replay payloads
+are labeled `INJECTED_SYNTHETIC_MOCK_NOT_MODEL`; an ordinary real predictor
+cannot obtain genuine authorization merely by emitting the synthetic
+marker. The existing 20 synthetic PR cases remain a contract test, not
+historical evidence of real-world watchdog precision.
