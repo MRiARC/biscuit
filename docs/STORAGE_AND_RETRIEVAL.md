@@ -273,7 +273,7 @@ CREATE TABLE contributors (
     canonical_name TEXT NOT NULL,
     author_handle TEXT NOT NULL,           -- e.g. 'gvanrossum', 'markshannon'
     email_prefix TEXT,                     -- Sanitized email identifier for mailing lists
-    project_role TEXT,                     -- 'BDFL', 'Core Maintainer', 'Contributor'
+    -- Roles are project-scoped; contributor identity is not itself authorization.
     created_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT uq_contributor_platform UNIQUE (source_platform, platform_user_id)
 );
@@ -295,6 +295,34 @@ CREATE TABLE source_threads (
     ingestion_metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT uq_source_thread UNIQUE (source_platform, project_context, external_thread_id)
+);
+
+-- Verified project-specific authority, append-only with separate revocation events.
+-- A contributor's role in one repository conveys no authority in another.
+CREATE TYPE contributor_project_role AS ENUM ('BDFL', 'Core Maintainer', 'Working Group Chair', 'Working Group Member', 'Contributor');
+CREATE TABLE contributor_project_role_grants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    project_context TEXT NOT NULL, -- Must match the target decision's source_threads.project_context
+    role contributor_project_role NOT NULL,
+    verified_by_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    verification_source_url TEXT NOT NULL,
+    verified_at TIMESTAMPTZ NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_grant_project CHECK (length(trim(project_context)) > 0),
+    CONSTRAINT chk_grant_source CHECK (length(trim(verification_source_url)) > 0),
+    CONSTRAINT chk_grant_window CHECK (valid_until IS NULL OR valid_until > valid_from)
+);
+CREATE INDEX idx_project_role_grants
+ON contributor_project_role_grants(contributor_id, project_context, role);
+
+CREATE TABLE contributor_project_role_revocations (
+    grant_id UUID PRIMARY KEY REFERENCES contributor_project_role_grants(id) ON DELETE RESTRICT,
+    revoked_by_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) > 0)
 );
 
 CREATE TABLE source_messages (
@@ -449,12 +477,14 @@ CREATE TABLE decision_alternatives (
     ruling_evidence_id UUID,               -- Composite FK linked below
     ruling_authority ruling_authority,
     ruling_actor_id UUID REFERENCES contributors(id) ON DELETE RESTRICT,
+    ruling_actor_grant_id UUID REFERENCES contributor_project_role_grants(id) ON DELETE RESTRICT,
     embedding vector(768),                 -- nomic-embed-text-v1.5; candidate retrieval only
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_alt_proposal UNIQUE (decision_id, proposal_text),
     CONSTRAINT chk_rejected_requires_ruling CHECK (
         lifecycle_status <> 'REJECTED'
-        OR (ruling_evidence_id IS NOT NULL AND ruling_authority IS NOT NULL AND ruling_actor_id IS NOT NULL)
+        OR (ruling_evidence_id IS NOT NULL AND ruling_authority IS NOT NULL
+            AND ruling_actor_id IS NOT NULL AND ruling_actor_grant_id IS NOT NULL)
     )
 );
 
@@ -709,6 +739,7 @@ CREATE TABLE decision_event_log (
     reason TEXT NOT NULL,
     evidence_span_id UUID,
     actor_contributor_id UUID REFERENCES contributors(id) ON DELETE RESTRICT,
+    authority_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb, -- Immutable role/grant/evidence IDs at decision time
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_recurrence_event_link CHECK (
         event_type <> 'RECURRENCE_RECORDED'
@@ -871,30 +902,39 @@ DECLARE
     ev_role evidence_role;
     ev_stance evidence_stance;
     ev_status verification_status;
-    ruling_author_role TEXT;
+    ev_author UUID;
+    decision_project TEXT;
 BEGIN
     IF NEW.edge_type IN ('PROPOSES', 'SUPPORTS', 'OBJECTS', 'REBUTS', 'RESOLVES') THEN
-        SELECT es.evidence_role, es.stance, es.verification_status, c.project_role
-          INTO ev_role, ev_stance, ev_status, ruling_author_role
+        SELECT es.evidence_role, es.stance, es.verification_status, sm.author_id, st.project_context
+          INTO ev_role, ev_stance, ev_status, ev_author, decision_project
           FROM evidence_spans es
           JOIN source_message_versions smv ON smv.id = es.source_message_version_id
           JOIN source_messages sm ON sm.id = smv.message_id
-          LEFT JOIN contributors c ON c.id = sm.author_id
+          JOIN decision_alternatives da ON da.id = NEW.target_alternative_id
+          JOIN decisions d ON d.id = da.decision_id
+          JOIN source_threads st ON st.id = d.source_thread_id
          WHERE es.id = NEW.evidence_span_id;
-        IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edges require an evidence span'; END IF;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Semantic edge needs evidence for a known alternative'; END IF;
         IF NEW.edge_type = 'PROPOSES' AND ev_role <> 'PROPOSAL' THEN
             RAISE EXCEPTION 'PROPOSES requires PROPOSAL evidence';
         ELSIF NEW.edge_type = 'SUPPORTS' AND ev_stance <> 'SUPPORT' THEN
-            RAISE EXCEPTION 'SUPPORTS requires SUPPORT stance evidence';
+            RAISE EXCEPTION 'SUPPORTS requires SUPPORT evidence';
         ELSIF NEW.edge_type = 'OBJECTS' AND ev_stance <> 'OBJECT' THEN
-            RAISE EXCEPTION 'OBJECTS requires OBJECT stance evidence';
+            RAISE EXCEPTION 'OBJECTS requires OBJECT evidence';
         ELSIF NEW.edge_type = 'REBUTS' AND ev_role <> 'REBUTTAL' THEN
             RAISE EXCEPTION 'REBUTS requires REBUTTAL evidence';
         ELSIF NEW.edge_type = 'RESOLVES'
           AND (ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
                OR NEW.edge_provenance = 'MODEL_INFERRED'
-               OR ruling_author_role IS NULL OR ruling_author_role NOT IN ('BDFL', 'Core Maintainer', 'Working Group Chair')) THEN
-            RAISE EXCEPTION 'RESOLVES requires VERIFIED_EXACT RULING evidence authored by an identified human authority';
+               OR NOT EXISTS (
+                   SELECT 1 FROM contributor_project_role_grants g
+                    WHERE g.contributor_id = ev_author AND g.project_context = decision_project
+                      AND g.role IN ('BDFL', 'Core Maintainer', 'Working Group Chair')
+                      AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+                      AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id)
+               )) THEN
+            RAISE EXCEPTION 'RESOLVES needs verified human RULING from this project';
         END IF;
     END IF;
     RETURN NEW;
@@ -907,6 +947,7 @@ FOR EACH ROW EXECUTE FUNCTION enforce_discussion_edge_evidence();
 CREATE TABLE decision_alternative_ruling_signoffs (
     alternative_id UUID NOT NULL REFERENCES decision_alternatives(id) ON DELETE RESTRICT,
     contributor_id UUID NOT NULL REFERENCES contributors(id) ON DELETE RESTRICT,
+    project_role_grant_id UUID NOT NULL REFERENCES contributor_project_role_grants(id) ON DELETE RESTRICT,
     evidence_span_id UUID NOT NULL,
     signed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (alternative_id, contributor_id),
@@ -920,21 +961,30 @@ DECLARE
     ev_role evidence_role;
     ev_status verification_status;
     ev_author UUID;
-    actor_role TEXT;
+    decision_project TEXT;
 BEGIN
-    SELECT es.evidence_role, es.verification_status, sm.author_id, c.project_role
-      INTO ev_role, ev_status, ev_author, actor_role
+    SELECT es.evidence_role, es.verification_status, sm.author_id, st.project_context
+      INTO ev_role, ev_status, ev_author, decision_project
       FROM evidence_spans es
       JOIN source_message_versions smv ON smv.id = es.source_message_version_id
       JOIN source_messages sm ON sm.id = smv.message_id
-      JOIN contributors c ON c.id = NEW.contributor_id
+      JOIN decision_alternatives da ON da.id = NEW.alternative_id
+      JOIN decisions d ON d.id = da.decision_id
+      JOIN source_threads st ON st.id = d.source_thread_id
      WHERE es.id = NEW.evidence_span_id AND es.alternative_id = NEW.alternative_id;
     IF NOT FOUND OR ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
        OR ev_author IS DISTINCT FROM NEW.contributor_id THEN
-        RAISE EXCEPTION 'Sign-off requires VERIFIED_EXACT RULING evidence authored by the signing contributor';
+        RAISE EXCEPTION 'Sign-off requires own VERIFIED_EXACT RULING evidence for this alternative';
     END IF;
-    IF actor_role IS NULL OR actor_role NOT IN ('Core Maintainer', 'Working Group Chair', 'Working Group Member') THEN
-        RAISE EXCEPTION 'Only an authorized maintainer/working-group member may sign a ruling';
+    IF NOT EXISTS (
+        SELECT 1 FROM contributor_project_role_grants g
+         WHERE g.id = NEW.project_role_grant_id AND g.contributor_id = NEW.contributor_id
+           AND g.project_context = decision_project
+           AND g.role IN ('Core Maintainer', 'Working Group Chair', 'Working Group Member')
+           AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+           AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id)
+    ) THEN
+        RAISE EXCEPTION 'Sign-off needs active verified project-specific role grant';
     END IF;
     RETURN NEW;
 END;
@@ -952,58 +1002,84 @@ DECLARE
     ev_status verification_status;
     ev_alternative UUID;
     ev_author UUID;
-    actor_role TEXT;
+    decision_project TEXT;
+    actor_role contributor_project_role;
     signoff_count INT;
 BEGIN
     IF NEW.lifecycle_status = 'REJECTED' THEN
-        SELECT es.evidence_role, es.verification_status, es.alternative_id, sm.author_id, c.project_role
-          INTO ev_role, ev_status, ev_alternative, ev_author, actor_role
+        SELECT es.evidence_role, es.verification_status, es.alternative_id,
+               sm.author_id, st.project_context
+          INTO ev_role, ev_status, ev_alternative, ev_author, decision_project
           FROM evidence_spans es
           JOIN source_message_versions smv ON smv.id = es.source_message_version_id
           JOIN source_messages sm ON sm.id = smv.message_id
-          JOIN contributors c ON c.id = NEW.ruling_actor_id
+          JOIN decisions d ON d.id = NEW.decision_id
+          JOIN source_threads st ON st.id = d.source_thread_id
          WHERE es.id = NEW.ruling_evidence_id;
         IF NOT FOUND OR ev_role <> 'RULING' OR ev_status <> 'VERIFIED_EXACT'
            OR ev_alternative IS DISTINCT FROM NEW.id OR ev_author IS DISTINCT FROM NEW.ruling_actor_id THEN
-            RAISE EXCEPTION 'REJECTED requires VERIFIED_EXACT RULING evidence for this alternative, authored by ruling_actor_id';
+            RAISE EXCEPTION 'REJECTED needs verified RULING by the exact alternative ruling actor';
         END IF;
-        IF NEW.ruling_authority = 'BDFL' AND actor_role IS DISTINCT FROM 'BDFL' THEN
-            RAISE EXCEPTION 'BDFL authority requires a contributor with BDFL role';
-        ELSIF NEW.ruling_authority = 'CORE_MAINTAINER_CONSENSUS' THEN
-            IF actor_role IS DISTINCT FROM 'Core Maintainer' THEN
-                RAISE EXCEPTION 'Consensus ruling evidence must be authored by a Core Maintainer';
+        SELECT g.role INTO actor_role
+          FROM contributor_project_role_grants g
+         WHERE g.id = NEW.ruling_actor_grant_id AND g.contributor_id = NEW.ruling_actor_id
+           AND g.project_context = decision_project
+           AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+           AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id);
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Ruling actor lacks active role grant for this decision project';
+        END IF;
+        -- Valid BDFL falls into this branch and succeeds (rather than falling into ELSE).
+        IF NEW.ruling_authority = 'BDFL' THEN
+            IF actor_role <> 'BDFL' THEN
+                RAISE EXCEPTION 'BDFL ruling requires this project''s verified BDFL';
             END IF;
-            SELECT COUNT(*) INTO signoff_count FROM decision_alternative_ruling_signoffs s
-              JOIN contributors c ON c.id = s.contributor_id
-             WHERE s.alternative_id = NEW.id AND c.project_role = 'Core Maintainer';
+        ELSIF NEW.ruling_authority = 'CORE_MAINTAINER_CONSENSUS' THEN
+            IF actor_role <> 'Core Maintainer' THEN
+                RAISE EXCEPTION 'Consensus ruling author must be Core Maintainer in this project';
+            END IF;
+            SELECT COUNT(*) INTO signoff_count
+              FROM decision_alternative_ruling_signoffs s
+              JOIN contributor_project_role_grants g ON g.id = s.project_role_grant_id
+             WHERE s.alternative_id = NEW.id AND g.project_context = decision_project
+               AND g.role = 'Core Maintainer' AND g.contributor_id = s.contributor_id
+               AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+               AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id);
             IF signoff_count < 2 OR NOT EXISTS (
-                SELECT 1 FROM decision_alternative_ruling_signoffs
-                 WHERE alternative_id = NEW.id AND contributor_id = NEW.ruling_actor_id
+                SELECT 1 FROM decision_alternative_ruling_signoffs s
+                WHERE s.alternative_id = NEW.id AND s.contributor_id = NEW.ruling_actor_id
+                  AND s.project_role_grant_id = NEW.ruling_actor_grant_id
             ) THEN
-                RAISE EXCEPTION 'CORE_MAINTAINER_CONSENSUS requires the ruling author and one additional verified Core Maintainer sign-off';
+                RAISE EXCEPTION 'Consensus requires ruling author plus another verified project Core Maintainer';
             END IF;
         ELSIF NEW.ruling_authority = 'WORKING_GROUP' THEN
-            IF actor_role IS DISTINCT FROM 'Working Group Chair' THEN
-                RAISE EXCEPTION 'WORKING_GROUP authority requires a Working Group Chair author';
+            IF actor_role <> 'Working Group Chair' THEN
+                RAISE EXCEPTION 'Working-group ruling requires verified Chair for this project';
             END IF;
-            SELECT COUNT(*) INTO signoff_count FROM decision_alternative_ruling_signoffs s
-              JOIN contributors c ON c.id = s.contributor_id
-             WHERE s.alternative_id = NEW.id AND c.project_role IN ('Working Group Chair', 'Working Group Member');
-            IF signoff_count < 2 OR NOT EXISTS (
-                SELECT 1 FROM decision_alternative_ruling_signoffs
-                 WHERE alternative_id = NEW.id AND contributor_id = NEW.ruling_actor_id
+            SELECT COUNT(*) INTO signoff_count
+              FROM decision_alternative_ruling_signoffs s
+              JOIN contributor_project_role_grants g ON g.id = s.project_role_grant_id
+             WHERE s.alternative_id = NEW.id AND s.contributor_id <> NEW.ruling_actor_id
+               AND g.contributor_id = s.contributor_id AND g.project_context = decision_project
+               AND g.role = 'Working Group Member'
+               AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+               AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id);
+            IF signoff_count < 1 OR NOT EXISTS (
+                SELECT 1 FROM decision_alternative_ruling_signoffs s
+                WHERE s.alternative_id = NEW.id AND s.contributor_id = NEW.ruling_actor_id
+                  AND s.project_role_grant_id = NEW.ruling_actor_grant_id
             ) THEN
-                RAISE EXCEPTION 'WORKING_GROUP authority requires the chair and one additional verified group sign-off';
+                RAISE EXCEPTION 'Working-group ruling needs Chair and distinct verified Member signoffs';
             END IF;
         ELSE
-            RAISE EXCEPTION 'Model-inferred or unknown authority cannot reject an alternative';
+            RAISE EXCEPTION 'Unknown or model-inferred authority cannot reject an alternative';
         END IF;
     END IF;
     RETURN NEW;
 END;
 $$;
 CREATE TRIGGER trg_authoritative_alternative_rejection
-BEFORE INSERT OR UPDATE OF lifecycle_status, ruling_evidence_id, ruling_authority, ruling_actor_id
+BEFORE INSERT OR UPDATE OF lifecycle_status, ruling_evidence_id, ruling_authority, ruling_actor_id, ruling_actor_grant_id
 ON decision_alternatives
 FOR EACH ROW EXECUTE FUNCTION enforce_authoritative_alternative_rejection();
 
@@ -1108,30 +1184,47 @@ DECLARE
     request_row hitl_approval_requests%ROWTYPE;
     actor_source_platform TEXT;
     actor_platform_id TEXT;
-    actor_role TEXT;
+    decision_project TEXT;
 BEGIN
     SELECT * INTO request_row FROM hitl_approval_requests
      WHERE id = NEW.approval_request_id FOR UPDATE;
     IF NOT FOUND OR request_row.status <> 'PENDING' OR request_row.expires_at <= NOW() THEN
         RAISE EXCEPTION 'HITL request is not pending or has expired';
     END IF;
-    SELECT source_platform, platform_user_id, project_role
-      INTO actor_source_platform, actor_platform_id, actor_role
+    SELECT source_platform, platform_user_id INTO actor_source_platform, actor_platform_id
       FROM contributors WHERE id = NEW.actor_contributor_id;
-    IF NOT FOUND OR actor_role IS NULL
-       OR actor_source_platform IS DISTINCT FROM NEW.actor_source_platform
-       OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id
-       OR NOT (actor_role = ANY(request_row.authorized_roles)) THEN
-        RAISE EXCEPTION 'HITL actor identity or role is not authorized for this request';
+    IF NOT FOUND OR actor_source_platform IS DISTINCT FROM NEW.actor_source_platform
+       OR actor_platform_id IS DISTINCT FROM NEW.actor_platform_id THEN
+        RAISE EXCEPTION 'HITL callback identity does not match contributor';
+    END IF;
+    IF request_row.living_draft_id IS NOT NULL THEN
+        SELECT st.project_context INTO decision_project
+          FROM living_decision_drafts ld JOIN source_threads st ON st.id = ld.source_thread_id
+         WHERE ld.id = request_row.living_draft_id;
+    ELSE
+        SELECT st.project_context INTO decision_project
+          FROM decision_alternatives da
+          JOIN decisions d ON d.id = da.decision_id
+          JOIN source_threads st ON st.id = d.source_thread_id
+         WHERE da.id = request_row.decision_alternative_id;
+    END IF;
+    IF decision_project IS NULL OR NOT EXISTS (
+        SELECT 1 FROM contributor_project_role_grants g
+         WHERE g.contributor_id = NEW.actor_contributor_id AND g.project_context = decision_project
+           AND g.role::text = ANY(request_row.authorized_roles)
+           AND g.valid_from <= NOW() AND (g.valid_until IS NULL OR g.valid_until > NOW())
+           AND NOT EXISTS (SELECT 1 FROM contributor_project_role_revocations r WHERE r.grant_id = g.id)
+    ) THEN
+        RAISE EXCEPTION 'HITL actor lacks verified role for target decision project';
     END IF;
     IF (request_row.action_type = 'APPROVE_LIVING_DECISION' AND NEW.action_taken NOT IN ('APPROVE_DRAFT', 'REJECT_DRAFT'))
        OR (request_row.action_type = 'AUTHORIZE_PR_WARNING' AND NEW.action_taken <> 'AUTHORIZE_PR_COMMENT')
        OR (request_row.action_type = 'DISMISS_PR_WARNING' AND NEW.action_taken <> 'DISMISS_PR_COMMENT') THEN
-        RAISE EXCEPTION 'HITL callback action does not match the requested action type';
+        RAISE EXCEPTION 'Callback action does not match request type';
     END IF;
     UPDATE hitl_approval_requests SET status = 'DECIDED'
      WHERE id = NEW.approval_request_id AND status = 'PENDING';
-    IF NOT FOUND THEN RAISE EXCEPTION 'HITL approval request changed before callback finalization'; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'HITL request changed before callback finalization'; END IF;
     RETURN NEW;
 END;
 $$;
@@ -1227,6 +1320,96 @@ BEGIN
     RAISE EXCEPTION 'Audit records are append-only';
 END;
 $$;
+CREATE TRIGGER trg_project_role_grants_append_only
+BEFORE UPDATE OR DELETE ON contributor_project_role_grants
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+CREATE TRIGGER trg_project_role_revocations_append_only
+BEFORE UPDATE OR DELETE ON contributor_project_role_revocations
+FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
+
+-- Audit every lifecycle transition in the same transaction as its state change.
+-- The application DB role has NO direct UPDATE/DELETE on decision_alternatives;
+-- only the trusted transition service may use the protected transition entrypoint.
+CREATE OR REPLACE FUNCTION record_alternative_status_change()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    acting_contributor UUID;
+    explanation TEXT;
+    discussion_thread UUID;
+    snapshot JSONB := '{}'::jsonb;
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.lifecycle_status IS NOT DISTINCT FROM OLD.lifecycle_status THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' AND NEW.lifecycle_status = 'PROPOSED' THEN
+        RETURN NEW;
+    END IF;
+    acting_contributor := NULLIF(current_setting('biscuit.transition_actor_id', TRUE), '')::UUID;
+    explanation := NULLIF(trim(current_setting('biscuit.transition_reason', TRUE)), '');
+    IF acting_contributor IS NULL OR explanation IS NULL THEN
+        RAISE EXCEPTION 'Status changes require authenticated actor and reason in transaction';
+    END IF;
+    SELECT source_thread_id INTO discussion_thread FROM decisions WHERE id = NEW.decision_id;
+    IF NEW.lifecycle_status = 'REJECTED' THEN
+        snapshot := jsonb_build_object(
+            'ruling_authority', NEW.ruling_authority::text,
+            'ruling_actor_id', NEW.ruling_actor_id,
+            'ruling_actor_grant_id', NEW.ruling_actor_grant_id,
+            'ruling_evidence_id', NEW.ruling_evidence_id,
+            'signoffs', COALESCE((
+                SELECT jsonb_agg(jsonb_build_object('contributor_id', s.contributor_id,
+                    'role_grant_id', s.project_role_grant_id, 'evidence_span_id', s.evidence_span_id)
+                    ORDER BY s.contributor_id)
+                  FROM decision_alternative_ruling_signoffs s
+                 WHERE s.alternative_id = NEW.id
+            ), '[]'::jsonb)
+        );
+    END IF;
+    INSERT INTO decision_event_log (
+        alternative_id, source_thread_id, event_type, previous_status,
+        new_status, reason, evidence_span_id, actor_contributor_id, authority_snapshot
+    ) VALUES (
+        NEW.id, discussion_thread, 'STATUS_CHANGE',
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.lifecycle_status ELSE NULL END,
+        NEW.lifecycle_status, explanation,
+        CASE WHEN NEW.lifecycle_status = 'REJECTED' THEN NEW.ruling_evidence_id ELSE NULL END,
+        acting_contributor, snapshot
+    );
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_alternative_status_audit
+AFTER INSERT OR UPDATE OF lifecycle_status ON decision_alternatives
+FOR EACH ROW EXECUTE FUNCTION record_alternative_status_change();
+
+-- SECURITY BOUNDARY: only a trusted service that has *already authenticated*
+-- and bound p_actor_id to the caller may EXECUTE this function. An arbitrary
+-- actor UUID supplied through a public API is never accepted as identity proof.
+-- In deployment, REVOKE EXECUTE ... FROM PUBLIC, GRANT only to that service, and
+-- REVOKE direct lifecycle-table writes from runtime/LLM/MCP/ingestion DB roles.
+CREATE OR REPLACE FUNCTION transition_alternative_lifecycle(
+    p_alternative_id UUID, p_new_status proposal_lifecycle, p_actor_id UUID,
+    p_reason TEXT, p_ruling_evidence_id UUID DEFAULT NULL,
+    p_ruling_authority ruling_authority DEFAULT NULL,
+    p_ruling_actor_id UUID DEFAULT NULL, p_ruling_actor_grant_id UUID DEFAULT NULL
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    IF p_actor_id IS NULL OR p_reason IS NULL OR length(trim(p_reason)) = 0 THEN
+        RAISE EXCEPTION 'Verified actor and reason required';
+    END IF;
+    PERFORM set_config('biscuit.transition_actor_id', p_actor_id::text, TRUE);
+    PERFORM set_config('biscuit.transition_reason', p_reason, TRUE);
+    UPDATE decision_alternatives SET
+        lifecycle_status = p_new_status,
+        ruling_evidence_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_evidence_id ELSE NULL END,
+        ruling_authority = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_authority ELSE NULL END,
+        ruling_actor_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_actor_id ELSE NULL END,
+        ruling_actor_grant_id = CASE WHEN p_new_status = 'REJECTED' THEN p_ruling_actor_grant_id ELSE NULL END
+    WHERE id = p_alternative_id AND lifecycle_status IS DISTINCT FROM p_new_status;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Alternative not found or status unchanged'; END IF;
+END;
+$$;
+
 CREATE TRIGGER trg_decision_event_log_append_only
 BEFORE UPDATE OR DELETE ON decision_event_log
 FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
@@ -1243,6 +1426,31 @@ FOR EACH ROW EXECUTE FUNCTION reject_audit_row_mutation();
 ```
 
 ---
+
+## Lifecycle Authority and Transition Contract
+
+Project roles are verified against the **exact** `source_threads.project_context` of
+each decision. `contributor_project_role_grants` stores immutable, source-backed,
+effective-dated grants; revocations create separate append-only rows. Ruling sign-offs
+reference their own verified role grant. BDFL rulings require one verified BDFL in that
+project; Core Maintainer consensus requires the ruling author and a distinct verified
+Core Maintainer sign-off; Working Group rulings require the Chair and a distinct Member.
+The role grant, ruling evidence, sign-offs and acting contributor are snapshotted in
+the same transaction as the lifecycle transition, and role changes do not rewrite it.
+
+The trusted gateway must authenticate the transition actor independently of any
+caller-provided ID. Revoke public EXECUTE privileges on the SECURITY DEFINER
+transition function, grant them only to the trusted transition service, and revoke
+direct writes to `decision_alternatives` from all ordinary runtime roles. Database
+superusers and the trusted service remain privileged and must be audited separately.
+The `AFTER` trigger rejects any status transition that cannot atomically append an
+event with old/new state, evidence, authenticated actor and reason.
+
+**Implementation-phase regression fixtures (not claimed as executed by this PR):**
+valid and invalid project-scoped BDFL rulings; cross-project BDFL denial; exactly
+two distinct verified Core Maintainer sign-offs; Chair plus distinct Working Group
+Member sign-offs; revoked/expired grants; cross-project HITL denial; no status change
+without an audit record; status reversals preserve the former ruling in event history.
 
 ## 4. Evidence Verification & Offset Math Contract
 
