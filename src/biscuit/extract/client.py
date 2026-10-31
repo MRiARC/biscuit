@@ -6,6 +6,7 @@ Includes mock replay mode for deterministic CI testing without GPU/daemon.
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -99,9 +100,12 @@ class LocalLLMClient:
             ) from e
 
     def unload_model(self, model: str) -> bool:
-        """
-        Explicitly unloads a model from RAM via Ollama API keep_alive: 0.
-        Ensures sequential memory budget (<=8 GB) is maintained between passes.
+        """Request unload and confirm that Ollama no longer reports this model resident.
+
+        A successful unload HTTP status alone is not evidence of memory release.
+        An unreachable or incompatible process-status endpoint fails closed, and
+        callers must abort before loading the next model. This does not, by itself,
+        establish a complete-host 8 GB memory bound.
         """
         if self.mock_mode:
             self.loaded_model = None
@@ -117,7 +121,25 @@ class LocalLLMClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=5.0):
-                self.loaded_model = None
-                return True
-        except (urllib.error.URLError, TimeoutError, OSError):
+                pass
+            for attempt in range(3):
+                req_status = urllib.request.Request(f"{self.base_url}/api/ps", method="GET")
+                with urllib.request.urlopen(req_status, timeout=5.0) as response:
+                    status = json.loads(response.read().decode("utf-8"))
+                if not isinstance(status, dict) or not isinstance(status.get("models"), list):
+                    return False
+                running_models = status["models"]
+                if not all(isinstance(item, dict) for item in running_models):
+                    return False
+                names = {
+                    str(item.get("name") or item.get("model") or "")
+                    for item in running_models
+                }
+                if model not in names:
+                    self.loaded_model = None
+                    return True
+                if attempt < 2:
+                    time.sleep(0.1)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError):
             return False
+        return False
