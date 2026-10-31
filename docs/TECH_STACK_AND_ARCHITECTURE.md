@@ -216,7 +216,7 @@ flowchart TD
 
 ```
 Implementation Sequence:
-├── PR #7: (OPEN) Architecture Specifications & Data Contracts (Pending Review Corrections)
+├── PR #7: (OPEN) Architecture Specifications & Data Contracts (Follow-up Review)
 ├── PR #8: Core Database Models & Migrations (SQLModel, PostgreSQL/pgvector, typed FKs)
 ├── PR #9: Ingestion Engine & Message Versioning (Discourse/GitHub adapters, SHA-256 hasher)
 ├── PR #10: Deliberation Graph & Recurrence Tracker (discussion_edges, proposal_occurrences)
