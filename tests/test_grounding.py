@@ -587,3 +587,65 @@ def test_anchor_rejects_missing_parser_provenance() -> None:
             replace(symbol, parser_version=""), alternative_id=uuid.uuid4(),
             repository_url="https://github.com/a/b", historical_commit_sha="a" * 40,
         )
+
+
+
+def test_edit_then_move_uses_latest_verified_symbol_exemplar(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 2\n")
+    commit(root, "legitimate in-place edit")
+    (root / "old/parser.py").unlink()
+    write(root, "new/helper.py", (
+        "def helper_one():\n    return 123\n\n"
+        "def helper_two():\n    return 456\n\n"
+        "def tok_get(source):\n    return source + 2\n"
+    ))
+    commit(root, "move updated symbol into a larger module")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "new/helper.py"
+    assert result.mapping_confidence is None
+
+
+def test_clean_merge_with_only_mainline_edit_never_claims_first_parent_selection(
+    tmp_path: Path,
+) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "feature.txt", "unrelated work\n")
+    commit(root, "feature untouched source")
+    git(root, "checkout", "-q", "main")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 42\n")
+    commit(root, "main edits source")
+    git(root, "merge", "--no-ff", "-qm", "clean merge", "feature")
+    merge = git(root, "rev-parse", "HEAD")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    events = [e for e in result.events if e.transition_commit_sha == merge]
+    assert len(events) == 2
+    assert all(not e.mapping_evidence["first_parent_selected"] for e in events)
+
+
+def test_dead_lineage_has_no_current_state_on_later_unrelated_commit(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    (root / "old/parser.py").unlink()
+    commit(root, "remove historical symbol")
+    write(root, "unrelated.txt", "later unrelated change\n")
+    later = commit(root, "after deletion")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.DELETED
+    assert not [e for e in result.events if e.transition_commit_sha == later]
+
+
+def test_git_environment_does_not_redirect_lineage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "mv", "old/parser.py", "old/new_parser.py")
+    commit(root, "rename source")
+    monkeypatch.setenv("GIT_DIR", str(root / "missing-git-dir"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(root / "wrong-worktree"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(root / "wrong-index"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.repositoryformatversion")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "999")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "old/new_parser.py"
