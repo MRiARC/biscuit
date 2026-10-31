@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = run_benchmark(
                 name, fixtures_root=args.fixtures_root, predictions_path=prediction_file,
-                audit_db=args.audit_db,
+                audit_db=args.audit_db or Path.home() / ".local/share/biscuit/workspace.sqlite3",
                 recorded_replay=args.predictions is None and not args.no_simulate,
             )
             outputs.append(result.to_dict())
