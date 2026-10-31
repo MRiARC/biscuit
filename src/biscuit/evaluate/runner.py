@@ -30,6 +30,7 @@ from .metrics import (
     pr_warning_metrics,
     proposal_recovery,
 )
+from .profile import HostMemorySampler
 from .types import BenchmarkOutcome, MetricScore
 
 
@@ -87,6 +88,7 @@ def run_benchmark(
     audit_db: Path | None = None,
     recorded_replay: bool = False,
     semantic_embedder: Callable[[str], Sequence[float]] | None = None,
+    profile_host_memory: bool = False,
 ) -> BenchmarkOutcome:
     """Score supplied predictions without passing labels or official PEP text to extraction.
 
@@ -100,12 +102,18 @@ def run_benchmark(
     safe_input = predictor_input(thread, root)
 
     predictions: dict[str, Any] | None = None
+    memory_samples: dict[str, Any] = {}
     source = "NOT_SUPPLIED"
     if recorded_replay:
         predictions = load_simulated_predictions(benchmark_id, root)
         source = "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL"
     elif predictor is not None:
-        predictions = predictor(safe_input)
+        if profile_host_memory:
+            with HostMemorySampler() as memory_sampler:
+                predictions = predictor(safe_input)
+            memory_samples = memory_sampler.results()
+        else:
+            predictions = predictor(safe_input)
         source = "PREDICTOR"
     elif predictions_path is not None:
         predictions = json.loads(predictions_path.read_text(encoding="utf-8"))
@@ -282,6 +290,7 @@ def run_benchmark(
             "postgres_rss_mib": None,
             "model_rss_mib": None,
             "kv_cache_mib": None,
+            **memory_samples,
             "planning_estimates_gib": {
                 "PostgreSQL_and_pgvector": 1.50,
                 "Vector_index": 0.35,
