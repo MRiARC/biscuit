@@ -8,6 +8,8 @@ import json
 
 import pytest
 
+from uuid import uuid4
+
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
 from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
@@ -25,6 +27,7 @@ from biscuit.extract.types import (
     ProposalCandidate,
 )
 from biscuit.provenance.types import (
+    EvidenceRole,
     EvidenceStance,
     VerificationStatus,
     compute_sha256,
@@ -182,6 +185,7 @@ def test_pass3_argument_mining():
             {
                 "message_id": "m1",
                 "author": "gvanrossum",
+                "author_role": "bdfl",
                 "content": "I am rejecting the unary ? proposal due to ternary collision.",
             }
         ],
@@ -334,15 +338,19 @@ def test_extraction_pipeline_end_to_end_with_exact_verification():
     msg1_content = f"Hello python-ideas. {quote2} We should discuss alternatives."
     msg2_content = f"After reviewing community feedback: {quote1} Thanks, Guido."
 
+    v1_id = uuid4()
+    v2_id = uuid4()
     messages = [
         {
             "message_id": "msg-001",
+            "source_message_version_id": v1_id,
             "author": "steve_dower",
             "author_role": "contributor",
             "raw_content": msg1_content,
         },
         {
             "message_id": "msg-002",
+            "source_message_version_id": v2_id,
             "author": "gvanrossum",
             "author_role": "bdfl",
             "raw_content": msg2_content,
@@ -455,3 +463,383 @@ def test_extraction_pipeline_end_to_end_with_exact_verification():
     assert audit["total_messages"] == 2
     assert audit["total_proposals"] == 1
     assert audit["verified_spans_count"] == 2
+
+
+def test_supportive_and_neutral_arguments_role_validity():
+    """
+    Regression Test 1 (Reviewer Issue 1):
+    Ensure supportive and neutral arguments do not crash looking for EvidenceRole.CONTEXT.
+    They must be assigned valid EvidenceRole enum members.
+    """
+    thread_id = "thread-support"
+    topic = "Memory bounding in streaming"
+    quote_support = "Pre-allocating circular buffers reduces allocation spikes by 40%."
+    quote_neutral = "We should benchmark chunk sizes between 8KB and 64KB."
+
+    msg_content = f"Proposal analysis: {quote_support} Note that {quote_neutral}"
+    version_id = uuid4()
+    messages = [
+        {
+            "message_id": "msg-101",
+            "source_message_version_id": version_id,
+            "author": "perf_lead",
+            "author_role": "contributor",
+            "raw_content": msg_content,
+        }
+    ]
+
+    pass1_resp = json.dumps(
+        {
+            "proposals": [
+                {
+                    "proposal_id": "P1",
+                    "name": "Circular Buffer Bounding",
+                    "summary": "Bounded circular buffers",
+                    "proponent": "perf_lead",
+                    "syntax_or_api": "CircularBuffer(capacity=64KB)",
+                }
+            ]
+        }
+    )
+
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-SUP",
+                    "proposal_id": "P1",
+                    "author": "perf_lead",
+                    "author_role": "contributor",
+                    "stance": "SUPPORT",
+                    "fatal_rejection": False,
+                    "is_ruling": False,
+                    "ruling_authority": None,
+                    "quote_text": quote_support,
+                },
+                {
+                    "argument_id": "ARG-NEU",
+                    "proposal_id": "P1",
+                    "author": "perf_lead",
+                    "author_role": "contributor",
+                    "stance": "NEUTRAL",
+                    "fatal_rejection": False,
+                    "is_ruling": False,
+                    "ruling_authority": None,
+                    "quote_text": quote_neutral,
+                },
+            ]
+        }
+    )
+
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-STREAM",
+            "title": topic,
+            "status": "UNRESOLVED",
+            "context_and_problem": "Streaming buffer bounding",
+            "considered_alternatives": [
+                {"proposal_id": "P1", "name": "Circular Buffer Bounding", "status": "DISPUTED"}
+            ],
+            "evidence_quotes": [],
+        }
+    )
+
+    client = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    pipeline = ExtractionPipeline(client=client)
+    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+
+    assert result.run_status == "SUCCESS"
+    assert len(result.verified_spans) == 2
+    for span in result.verified_spans:
+        # Check valid EvidenceRole (must be in enum, not CONTEXT)
+        assert span.evidence_role in (EvidenceRole.PROPOSAL, EvidenceRole.OBJECTION)
+        # Check single target binding
+        assert span.argument_id is not None
+        assert span.decision_id is None
+        assert span.alternative_id is None
+
+
+def test_hallucinated_rejected_status_downgraded_to_disputed():
+    """
+    Regression Test 2 (Reviewer Issue 2):
+    If Pass 4 outputs REJECTED but there is no VERIFIED_EXACT human ruling
+    authored by an authorized maintainer/BDFL, the status MUST be downgraded to DISPUTED.
+    """
+    thread_id = "thread-hallucinated"
+    topic = "Syntax extension"
+    quote_obj = "I really dislike question marks in Python."
+    msg_content = f"Community feedback: {quote_obj}"
+
+    # Author is only a contributor (not BDFL / maintainer)
+    messages = [
+        {
+            "message_id": "msg-201",
+            "source_message_version_id": uuid4(),
+            "author": "random_contributor",
+            "author_role": "contributor",
+            "raw_content": msg_content,
+        }
+    ]
+
+    pass1_resp = json.dumps(
+        {
+            "proposals": [
+                {
+                    "proposal_id": "P1",
+                    "name": "Question Mark Syntax",
+                    "summary": "Syntax proposal",
+                    "proponent": "someone",
+                    "syntax_or_api": "?",
+                }
+            ]
+        }
+    )
+
+    # Pass 3 classifies as contributor objection
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-CONTRIB",
+                    "proposal_id": "P1",
+                    "author": "random_contributor",
+                    "author_role": "contributor",
+                    "stance": "OBJECT",
+                    "fatal_rejection": False,
+                    "is_ruling": False,
+                    "ruling_authority": None,
+                    "quote_text": quote_obj,
+                }
+            ]
+        }
+    )
+
+    # Pass 4 hallucinates an authoritative REJECTED status
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-HALLUCINATED",
+            "title": topic,
+            "status": "REJECTED",
+            "context_and_problem": "Syntax change",
+            "considered_alternatives": [
+                {
+                    "proposal_id": "P1",
+                    "name": "Question Mark Syntax",
+                    "status": "REJECTED",
+                    "rejection_reason": "Model decided it was rejected",
+                }
+            ],
+            "evidence_quotes": [],
+        }
+    )
+
+    client = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    pipeline = ExtractionPipeline(client=client)
+    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+
+    # Invariant: Must be downgraded to DISPUTED
+    assert result.madr.status == "DISPUTED"
+    assert result.madr.considered_alternatives[0]["status"] == "DISPUTED"
+    assert len(result.audit_metadata["downgraded_rejections"]) > 0
+
+
+def test_quoted_evidence_attributed_to_original_author_not_reply():
+    """
+    Regression Test 3 (Reviewer Issue 3 & 4):
+    When a contributor replies and blockquotes a maintainer's statement,
+    the quote must be attributed to the original maintainer, NOT to the quoting contributor.
+    """
+    guido_quote = "I am rejecting this PEP due to grammatical ambiguity."
+    msg1_content = f"Decision summary: {guido_quote} Regards, Guido."
+    msg2_content = f"> {guido_quote}\nI disagree with Guido's decision, we should reconsider!"
+
+    packet = DeliberationPacket(
+        proposal_id="P1",
+        proposal_name="Grammar change",
+        message_ids=["msg-guido", "msg-bob"],
+        messages=[
+            {
+                "message_id": "msg-guido",
+                "author": "gvanrossum",
+                "author_role": "bdfl",
+                "content": msg1_content,
+            },
+            {
+                "message_id": "msg-bob",
+                "author": "bob_contributor",
+                "author_role": "contributor",
+                "content": msg2_content,
+            },
+        ],
+    )
+
+    # Model returned the quote with author claimed as Guido
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-RULING",
+                    "proposal_id": "P1",
+                    "author": "gvanrossum",
+                    "author_role": "bdfl",
+                    "stance": "OBJECT",
+                    "fatal_rejection": True,
+                    "is_ruling": True,
+                    "ruling_authority": "BDFL",
+                    "quote_text": guido_quote,
+                }
+            ]
+        }
+    )
+
+    client = LocalLLMClient(mock_mode=True, mock_responses={"phi3.5": pass3_resp})
+    pass3 = Pass3ArgumentMining(client=client, model="phi3.5")
+
+    args = pass3.mine_arguments(packet)
+    assert len(args) == 1
+    # Verify attribution: Guido is the author, NOT Bob
+    assert args[0].author == "gvanrossum"
+    assert args[0].author_role == "bdfl"
+    assert args[0].is_ruling is True
+    assert args[0].ruling_authority == "BDFL"
+
+
+def test_missing_source_message_version_ids_skips_span_creation():
+    """
+    Regression Test 4 (Reviewer Issue 5):
+    When source_message_version_id is absent or not a valid UUID,
+    the pipeline must NOT fabricate synthetic UUIDs.
+    """
+    thread_id = "thread-no-version"
+    topic = "Unpersisted message test"
+    quote = "Some unpersisted quote."
+
+    # Missing source_message_version_id
+    messages = [
+        {
+            "message_id": "msg-unpersisted",
+            "author": "alice",
+            "author_role": "contributor",
+            "raw_content": f"Here is {quote}",
+        }
+    ]
+
+    pass1_resp = json.dumps(
+        {"proposals": [{"proposal_id": "P1", "name": "P1", "summary": "P1", "syntax_or_api": "x"}]}
+    )
+    pass3_resp = json.dumps(
+        {
+            "arguments": [
+                {
+                    "argument_id": "ARG-1",
+                    "proposal_id": "P1",
+                    "author": "alice",
+                    "author_role": "contributor",
+                    "stance": "OBJECT",
+                    "quote_text": quote,
+                }
+            ]
+        }
+    )
+    pass4_resp = json.dumps(
+        {
+            "decision_id": "DEC-TEST",
+            "title": topic,
+            "status": "UNRESOLVED",
+            "considered_alternatives": [],
+            "evidence_quotes": [],
+        }
+    )
+
+    client = LocalLLMClient(
+        mock_mode=True,
+        mock_responses={
+            "llama3.2:3b": pass1_resp,
+            "phi3.5": pass3_resp,
+            "qwen2.5-coder:7b": pass4_resp,
+        },
+    )
+
+    pipeline = ExtractionPipeline(client=client)
+    result = pipeline.run(thread_id=thread_id, topic=topic, messages=messages)
+
+    # Evidence spans must NOT be fabricated
+    assert len(result.evidence_spans) == 0
+    assert len(result.verified_spans) == 0
+    # Audit metadata should record warnings about unanchored evidence
+    assert len(result.audit_metadata["unanchored_warnings"]) > 0
+
+
+def test_slicer_preserves_late_maintainer_ruling_in_long_thread():
+    """
+    Regression Test 5 (Reviewer Issue 6):
+    When a thread contains extensive debate that exceeds target_word_limit,
+    the slicer must not break early and discard the late maintainer ruling.
+    """
+    slicer = Pass2DeliberationSlicing(target_word_limit=300)
+
+    proposal = ProposalCandidate(
+        proposal_id="P1",
+        name="Async Streaming",
+        summary="Introduce async streaming response",
+        syntax_or_api="AsyncStreaming()",
+    )
+
+    messages = []
+    # Seed message introducing the proposal
+    messages.append(
+        {
+            "message_id": "msg-000",
+            "author": "alice",
+            "author_role": "contributor",
+            "content": "Proposal P1: Async Streaming syntax AsyncStreaming() for large workloads.",
+        }
+    )
+
+    # Intermediate long contributor chatter (20 messages of 40 words each = 800 words)
+    for i in range(1, 21):
+        messages.append(
+            {
+                "message_id": f"msg-{i:03d}",
+                "author": f"contributor_{i}",
+                "author_role": "contributor",
+                "content": f"Discussion turn {i}: We are debating buffer bounds and socket allocation details in depth.",
+            }
+        )
+
+    # Final BDFL ruling at the very end of the thread
+    ruling_quote = "I am officially rejecting proposal P1 due to unbounded memory overhead."
+    messages.append(
+        {
+            "message_id": "msg-099",
+            "author": "guido",
+            "author_role": "bdfl",
+            "content": f"Final determination: {ruling_quote}",
+        }
+    )
+
+    packets = slicer.slice_deliberation(messages=messages, proposals=[proposal])
+    assert len(packets) == 1
+    packet = packets[0]
+
+    # Verify both opening seed and closing BDFL ruling are preserved
+    assert "msg-000" in packet.message_ids
+    assert "msg-099" in packet.message_ids
+    # Verify the late ruling content is present in packet messages
+    assert any("rejecting proposal P1" in m["content"] for m in packet.messages)

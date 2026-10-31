@@ -80,4 +80,12 @@ class EvidenceSpan(BaseModel):
             raise ValueError(
                 f"Quote character length ({expected_len}) does not match span length ({span_len})"
             )
+        # Enforce database constraint: at most one typed target can be non-null
+        targets = [self.decision_id, self.alternative_id, self.argument_id, self.code_anchor_id]
+        non_null_count = sum(1 for t in targets if t is not None)
+        if non_null_count > 1:
+            raise ValueError(
+                f"At most one evidence target (decision_id, alternative_id, argument_id, code_anchor_id) "
+                f"may be non-null, got {non_null_count}"
+            )
         return self

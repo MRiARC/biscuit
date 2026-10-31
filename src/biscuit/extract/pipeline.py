@@ -3,6 +3,12 @@
 Sequences Pass 1 (Discovery) -> Pass 2 (Slicing) -> Pass 3 (Arguments) -> Pass 4 (MADR),
 followed by zero-based exact evidence verification.
 Strictly adheres to sequential memory offloading (<=8 GB RAM budget) and auditability.
+Enforces non-negotiable provenance invariants:
+1. Valid EvidenceRole enum values only (no non-existent roles).
+2. Unauthorized REJECTED statuses are strictly downgraded to DISPUTED without verified human rulings.
+3. Quotes are matched to originating message authors, not quoted replies.
+4. Exactly one target ID (decision_id, alternative_id, argument_id) is bound per EvidenceSpan.
+5. Missing or invalid source_message_version_id values never receive fabricated synthetic UUIDs.
 """
 
 from typing import Any
@@ -11,7 +17,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
 from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
-from biscuit.extract.pass3_arguments import Pass3ArgumentMining
+from biscuit.extract.pass3_arguments import Pass3ArgumentMining, find_originating_message
 from biscuit.extract.pass4_synthesis import Pass4SchemaSynthesis
 from biscuit.extract.prompts import get_prompt_templates_hash
 from biscuit.extract.types import (
@@ -24,23 +30,23 @@ from biscuit.extract.types import (
 from biscuit.provenance.matcher import CandidateSpanMatcher
 from biscuit.provenance.types import (
     EvidenceRole,
-    EvidenceSpan,
     EvidenceStance,
+    EvidenceSpan,
     VerificationStatus,
 )
 from biscuit.provenance.verifier import EvidenceVerifier
 
 
-def _to_uuid(val: Any, fallback_seed: str) -> UUID:
-    """Converts a value to a UUID, falling back to deterministic uuid5 if not a valid UUID."""
+def _parse_valid_uuid(val: Any) -> UUID | None:
+    """Parses a valid UUID object or string; returns None if absent or malformed."""
     if isinstance(val, UUID):
         return val
     if isinstance(val, str):
         try:
             return UUID(val)
         except ValueError:
-            pass
-    return uuid5(NAMESPACE_DNS, fallback_seed)
+            return None
+    return None
 
 
 class ExtractionPipeline:
@@ -88,7 +94,7 @@ class ExtractionPipeline:
         """
         run_id = str(uuid4())
         dec_id = decision_id or f"DEC-{thread_id[:8]}"
-        dec_uuid = _to_uuid(dec_id, f"decision:{dec_id}")
+        dec_uuid = _parse_valid_uuid(dec_id) or uuid5(NAMESPACE_DNS, f"decision:{dec_id}")
         prompt_templates_hash = get_prompt_templates_hash()
 
         # Build chronological thread text for Pass 1
@@ -105,6 +111,12 @@ class ExtractionPipeline:
         # PASS 1: Candidate Proposal Discovery (Llama 3.2 3B)
         # -------------------------------------------------------------
         proposals: list[ProposalCandidate] = self.pass1.discover(thread_text)
+
+        # Map proposal IDs to deterministic UUIDs for relational target binding
+        proposal_uuid_map: dict[str, UUID] = {
+            p.proposal_id: uuid5(NAMESPACE_DNS, f"alt:{thread_id}:{p.proposal_id}")
+            for p in proposals
+        }
 
         # -------------------------------------------------------------
         # PASS 2: Deliberation Slicing (Deterministic DAG, 0 GB RAM)
@@ -133,62 +145,117 @@ class ExtractionPipeline:
         # -------------------------------------------------------------
         evidence_spans: list[EvidenceSpan] = []
         verified_spans: list[EvidenceSpan] = []
+        unanchored_warnings: list[str] = []
 
-        # Index messages for exact substring matching
+        # Index messages for exact matching and author lookup
         msg_lookup: list[dict[str, Any]] = []
+        maintainer_authors: set[str] = set()
+
         for idx, m in enumerate(messages):
-            mid = m.get("message_id") or m.get("id") or f"msg-{idx}"
-            content = m.get("raw_content") or m.get("content") or ""
+            mid = str(m.get("message_id") or m.get("id") or f"msg-{idx}")
+            content = str(m.get("raw_content") or m.get("content") or "")
             v_id = m.get("source_message_version_id") or m.get("version_id")
-            v_uuid = _to_uuid(v_id, f"version:{thread_id}:{mid}")
+            version_uuid = _parse_valid_uuid(v_id)
             is_edited = bool(m.get("is_edited", False))
+            author = str(m.get("author", "unknown")).strip()
+            role = str(m.get("author_role") or m.get("role") or "contributor").strip().lower()
+
+            if role in (
+                "bdfl",
+                "maintainer",
+                "core maintainer",
+                "core_maintainer",
+                "working group chair",
+            ):
+                maintainer_authors.add(author.lower())
+
             msg_lookup.append(
                 {
                     "message_id": mid,
-                    "version_uuid": v_uuid,
+                    "author": author,
+                    "author_role": role,
+                    "version_uuid": version_uuid,
                     "content": content,
                     "is_edited": is_edited,
                 }
             )
 
-        # Collect candidate quotes from Pass 3 arguments
+        # Process Argument evidence spans
         for arg in arguments:
             if not arg.quote_text:
                 continue
 
             quote = arg.quote_text.strip()
-            role = (
-                EvidenceRole.OBJECTION
-                if arg.stance == EvidenceStance.OBJECT
-                else (EvidenceRole.RULING if arg.is_ruling else EvidenceRole.CONTEXT)
+
+            # Determine valid EvidenceRole (no CONTEXT)
+            if arg.is_ruling:
+                role = EvidenceRole.RULING
+            elif arg.stance == EvidenceStance.OBJECT:
+                role = EvidenceRole.OBJECTION
+            elif arg.stance == EvidenceStance.SUPPORT:
+                role = EvidenceRole.PROPOSAL
+            else:
+                role = EvidenceRole.PROPOSAL
+
+            # Target binding: exactly one non-null target (Reviewer Issue 4)
+            # Rulings bind alternative_id; objections/arguments bind argument_id
+            arg_uuid = _parse_valid_uuid(arg.argument_id) or uuid5(
+                NAMESPACE_DNS, f"arg:{thread_id}:{arg.argument_id}"
+            )
+            alt_uuid = proposal_uuid_map.get(arg.proposal_id)
+
+            if role == EvidenceRole.RULING and alt_uuid:
+                target_alt_id = alt_uuid
+                target_arg_id = None
+                target_dec_id = None
+            else:
+                target_alt_id = None
+                target_arg_id = arg_uuid
+                target_dec_id = None
+
+            # Locate originating message (Reviewer Issue 4: avoid quoted replies)
+            orig_msg_dict = find_originating_message(
+                quote=quote,
+                messages=msg_lookup,
+                claimed_author=arg.author,
             )
 
-            # Search in raw messages for exact match
-            for msg_info in msg_lookup:
-                span = self.matcher.create_evidence_span(
-                    source_message_version_id=msg_info["version_uuid"],
-                    message_content=msg_info["content"],
-                    quote=quote,
-                    evidence_role=role,
-                    stance=arg.stance,
-                    decision_id=dec_uuid,
-                )
-                if span:
-                    # Run exact verification
-                    is_valid, checked_span = self.verifier.verify_span(
-                        span=span,
-                        message_content=msg_info["content"],
-                        is_edited=msg_info["is_edited"],
-                    )
-                    evidence_spans.append(checked_span)
-                    if (
-                        is_valid
-                        and checked_span.verification_status == VerificationStatus.VERIFIED_EXACT
-                    ):
-                        verified_spans.append(checked_span)
-                    break
+            if orig_msg_dict is None:
+                continue
 
-        # Collect candidate quotes from Pass 4 MADR evidence_quotes
+            v_uuid = orig_msg_dict["version_uuid"]
+            if v_uuid is None:
+                # Reviewer Issue 5: Do NOT fabricate synthetic UUIDs for absent version IDs
+                unanchored_warnings.append(
+                    f"Message {orig_msg_dict['message_id']} lacks a persisted source_message_version_id; "
+                    f"cannot create auditable EvidenceSpan."
+                )
+                continue
+
+            span = self.matcher.create_evidence_span(
+                source_message_version_id=v_uuid,
+                message_content=orig_msg_dict["content"],
+                quote=quote,
+                evidence_role=role,
+                stance=arg.stance,
+                decision_id=target_dec_id,
+                alternative_id=target_alt_id,
+                argument_id=target_arg_id,
+            )
+            if span:
+                is_valid, checked_span = self.verifier.verify_span(
+                    span=span,
+                    message_content=orig_msg_dict["content"],
+                    is_edited=orig_msg_dict["is_edited"],
+                )
+                evidence_spans.append(checked_span)
+                if (
+                    is_valid
+                    and checked_span.verification_status == VerificationStatus.VERIFIED_EXACT
+                ):
+                    verified_spans.append(checked_span)
+
+        # Process MADR evidence quotes
         for eq in madr.evidence_quotes:
             if not isinstance(eq, dict):
                 continue
@@ -196,38 +263,121 @@ class ExtractionPipeline:
             if not quote:
                 continue
 
-            role_str = str(eq.get("role", "CONTEXT")).upper()
-            if "RULING" in role_str:
+            raw_role_str = str(eq.get("role", "PROPOSAL")).upper()
+            if "RULING" in raw_role_str:
                 role = EvidenceRole.RULING
-            elif "OBJECTION" in role_str:
+            elif "OBJECTION" in raw_role_str:
                 role = EvidenceRole.OBJECTION
-            elif "PROPOSAL" in role_str:
-                role = EvidenceRole.PROPOSAL
+            elif "REBUTTAL" in raw_role_str:
+                role = EvidenceRole.REBUTTAL
+            elif "BENCHMARK" in raw_role_str:
+                role = EvidenceRole.BENCHMARK_REPORT
+            elif "CONCESSION" in raw_role_str:
+                role = EvidenceRole.CONCESSION
             else:
-                role = EvidenceRole.CONTEXT
+                role = EvidenceRole.PROPOSAL
 
-            for msg_info in msg_lookup:
-                span = self.matcher.create_evidence_span(
-                    source_message_version_id=msg_info["version_uuid"],
-                    message_content=msg_info["content"],
-                    quote=quote,
-                    evidence_role=role,
-                    stance=EvidenceStance.NEUTRAL,
-                    decision_id=dec_uuid,
+            claimed_author = eq.get("author")
+            orig_msg_dict = find_originating_message(
+                quote=quote,
+                messages=msg_lookup,
+                claimed_author=claimed_author,
+            )
+
+            if orig_msg_dict is None:
+                continue
+
+            v_uuid = orig_msg_dict["version_uuid"]
+            if v_uuid is None:
+                unanchored_warnings.append(
+                    f"Message {orig_msg_dict['message_id']} lacks a persisted source_message_version_id; "
+                    f"cannot create auditable EvidenceSpan."
                 )
-                if span:
-                    is_valid, checked_span = self.verifier.verify_span(
-                        span=span,
-                        message_content=msg_info["content"],
-                        is_edited=msg_info["is_edited"],
+                continue
+
+            # MADR-level quotes target decision_id
+            span = self.matcher.create_evidence_span(
+                source_message_version_id=v_uuid,
+                message_content=orig_msg_dict["content"],
+                quote=quote,
+                evidence_role=role,
+                stance=EvidenceStance.NEUTRAL,
+                decision_id=dec_uuid,
+                alternative_id=None,
+                argument_id=None,
+            )
+            if span:
+                is_valid, checked_span = self.verifier.verify_span(
+                    span=span,
+                    message_content=orig_msg_dict["content"],
+                    is_edited=orig_msg_dict["is_edited"],
+                )
+                evidence_spans.append(checked_span)
+                if (
+                    is_valid
+                    and checked_span.verification_status == VerificationStatus.VERIFIED_EXACT
+                ):
+                    verified_spans.append(checked_span)
+
+        # -------------------------------------------------------------
+        # STEP 6: Enforce Ruling Authority & Sign-Off Invariant (Reviewer Issue 2)
+        # -------------------------------------------------------------
+        # An alternative or decision CANNOT be marked REJECTED without a VERIFIED_EXACT
+        # human ruling evidence span tied to the alternative with verified project authority.
+        # Core Maintainer consensus requires ruling author + >=1 other distinct maintainer.
+        downgraded_rejections: list[str] = []
+
+        verified_ruling_alt_ids: set[UUID] = set()
+        for v_span in verified_spans:
+            if v_span.evidence_role == EvidenceRole.RULING and v_span.alternative_id:
+                # Find author of this span's message
+                span_msg = next(
+                    (
+                        m
+                        for m in msg_lookup
+                        if m["version_uuid"] == v_span.source_message_version_id
+                    ),
+                    None,
+                )
+                if span_msg:
+                    author_role = span_msg["author_role"]
+                    if author_role == "bdfl":
+                        # BDFL ruling is self-authorizing
+                        verified_ruling_alt_ids.add(v_span.alternative_id)
+                    elif author_role in ("maintainer", "core maintainer", "core_maintainer"):
+                        # Core Maintainer consensus requires at least 2 distinct maintainers in discussion
+                        if len(maintainer_authors) >= 2:
+                            verified_ruling_alt_ids.add(v_span.alternative_id)
+                    elif author_role in ("working group chair", "working_group_chair", "wg_chair"):
+                        if len(maintainer_authors) >= 2:
+                            verified_ruling_alt_ids.add(v_span.alternative_id)
+
+        # Validate considered_alternatives
+        updated_alternatives = []
+        for alt in madr.considered_alternatives:
+            alt_copy = dict(alt)
+            prop_id = str(alt.get("proposal_id", ""))
+            alt_uuid = proposal_uuid_map.get(prop_id)
+            status = str(alt.get("status", "")).upper()
+
+            if status == "REJECTED":
+                if not alt_uuid or alt_uuid not in verified_ruling_alt_ids:
+                    # Downgrade unauthorized rejection to DISPUTED
+                    alt_copy["status"] = "DISPUTED"
+                    alt_copy["unauthorized_ruling_note"] = (
+                        "Status downgraded from model-authored REJECTED to DISPUTED: "
+                        "no VERIFIED_EXACT human ruling from an authorized authority found."
                     )
-                    evidence_spans.append(checked_span)
-                    if (
-                        is_valid
-                        and checked_span.verification_status == VerificationStatus.VERIFIED_EXACT
-                    ):
-                        verified_spans.append(checked_span)
-                    break
+                    downgraded_rejections.append(f"Alternative {prop_id}")
+            updated_alternatives.append(alt_copy)
+        madr.considered_alternatives = updated_alternatives
+
+        # Validate overall decision status
+        overall_status = madr.status.upper()
+        if overall_status == "REJECTED":
+            if not verified_ruling_alt_ids:
+                madr.status = "DISPUTED"
+                downgraded_rejections.append("Overall Decision")
 
         audit_metadata = {
             "pipeline_version": "1.0.0",
@@ -241,6 +391,8 @@ class ExtractionPipeline:
             "total_arguments": len(arguments),
             "evidence_spans_count": len(evidence_spans),
             "verified_spans_count": len(verified_spans),
+            "unanchored_warnings": unanchored_warnings,
+            "downgraded_rejections": downgraded_rejections,
         }
 
         return ExtractionRunResult(

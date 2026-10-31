@@ -62,9 +62,7 @@ class ArgumentClassification(BaseModel):
     def validate_authority_invariants(self) -> "ArgumentClassification":
         # INVARIANT: MODEL_INFERRED can NEVER act as ruling authority or assign fatal rejection
         if self.ruling_authority == "MODEL_INFERRED":
-            raise ValueError(
-                "MODEL_INFERRED can never act as an authoritative ruling authority."
-            )
+            raise ValueError("MODEL_INFERRED can never act as an authoritative ruling authority.")
         if self.fatal_rejection and self.is_ruling and not self.ruling_authority:
             raise ValueError(
                 "An authoritative rejection ruling must specify an authorized ruling_authority."

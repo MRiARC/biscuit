@@ -1,16 +1,29 @@
 """
 Pass 3: Argument and Stance Mining module using local Phi-3.5-mini-instruct.
 Differentiates between individual member objections and authoritative maintainer rulings.
-Enforces the invariant that MODEL_INFERRED cannot act as a ruling authority.
+Enforces the invariant that MODEL_INFERRED cannot act as a ruling authority,
+and validates all claimed rulings against actual message author project roles.
 """
 
 import json
 import re
+from typing import Any
 
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.prompts import PASS3_ARGUMENT_MINING_PROMPT
 from biscuit.extract.types import ArgumentClassification, DeliberationPacket
 from biscuit.provenance.types import EvidenceStance
+
+# Authorized ruling authorities per docs/STORAGE_AND_RETRIEVAL.md and docs/INGESTION_AND_EXTRACTION.md
+AUTHORIZED_RULING_ROLE_MAP = {
+    "bdfl": "BDFL",
+    "core maintainer": "CORE_MAINTAINER_CONSENSUS",
+    "core_maintainer": "CORE_MAINTAINER_CONSENSUS",
+    "maintainer": "CORE_MAINTAINER_CONSENSUS",
+    "working group chair": "WORKING_GROUP",
+    "working_group_chair": "WORKING_GROUP",
+    "wg_chair": "WORKING_GROUP",
+}
 
 
 def _clean_json_response(raw_text: str) -> str:
@@ -34,10 +47,69 @@ def _format_packet_text(packet: DeliberationPacket) -> str:
     return "\n".join(lines)
 
 
+def find_originating_message(
+    quote: str, messages: list[dict[str, Any]], claimed_author: str | None = None
+) -> dict[str, Any] | None:
+    """
+    Locates the message that originally authored the quote.
+    Distinguishes original author text from quoted replies (lines starting with '>').
+    Prioritizes original text matches where message author matches claimed_author.
+    """
+    if not quote or not messages:
+        return None
+
+    candidates = []
+    for m in messages:
+        content = str(m.get("content") or m.get("raw_content") or "")
+        if quote not in content:
+            continue
+
+        # Check if quote is inside a blockquote line
+        is_in_blockquote = False
+        for line in content.splitlines():
+            line_str = line.strip()
+            if line_str.startswith(">") and quote in line_str:
+                is_in_blockquote = True
+                break
+
+        author = (m.get("author") or "").strip().lower()
+        claimed = (claimed_author or "").strip().lower()
+        matches_author = bool(claimed and author == claimed)
+
+        candidates.append(
+            {
+                "message": m,
+                "is_in_blockquote": is_in_blockquote,
+                "matches_author": matches_author,
+            }
+        )
+
+    if not candidates:
+        return None
+
+    # Priority 1: author matches AND not in a quoted block
+    p1 = [c["message"] for c in candidates if c["matches_author"] and not c["is_in_blockquote"]]
+    if p1:
+        return p1[0]
+
+    # Priority 2: not in a blockquote
+    p2 = [c["message"] for c in candidates if not c["is_in_blockquote"]]
+    if p2:
+        return p2[0]
+
+    # Priority 3: author matches
+    p3 = [c["message"] for c in candidates if c["matches_author"]]
+    if p3:
+        return p3[0]
+
+    return candidates[0]["message"]
+
+
 class Pass3ArgumentMining:
     """
     Pass 3: Evaluates deliberation packets to extract structured arguments and rulings.
-    Enforces the non-negotiable invariant: MODEL_INFERRED can never act as a ruling authority.
+    Enforces that MODEL_INFERRED can never act as a ruling authority, and verifies
+    actual project roles for any purported ruling.
     Uses Phi-3.5 mini instruct with keep_alive: 0.
     """
 
@@ -53,7 +125,7 @@ class Pass3ArgumentMining:
             packet: Targeted deliberation packet for a proposal.
 
         Returns:
-            List[ArgumentClassification]: Extracted arguments.
+            list[ArgumentClassification]: Extracted and validated arguments.
         """
         packet_text = _format_packet_text(packet)
         prompt = PASS3_ARGUMENT_MINING_PROMPT.format(
@@ -94,7 +166,7 @@ class Pass3ArgumentMining:
             if not isinstance(arg, dict):
                 continue
 
-            # Parse and validate stance
+            # Parse stance
             raw_stance = str(arg.get("stance", "NEUTRAL")).upper().strip()
             if "OBJECT" in raw_stance or "CON" in raw_stance:
                 stance = EvidenceStance.OBJECT
@@ -103,38 +175,51 @@ class Pass3ArgumentMining:
             else:
                 stance = EvidenceStance.NEUTRAL
 
-            # INVARIANT ENFORCEMENT:
-            # If the model tried to claim 'MODEL_INFERRED' as a ruling authority, strip it
-            is_ruling = bool(arg.get("is_ruling", False))
-            ruling_auth = arg.get("ruling_authority")
-            if ruling_auth == "MODEL_INFERRED":
-                # Model cannot be a ruling authority. Downgrade to member objection
-                ruling_auth = None
-                is_ruling = False
-
-            # If marked is_ruling but no valid authority specified, downgrade is_ruling
-            if is_ruling and not ruling_auth:
-                is_ruling = False
-
-            fatal_rejection = bool(arg.get("fatal_rejection", False))
-            if fatal_rejection and not is_ruling:
-                # Individual contributor objection cannot be an authoritative fatal rejection ruling
-                # per docs/INGESTION_AND_EXTRACTION.md Section 6 Pass 3
-                fatal_rejection = False
-
             quote_text = str(arg.get("quote_text", "")).strip()
+            claimed_author = str(arg.get("author", "unknown")).strip()
+
+            # Cross-check quote against ACTUAL packet messages to prevent false rulings (Reviewer Issue 3 & 4)
+            orig_msg = find_originating_message(
+                quote=quote_text,
+                messages=packet.messages,
+                claimed_author=claimed_author,
+            )
+
+            if orig_msg is not None:
+                actual_author = str(orig_msg.get("author", claimed_author))
+                actual_role = (
+                    str(orig_msg.get("author_role") or orig_msg.get("role") or "contributor")
+                    .strip()
+                    .lower()
+                )
+            else:
+                actual_author = claimed_author
+                actual_role = str(arg.get("author_role", "contributor")).strip().lower()
+
+            # Check if actual role has ruling authority
+            mapped_authority = AUTHORIZED_RULING_ROLE_MAP.get(actual_role)
+            is_ruling = bool(arg.get("is_ruling", False)) and (mapped_authority is not None)
+
+            # Invariant: MODEL_INFERRED can never be a ruling authority
+            model_claimed_authority = arg.get("ruling_authority")
+            if model_claimed_authority == "MODEL_INFERRED":
+                is_ruling = False
+                mapped_authority = None
+
+            ruling_authority = mapped_authority if is_ruling else None
+            fatal_rejection = bool(arg.get("fatal_rejection", False)) and is_ruling
 
             arg_obj = ArgumentClassification(
                 argument_id=str(arg.get("argument_id") or f"ARG-{idx + 1}"),
                 proposal_id=str(arg.get("proposal_id") or packet.proposal_id),
-                author=str(arg.get("author", "unknown")),
-                author_role=str(arg.get("author_role", "contributor")),
+                author=actual_author,
+                author_role=actual_role,
                 stance=stance,
                 fatal_rejection=fatal_rejection,
-                fatal_reason=arg.get("fatal_reason"),
+                fatal_reason=arg.get("fatal_reason") if fatal_rejection else None,
                 rejection_category=arg.get("rejection_category"),
                 is_ruling=is_ruling,
-                ruling_authority=ruling_auth,
+                ruling_authority=ruling_authority,
                 quote_text=quote_text,
             )
             results.append(arg_obj)
