@@ -343,9 +343,7 @@ class ExtractionPipeline:
                     f"but verified text references another proposal or lacks verified linkage. Ruling detached."
                 )
                 target_alt_id = None
-                target_arg_id = persisted_arg_map.get(arg.argument_id) or _parse_valid_uuid(
-                    arg.argument_id
-                )
+                target_arg_id = persisted_arg_map.get(arg.argument_id)
                 target_dec_id = None
                 if target_arg_id is None:
                     unpersisted_candidate_targets.append(
@@ -354,15 +352,18 @@ class ExtractionPipeline:
                     )
             else:
                 target_alt_id = None
-                target_arg_id = persisted_arg_map.get(arg.argument_id) or _parse_valid_uuid(
-                    arg.argument_id
-                )
+                target_arg_id = persisted_arg_map.get(arg.argument_id)
                 target_dec_id = None
                 if target_arg_id is None:
                     unpersisted_candidate_targets.append(
                         f"Argument candidate '{arg.argument_id}' has no caller-provided database UUID; "
                         f"argument_id left unbound."
                     )
+
+            # Unbound model candidates are not persistable/verified evidence spans.
+            # PostgreSQL chk_evidence_target_exactly_one requires precisely one FK target.
+            if not any((target_alt_id, target_arg_id, target_dec_id)):
+                continue
 
             span = self.matcher.create_evidence_span(
                 source_message_version_id=v_uuid,
@@ -425,6 +426,13 @@ class ExtractionPipeline:
                 unanchored_warnings.append(
                     f"Message {orig_msg_dict['message_id']} lacks a persisted source_message_version_id; "
                     f"cannot create auditable EvidenceSpan."
+                )
+                continue
+
+            # Never promote an unbound MADR-level candidate to VERIFIED_EXACT evidence.
+            if dec_uuid is None:
+                unpersisted_candidate_targets.append(
+                    "MADR evidence quote lacks a caller-provided persisted decision UUID."
                 )
                 continue
 
