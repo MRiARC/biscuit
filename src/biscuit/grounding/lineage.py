@@ -133,9 +133,9 @@ def _symbol_at(
         return structurally_same[0]
     # C parsers may not provide a structural fingerprint for every declaration.
     # A matching normalized signature is a conservative fallback for that case.
-    if exemplar.structural_fingerprint is None and len(same_name) == 1:
-        if same_name[0].signature_hash == exemplar.signature_hash:
-            return same_name[0]
+    if (exemplar.structural_fingerprint is None and len(same_name) == 1
+            and same_name[0].signature_hash == exemplar.signature_hash):
+        return same_name[0]
     return None
 
 
