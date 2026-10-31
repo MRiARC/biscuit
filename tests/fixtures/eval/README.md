@@ -1,19 +1,52 @@
-# Offline evaluation fixtures
+# Offline evaluation fixtures and reproducibility
 
-This directory contains **synthetic unit-test data only**, not the historical
-234-message PEP 505 archive, withheld official PEP texts, or empirical model runs.
+**These three PEP-themed datasets are original synthetic tests, not historical archives.**
+PEP 505 has 2 fabricated posts, PEP 572 has 4, and PEP 557 has 3. No empirical
+model performance, 8 GB runtime compliance, or licensed historical source coverage
+is implied by a passing replay.
 
-- The raw thread is checksummed using canonical UTF-8 JSON (sorted keys, compact
-  separators, messages sorted by created_at and message_id). Message hashes
-  cover exact UTF-8 raw_text bytes.
-- The scorer alone reads ground_truth.json and pr_labels.json. Prediction
-  adapters receive only raw discussion and case diffs, never expected labels.
-- Exactly 20 synthetic PR cases: 5 violations, 10 benign, 5 ambiguous.
-- Rejected experimental assignment-expression syntaxes are distinguished
-  from Python's **accepted** := operator (benign case pr-09).
-- No auto-populated predictions exist. Supply model/engine outputs explicitly;
-  a scorecard without predictions says NOT_MEASURED.
+## Included inputs and provenance
 
-Real historic fixtures must be collected separately with rights review, complete
-post counts, a pinned manifest, and a fresh canonical checksum. Do not treat this
-synthetic smoke fixture as the full benchmark.
+- Each benchmark includes `raw_thread.json`, scorer-only `ground_truth.json`,
+  recorded `simulated_predictions.json`, and `manifest.json` with canonicalization
+  version, expected/actual message count, thread SHA-256, license/rights status,
+  retrieval-date field, and independent-review status.
+- The manifest identifies origin `ORIGINAL_SYNTHETIC_TEST_DATA`, license metadata
+  as not yet applicable to any historical source, and reviewer
+  `PENDING_INDEPENDENT_REVIEW`.
+- SHA-256 covers each original UTF-8 `raw_text` and the sorted-key compact
+  canonical JSON thread (messages sorted by timestamp and ID).
+- There are 20 separately held-out **synthetic PRs**: 5 known violations,
+  10 benign, 5 ambiguous. Scorer-only files `pr_labels.json`,
+  `pr_expected_alternatives.json` and `pr_authorization_oracle.json`
+  stay outside the predictor's input.
+- PEP 572's Python walrus operator `:=` was accepted, so the relevant PR
+  fixture is **benign**. The rejected syntactic *alternatives* are distinct.
+
+## Run locally, without a network/model
+
+```shell
+pip install -e .
+biscuit evaluate --all --format json
+python -m biscuit.evaluate --all --output json
+python -m biscuit.evaluate --benchmark pep-505 --strict-offsets --output json
+biscuit evaluate --no-simulate --benchmark pep-505
+```
+
+The default CLI **recorded synthetic replay** scores a checked-in,
+hand-authored mock response, not an actual model run. It is a test of fixture
+loading, numerical metrics, PR authorization matching and scorecard generation.
+Use `--no-simulate` to get `NOT_MEASURED` when no real predictions exist.
+The Python API `run_benchmark()` defaults to `NOT_MEASURED`; request
+`recorded_replay=True` explicitly for a mock. Supplying real results through
+`--predictions` overrides the default CLI replay.
+
+Causal rationale values use a **deterministic hashed-token lexical proxy** in
+synthetic fixtures; this is NOT semantic similarity from the specified nomic
+embedding model, and therefore cannot demonstrate real-world CRA performance.
+
+To graduate the historical benchmarks, capture complete legally usable
+source archives, preserve author roles and edits, independently review GT
+rulings, assign real historical commits, pin model/context versions, and
+measure host RAM with Ollama/PostgreSQL running. Never put `ground_truth.json`
+or official PEP final texts into extraction/model context.
