@@ -144,6 +144,10 @@ def predictor_input(thread: dict[str, Any], root: Path | None = None) -> dict[st
                 "author_role": item.get("author_role", "unknown"),
                 "created_at": item["created_at"],
                 "raw_text": item["raw_text"],
+                **(
+                    {"source_message_version_id": item["source_message_version_id"]}
+                    if item.get("source_message_version_id") else {}
+                ),
             }
             for item in thread["messages"]
         ],
