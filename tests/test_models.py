@@ -754,14 +754,24 @@ def test_alternative_ruling_evidence_backlink_negative(test_db_session):
     test_db_session.add(other_alt)
     test_db_session.flush()
 
-    graph["alternative"].ruling_evidence_id = graph["evidence"].id
-    test_db_session.add(graph["alternative"])
+    from sqlalchemy import text
+
+    # Exercise the physical FK rather than relying on ORM dirty tracking.
+    # Raw SQLite UUID parameters must use the 32-character hexadecimal form.
+    assert test_db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+    good = test_db_session.execute(
+        text("UPDATE decision_alternatives SET ruling_evidence_id=:eid WHERE id=:aid"),
+        {"eid": graph["evidence"].id.hex, "aid": graph["alternative"].id.hex},
+    )
+    assert good.rowcount == 1
     test_db_session.commit()
 
-    # evidence.id is bound to alternative 1; citing it from alternative 2 fails
-    other_alt.ruling_evidence_id = graph["evidence"].id
-    test_db_session.add(other_alt)
+    # The same evidence belongs to alternative 1, not alternative 2.
     with pytest.raises(IntegrityError):
+        test_db_session.execute(
+            text("UPDATE decision_alternatives SET ruling_evidence_id=:eid WHERE id=:aid"),
+            {"eid": graph["evidence"].id.hex, "aid": other_alt.id.hex},
+        )
         test_db_session.commit()
     test_db_session.rollback()
 
@@ -780,10 +790,17 @@ def test_decision_ruling_evidence_backlink_negative(test_db_session):
     test_db_session.add(other_decision)
     test_db_session.flush()
 
-    # evidence spans target alternatives, not decisions → composite FK fails
-    other_decision.ruling_evidence_id = graph["evidence"].id
-    test_db_session.add(other_decision)
+    # The evidence targets an alternative (decision_id NULL), not this
+    # decision. Use an actual SQL UPDATE and assert the intended row matched.
+    from sqlalchemy import text
+
+    assert test_db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
     with pytest.raises(IntegrityError):
+        updated = test_db_session.execute(
+            text("UPDATE decisions SET ruling_evidence_id=:eid WHERE id=:did"),
+            {"eid": graph["evidence"].id.hex, "did": other_decision.id.hex},
+        )
+        assert updated.rowcount == 1
         test_db_session.commit()
     test_db_session.rollback()
 
