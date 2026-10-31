@@ -195,10 +195,10 @@ flowchart TD
   * Operates in `AUDIT_DRY_RUN` mode by default, logging to `pr_watchdog_audit_log`.
 * **Why:** Guarantees zero comment spam and 0.0% false alarm rate on benign refactors.
 
-### Module 7: `biscuit.switch_agent` (Switch FastMCP Bridge)
+### Module 7: `biscuit.switch_agent` (Switch FastMCP Bridge & Day 1+ Living Intelligence)
 * **When:** Continuous daemon / MCP bridge.
-* **How:** Exposes FastMCP endpoints (`query_decisions`, `check_pr_diff`, `propose_living_decision`) to `sandbox-quantum/switch`. When maintainers debate in Slack or Discord, Switch streams messages to Biscuit to create living ADRs. In `INTERACTIVE_HITL` mode, PR warnings are routed to Slack/Discord approval cards for maintainer confirmation before commenting.
-* **Why:** Connects Biscuit to living team communication channels without writing bespoke bot code for every platform.
+* **How:** Exposes FastMCP endpoints (`query_decisions`, `check_pr_diff`, `draft_living_decision`) to `sandbox-quantum/switch`. When maintainers debate in Slack or Discord, Switch streams messages to Biscuit to create living ADR drafts in `living_decision_drafts`. In `INTERACTIVE_HITL` mode, PR warnings and decision approvals are routed to Slack/Discord Block Kit cards via `hitl_approval_requests` for maintainer confirmation before commenting or publishing.
+* **Why:** Connects Biscuit to living team communication channels without writing bespoke bot code for every platform. Fully detailed in [`docs/LIVING_DECISION_INTELLIGENCE.md`](file:///Users/adarshchauhan/Downloads/biscuit/docs/LIVING_DECISION_INTELLIGENCE.md).
 
 ### Module 8: `biscuit.evaluate` (Reproducible Benchmark Harness)
 * **When:** CI/CD test runs and validation benchmarks.
