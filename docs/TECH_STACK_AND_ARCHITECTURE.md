@@ -110,7 +110,7 @@ flowchart TD
         DB_Ver --> CleanView["Derived Deliberation View<br/>(Prune quotes, bots, bumps)"]
         CleanView --> EdgeBuilder["Deliberation Graph Builder<br/>(discussion_edges: PROPOSES, OBJECTS,<br/>REBUTS, RESOLVES, REFERENCES)"]
         EdgeBuilder --> OccurCheck{"Proposal Recurrence?<br/>(Candidate Cosine >= 0.90)"}
-        OccurCheck -- Yes --> OccurDB[("proposal_occurrences<br/>(Auditable timeline,<br/>NO silent merges)")]
+        OccurCheck -- Yes --> OccurDB[("proposal_occurrences<br/>(Proposed recurrence,<br/>human link confirmation required)")]
         OccurCheck -- No --> Slicer["Deliberation DAG Slicer<br/>(Extracts focused proposal subgraphs)"]
     end
 
@@ -160,8 +160,8 @@ flowchart TD
 * **When:** Post-ingestion graph construction.
 * **How:**
   1. Prunes blockquotes, machine bots, and administrative bumps into a derived secondary view.
-  2. Constructs `discussion_edges` with explicit technical semantics (`PROPOSES`, `SUPPORTS`, `OBJECTS`, `REBUTS`, `RESOLVES`, `REFERENCES`) and provenance (`PLATFORM_METADATA`, `DETERMINISTIC_RULE`, `MODEL_INFERRED`), with explicit target foreign keys to `decisions` and `decision_alternatives`.
-  3. Evaluates discovered proposals against existing alternatives in `decision_alternatives`. If candidate cosine similarity $\ge 0.90$, it logs an auditable entry in `proposal_occurrences` (linking thread, initiating message, wording version, and similarity score) rather than silently merging distinct historical debates.
+  2. Constructs `discussion_edges` with explicit technical semantics (`PROPOSES`, `SUPPORTS`, `OBJECTS`, `REBUTS`, `RESOLVES`, `REFERENCES`) and explicit target/evidence relationships. Model inference may propose semantic edges, but a `RESOLVES` edge requires verified human `RULING` evidence and non-model provenance.
+  3. Evaluates discovered proposals against existing alternatives. Candidate cosine similarity $\ge 0.90$ may create a `PROPOSED_RECURRENCE` entry in `proposal_occurrences` only; it does not confirm identity, merge alternatives, or change lifecycle state. A human confirms the link, and the exact occurrence is referenced by `decision_event_log`.
 * **Why:** Preserves the multi-year timeline of recurring proposals while preventing mentions or replies from being misinterpreted as objections.
 
 ### Module 3: `biscuit.extract` (Multi-Pass Local LLM Pipeline)
@@ -171,13 +171,13 @@ flowchart TD
   * **Pass 2 (Deterministic DAG Slicer):** Traces `discussion_edges` to produce isolated sub-threads per proposal.
   * **Pass 3 (`phi-3.5-mini-instruct`):** Classifies comments into individual `arguments` (objections/support) versus authoritative `ruling_evidence` (maintainer consensus). `MODEL_INFERRED` is never treated as an authoritative ruling.
   * **Pass 4 (`qwen2.5-coder-7b-instruct`):** Synthesizes MADR records and identifies zero-based character offsets `[start_char, end_char)`.
-  * Logs model revisions, prompt/template hash, source snapshot digest, schema version, deterministic slicer/normalizer versions and parameters, seeds, decoding settings, runtime options, and environment-lock digest into `extraction_runs`.
+  * Logs model revisions, prompt/template hash, source snapshot digest, schema version, deterministic slicer/normalizer versions and parameters, seeds, decoding settings, runtime options, canonical run-config digest, and environment-lock digest into `extraction_runs`.
 * **Why:** Decouples individual objections from formal rejections and ensures 100% reproducible execution runs.
 
 ### Module 4: `biscuit.provenance` (Zero-Based Substring Verifier)
 * **When:** Immediately post-Pass 4 extraction.
 * **How:** Queries `source_message_versions.raw_content` and verifies:
-  $$\text{raw\_content}[start\_char:end\_char] == exact\_quote \quad \land \quad \text{sha256}(exact\_quote) == content\_hash$$
+  $$\text{raw\_content}[start\_char:end\_char] == exact\_quote \quad \land \quad \text{sha256}(\text{UTF8}(exact\_quote)) == content\_hash$$
   * If true: Promotes status from default `UNVERIFIED` to `VERIFIED_EXACT`.
   * If false: Marks `UNVERIFIED` or `STALE_EDITED`.
 * **Why:** Eliminates hallucinated quotations. Only `VERIFIED_EXACT` spans signed by human maintainers can ever authorize a PR warning.
@@ -187,8 +187,8 @@ flowchart TD
 * **How:**
   * Parses concrete syntax trees with `tree-sitter` and abstract syntax trees with Python `ast`.
   * Attaches code anchors directly to `decision_alternatives(id)`.
-  * **Forward DAG Traversal:** When a historical path ($C_{\text{past}}$) differs from modern `HEAD`, traverses the Git commit-DAG forward using `git diff-tree -M80% -C -B` combined with Tree-sitter AST symbol tracking. Ambiguous paths are marked `SPLIT`/`AMBIGUOUS` with uncertainty flags, and Biscuit abstains from auto-resolving.
-* **Why:** Resolves historical code anchors forward across renames, refactors, and file splits without breaking.
+  * **Forward DAG Traversal:** When the historical commit is an ancestor of modern `HEAD`, enumerates the reachable commit DAG topologically and compares every commit with each parent, including every merge parent. It records parent/commit IDs, patch/tree digest, symbol evidence, and exact parser/grammar/normalization versions. If the historical commit is not an ancestor or viable parent histories diverge, Biscuit marks the lineage unresolved and abstains rather than inventing a path.
+* **Why:** Resolves historical anchors when recorded lineage and structural evidence support a unique path; otherwise preserves uncertainty and abstains.
 
 ### Module 6: `biscuit.watchdog` (PR Diff Watchdog & Guardrail Gate)
 * **When:** Triggered on pull request opening or commit update.
