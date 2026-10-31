@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event, Thread
+from typing import Self
 
 
 def linux_host_used_mib() -> float | None:
@@ -55,7 +56,7 @@ class HostMemorySampler:
         while not self._stop.wait(self.interval_seconds):
             self._read()
 
-    def __enter__(self) -> HostMemorySampler:
+    def __enter__(self) -> Self:
         self._read()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
