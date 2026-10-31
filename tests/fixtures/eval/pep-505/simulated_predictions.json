@@ -1,0 +1,83 @@
+{
+  "fixture_kind": "RECORDED_SYNTHETIC_MOCK_OUTPUT_NOT_MODEL",
+  "proposals": [
+    {
+      "proposal_id": "S1",
+      "name": "Unary ? operator",
+      "status": "REJECTED",
+      "rationale_text": "Conflicts with conditional parsing",
+      "code_anchors": [
+        {
+          "proposal_id": "S1",
+          "file_path": "Grammar/python.gram",
+          "symbol_identifier": "",
+          "ast_node_type": "unary_op",
+          "historical_commit": "synthetic-commit-a"
+        }
+      ]
+    },
+    {
+      "proposal_id": "S2",
+      "name": "Safe navigation",
+      "status": "DEFERRED",
+      "rationale_text": "Deferred pending grammar work",
+      "code_anchors": [
+        {
+          "proposal_id": "S2",
+          "file_path": "Python/ast.c",
+          "symbol_identifier": "ast_for_atom_expr",
+          "ast_node_type": "",
+          "historical_commit": "synthetic-commit-b"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "message_id": "post-s1",
+      "start_char": 0,
+      "end_char": 100,
+      "quote": "For this synthetic design review, unary ? is rejected because it conflicts with conditional parsing.",
+      "sha256": "e4ffc907d6fd43337ee3ff2432088ae1fa3ca2a82019baeaca0d7c8b34c25b29"
+    }
+  ],
+  "warned_pr_ids": [
+    "pr-01",
+    "pr-02",
+    "pr-03",
+    "pr-04",
+    "pr-05"
+  ],
+  "warning_records": [
+    {
+      "case_id": "pr-01",
+      "alternative_id": "pep-505:S1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-02",
+      "alternative_id": "pep-572:P1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-03",
+      "alternative_id": "pep-572:P2",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-04",
+      "alternative_id": "pep-572:P3",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-05",
+      "alternative_id": "pep-557:M1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    }
+  ]
+}

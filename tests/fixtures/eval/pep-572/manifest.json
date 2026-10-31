@@ -1,0 +1,14 @@
+{
+  "benchmark_id": "pep-572",
+  "fixture_origin": "ORIGINAL_SYNTHETIC_TEST_DATA",
+  "historical_data": false,
+  "canonicalization_version": 1,
+  "expected_source_message_count": 4,
+  "actual_source_message_count": 4,
+  "thread_sha256": "242948c5f90c3df2e048288d2a0400635bf66972271784886752035f6782061d",
+  "license_identifier": "SYNTHETIC_TEST_DATA_NOT_LICENSED_HISTORICAL_ARCHIVE",
+  "terms_url": null,
+  "retrieval_date": null,
+  "reviewer": "PENDING_INDEPENDENT_REVIEW",
+  "prediction_provenance": "RECORDED_HAND_AUTHORED_SIMULATION_NOT_MODEL_OUTPUT"
+}

@@ -1,0 +1,113 @@
+{
+  "fixture_kind": "RECORDED_SYNTHETIC_MOCK_OUTPUT_NOT_MODEL",
+  "proposals": [
+    {
+      "proposal_id": "P1",
+      "name": "Expression equals assignment",
+      "status": "REJECTED",
+      "rationale_text": "Collides with comparison grammar",
+      "code_anchors": [
+        {
+          "proposal_id": "P1",
+          "file_path": "Grammar/python.gram",
+          "symbol_identifier": "",
+          "ast_node_type": "expression_equals",
+          "historical_commit": "synthetic-pep572"
+        }
+      ]
+    },
+    {
+      "proposal_id": "P2",
+      "name": "Where-block syntax",
+      "status": "REJECTED",
+      "rationale_text": "Grammar ambiguity of where-block syntax",
+      "code_anchors": [
+        {
+          "proposal_id": "P2",
+          "file_path": "Grammar/python.gram",
+          "symbol_identifier": "",
+          "ast_node_type": "where_block",
+          "historical_commit": "synthetic-pep572"
+        }
+      ]
+    },
+    {
+      "proposal_id": "P3",
+      "name": "Assign call special form",
+      "status": "REJECTED",
+      "rationale_text": "Changes evaluation semantics",
+      "code_anchors": [
+        {
+          "proposal_id": "P3",
+          "file_path": "Python/bltinmodule.c",
+          "symbol_identifier": "assign_special",
+          "ast_node_type": "",
+          "historical_commit": "synthetic-pep572"
+        }
+      ]
+    },
+    {
+      "proposal_id": "P4",
+      "name": "Walrus assignment expression",
+      "status": "ACCEPTED",
+      "rationale_text": "Accepted expression assignment syntax",
+      "code_anchors": [
+        {
+          "proposal_id": "P4",
+          "file_path": "Grammar/python.gram",
+          "symbol_identifier": "",
+          "ast_node_type": "walrus_expr",
+          "historical_commit": "synthetic-pep572"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "message_id": "pep572-s1",
+      "start_char": 0,
+      "end_char": 85,
+      "quote": "Expression equals assignment syntax is rejected because it collides with comparisons.",
+      "sha256": "ef8b240df8718333af57c9f1dd74b545e970f3a0b02ffb27ab5b937f424e3924"
+    }
+  ],
+  "warned_pr_ids": [
+    "pr-01",
+    "pr-02",
+    "pr-03",
+    "pr-04",
+    "pr-05"
+  ],
+  "warning_records": [
+    {
+      "case_id": "pr-01",
+      "alternative_id": "pep-505:S1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-02",
+      "alternative_id": "pep-572:P1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-03",
+      "alternative_id": "pep-572:P2",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-04",
+      "alternative_id": "pep-572:P3",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-05",
+      "alternative_id": "pep-557:M1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    }
+  ]
+}

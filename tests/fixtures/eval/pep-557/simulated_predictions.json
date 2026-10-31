@@ -1,0 +1,98 @@
+{
+  "fixture_kind": "RECORDED_SYNTHETIC_MOCK_OUTPUT_NOT_MODEL",
+  "proposals": [
+    {
+      "proposal_id": "M1",
+      "name": "Mutable namedtuple",
+      "status": "REJECTED",
+      "rationale_text": "Unsafe mutable data layout",
+      "code_anchors": [
+        {
+          "proposal_id": "M1",
+          "file_path": "Lib/dataclasses.py",
+          "symbol_identifier": "MutableNamedTuple",
+          "ast_node_type": "class_def",
+          "historical_commit": "synthetic-pep557"
+        }
+      ]
+    },
+    {
+      "proposal_id": "M2",
+      "name": "Metaclass-based design",
+      "status": "REJECTED",
+      "rationale_text": "Breaks introspection",
+      "code_anchors": [
+        {
+          "proposal_id": "M2",
+          "file_path": "Lib/dataclasses.py",
+          "symbol_identifier": "DataClassMeta",
+          "ast_node_type": "class_def",
+          "historical_commit": "synthetic-pep557"
+        }
+      ]
+    },
+    {
+      "proposal_id": "M3",
+      "name": "Dataclass decorator",
+      "status": "ACCEPTED",
+      "rationale_text": "Preferred decorator architecture",
+      "code_anchors": [
+        {
+          "proposal_id": "M3",
+          "file_path": "Lib/dataclasses.py",
+          "symbol_identifier": "dataclass",
+          "ast_node_type": "function_def",
+          "historical_commit": "synthetic-pep557"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "message_id": "pep557-m1",
+      "start_char": 0,
+      "end_char": 77,
+      "quote": "Mutable namedtuple inheritance is rejected because the data layout is unsafe.",
+      "sha256": "4be57fadc16081b325d6a6e5a3357ad98df4a131d0f9c98b14b93810dcb3f598"
+    }
+  ],
+  "warned_pr_ids": [
+    "pr-01",
+    "pr-02",
+    "pr-03",
+    "pr-04",
+    "pr-05"
+  ],
+  "warning_records": [
+    {
+      "case_id": "pr-01",
+      "alternative_id": "pep-505:S1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-02",
+      "alternative_id": "pep-572:P1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-03",
+      "alternative_id": "pep-572:P2",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-04",
+      "alternative_id": "pep-572:P3",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    },
+    {
+      "case_id": "pr-05",
+      "alternative_id": "pep-557:M1",
+      "authorization": "SIMULATED_VERIFIED_RULING",
+      "source": "synthetic-fixture"
+    }
+  ]
+}

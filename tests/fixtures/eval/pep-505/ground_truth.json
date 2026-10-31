@@ -1,16 +1,25 @@
 {
   "benchmark_id": "pep-505",
-  "dataset_kind": "SYNTHETIC_SMOKE_NOT_HISTORICAL",
-  "title": "Synthetic PEP 505-themed two-message unit fixture",
-  "notice": "NOT the 234-post Discourse discussion; no real-world model accuracy claim is possible",
+  "dataset_kind": "SYNTHETIC_REPLAY_NOT_HISTORICAL",
+  "title": "Synthetic pep-505 design exercise",
+  "notice": "All text, assertions and outputs are fabricated offline tests; not the historical PEP record",
   "proposals": [
     {
       "proposal_id": "S1",
+      "name": "Unary ? operator",
       "ground_truth_status": "REJECTED",
-      "rationale_embedding": [
-        1,
-        0
+      "rationale_text": "Conflicts with conditional parsing",
+      "fatal_reasons": [
+        "Conflicts with conditional parsing"
       ],
+      "authoritative_ruling": {
+        "source_message_id": "post-s1",
+        "author": "fixture-author-a",
+        "start_char": 0,
+        "end_char": 100,
+        "exact_quote": "For this synthetic design review, unary ? is rejected because it conflicts with conditional parsing.",
+        "content_sha256": "e4ffc907d6fd43337ee3ff2432088ae1fa3ca2a82019baeaca0d7c8b34c25b29"
+      },
       "code_anchors": [
         {
           "proposal_id": "S1",
@@ -23,11 +32,11 @@
     },
     {
       "proposal_id": "S2",
+      "name": "Safe navigation",
       "ground_truth_status": "DEFERRED",
-      "rationale_embedding": [
-        0,
-        1
-      ],
+      "rationale_text": "Deferred pending grammar work",
+      "fatal_reasons": [],
+      "authoritative_ruling": null,
       "code_anchors": [
         {
           "proposal_id": "S2",

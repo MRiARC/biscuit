@@ -1,0 +1,77 @@
+{
+  "benchmark_id": "pep-557",
+  "dataset_kind": "SYNTHETIC_REPLAY_NOT_HISTORICAL",
+  "title": "Synthetic pep-557 design exercise",
+  "notice": "All text, assertions and outputs are fabricated offline tests; not the historical PEP record",
+  "proposals": [
+    {
+      "proposal_id": "M1",
+      "name": "Mutable namedtuple",
+      "ground_truth_status": "REJECTED",
+      "rationale_text": "Unsafe mutable data layout",
+      "fatal_reasons": [
+        "Unsafe mutable data layout"
+      ],
+      "authoritative_ruling": {
+        "source_message_id": "pep557-m1",
+        "author": "fixture-author-a",
+        "start_char": 0,
+        "end_char": 77,
+        "exact_quote": "Mutable namedtuple inheritance is rejected because the data layout is unsafe.",
+        "content_sha256": "4be57fadc16081b325d6a6e5a3357ad98df4a131d0f9c98b14b93810dcb3f598"
+      },
+      "code_anchors": [
+        {
+          "proposal_id": "M1",
+          "file_path": "Lib/dataclasses.py",
+          "symbol_identifier": "MutableNamedTuple",
+          "ast_node_type": "class_def",
+          "historical_commit": "synthetic-pep557"
+        }
+      ]
+    },
+    {
+      "proposal_id": "M2",
+      "name": "Metaclass-based design",
+      "ground_truth_status": "REJECTED",
+      "rationale_text": "Breaks introspection",
+      "fatal_reasons": [
+        "Breaks introspection"
+      ],
+      "authoritative_ruling": {
+        "source_message_id": "pep557-m2",
+        "author": "fixture-author-b",
+        "start_char": 0,
+        "end_char": 74,
+        "exact_quote": "A metaclass-based alternative is rejected because it breaks introspection.",
+        "content_sha256": "35b6c1994a0d23fba7fc85b463ffda7af13c6ff803a0366c2a15db7c95f24ff7"
+      },
+      "code_anchors": [
+        {
+          "proposal_id": "M2",
+          "file_path": "Lib/dataclasses.py",
+          "symbol_identifier": "DataClassMeta",
+          "ast_node_type": "class_def",
+          "historical_commit": "synthetic-pep557"
+        }
+      ]
+    },
+    {
+      "proposal_id": "M3",
+      "name": "Dataclass decorator",
+      "ground_truth_status": "ACCEPTED",
+      "rationale_text": "Preferred decorator architecture",
+      "fatal_reasons": [],
+      "authoritative_ruling": null,
+      "code_anchors": [
+        {
+          "proposal_id": "M3",
+          "file_path": "Lib/dataclasses.py",
+          "symbol_identifier": "dataclass",
+          "ast_node_type": "function_def",
+          "historical_commit": "synthetic-pep557"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "thread_id": "pep-572-synthetic",
+  "source_platform": "SYNTHETIC",
+  "external_url": null,
+  "expected_source_message_count": 4,
+  "canonicalization_version": 1,
+  "messages": [
+    {
+      "message_id": "pep572-s1",
+      "author_handle": "fixture-author-a",
+      "author_role": "maintainer",
+      "created_at": "2026-01-01T00:00:00Z",
+      "raw_text": "Expression equals assignment syntax is rejected because it collides with comparisons.",
+      "content_sha256": "ef8b240df8718333af57c9f1dd74b545e970f3a0b02ffb27ab5b937f424e3924"
+    },
+    {
+      "message_id": "pep572-s2",
+      "author_handle": "fixture-author-b",
+      "author_role": "maintainer",
+      "created_at": "2026-01-02T00:00:00Z",
+      "raw_text": "The where-block alternative is rejected for grammar ambiguity.",
+      "content_sha256": "06e4dfe2ccb69c52b94fdc6eb2eedb5adf0ce9015e027483cb6ba2b8f6e4215f"
+    },
+    {
+      "message_id": "pep572-s3",
+      "author_handle": "fixture-author-c",
+      "author_role": "maintainer",
+      "created_at": "2026-01-03T00:00:00Z",
+      "raw_text": "The assign call special form is rejected because it changes evaluation semantics.",
+      "content_sha256": "83c6cb021c0551e9ebfefc5921121d9e558019229991270645156e8bdf3e119f"
+    },
+    {
+      "message_id": "pep572-s4",
+      "author_handle": "fixture-author-d",
+      "author_role": "maintainer",
+      "created_at": "2026-01-04T00:00:00Z",
+      "raw_text": "The walrus assignment expression is accepted in this synthetic exercise.",
+      "content_sha256": "543ad8d4c0c992e6b6f7534f4b7ff30e9831c3475e08e77885b9641aeccdf717"
+    }
+  ],
+  "thread_sha256": "242948c5f90c3df2e048288d2a0400635bf66972271784886752035f6782061d"
+}
