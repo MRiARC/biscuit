@@ -20,7 +20,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from biscuit.extract.audit import AuditWriter, sha256_json
-
 from biscuit.extract.client import LocalLLMClient
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
 from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
