@@ -205,6 +205,7 @@ def pr_warning_metrics(
     *,
     warning_records: Sequence[Mapping[str, Any]] | None = None,
     expected_alternatives: Mapping[str, str] | None = None,
+    expected_rulings: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Labels are an evaluation-only input and must never reach the predictor."""
     if set(labels.values()) - {"violation", "benign", "ambiguous"}:
@@ -241,6 +242,11 @@ def pr_warning_metrics(
             and record is not None
             and record.get("alternative_id") == expected_alternatives.get(case_id)
             and record.get("authorization") == "SIMULATED_VERIFIED_RULING"
+            and expected_rulings is not None
+            and record.get("ruling_source_message_id")
+            == expected_rulings.get(case_id, {}).get("ruling_source_message_id")
+            and record.get("ruling_quote_sha256")
+            == expected_rulings.get(case_id, {}).get("ruling_quote_sha256")
         ):
             # This records a synthetic replay contract, not production ruling authority.
             correct_warnings.add(case_id)
