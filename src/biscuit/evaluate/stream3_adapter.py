@@ -7,7 +7,6 @@ is an independent prediction, not a replay of held-out fixture labels.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -86,15 +85,19 @@ def stream3_predictor(
                     "message_id": "UNVERIFIABLE_SOURCE_VERSION:" + version_id,
                     "start_char": span.start_char, "end_char": span.end_char,
                     "quote": span.exact_quote, "sha256": span.content_hash,
+                    "verification_status": str(getattr(
+                        span.verification_status, "value", span.verification_status
+                    )) if hasattr(span, "verification_status") else "UNVERIFIED",
                 })
             else:
                 evidence.append({
                     "message_id": message_id,
                     "start_char": span.start_char, "end_char": span.end_char,
                     "quote": span.exact_quote,
-                    "sha256": span.content_hash or hashlib.sha256(
-                        span.exact_quote.encode("utf-8")
-                    ).hexdigest(),
+                    "sha256": span.content_hash,
+                    "verification_status": str(getattr(
+                        span.verification_status, "value", span.verification_status
+                    )) if hasattr(span, "verification_status") else "UNVERIFIED",
                 })
 
         warning_records = watchdog(run, source["pr_cases"]) if watchdog else []
