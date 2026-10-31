@@ -4,9 +4,8 @@ from __future__ import annotations
 import hashlib
 from types import SimpleNamespace
 
-from biscuit.evaluate.stream3_adapter import stream3_predictor
-
 from biscuit.evaluate.metrics import exact_evidence_match
+from biscuit.evaluate.stream3_adapter import stream3_predictor
 
 
 def test_stale_and_unverified_span_cannot_pass_exact_evidence_score() -> None:
