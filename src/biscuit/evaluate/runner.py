@@ -12,14 +12,18 @@ from .audit import write_pr_audit
 from .fixtures import (
     DEFAULT_FIXTURE_ROOT,
     load_ground_truth,
+    load_simulated_predictions,
+    load_pr_expected_alternatives,
     load_pr_labels,
     load_thread,
     predictor_input,
 )
 from .metrics import (
+    alternative_disambiguation_rate,
     ast_grounding_precision,
     causal_rationale_alignment,
     exact_evidence_match,
+    hashed_text_embedding,
     lifecycle_accuracy,
     pr_warning_metrics,
     proposal_recovery,
@@ -41,21 +45,25 @@ def run_benchmark(
     fixtures_root: Path | None = None,
     output_path: Path | None = None,
     audit_db: Path | None = None,
+    recorded_replay: bool = False,
 ) -> BenchmarkOutcome:
     """Score supplied predictions without passing labels or official PEP text to extraction.
 
     The included PEP-505 fixture is explicitly SYNTHETIC and is NOT the historic
     234-post dataset. Without predictions no scores are invented.
     """
-    if predictions_path is not None and predictor is not None:
-        raise ValueError("Supply predictions_path OR predictor, not both")
+    if sum([predictions_path is not None, predictor is not None, recorded_replay]) > 1:
+        raise ValueError("Supply only one of predictions_path, predictor, or recorded_replay")
     root = fixtures_root or DEFAULT_FIXTURE_ROOT
     thread = load_thread(benchmark_id, root)
     safe_input = predictor_input(thread, root)
 
     predictions: dict[str, Any] | None = None
     source = "NOT_SUPPLIED"
-    if predictor is not None:
+    if recorded_replay:
+        predictions = load_simulated_predictions(benchmark_id, root)
+        source = "RECORDED_SYNTHETIC_REPLAY_NOT_MODEL"
+    elif predictor is not None:
         predictions = predictor(safe_input)
         source = "PREDICTOR"
     elif predictions_path is not None:
@@ -68,6 +76,7 @@ def run_benchmark(
     # It must never be passed to the predictor, prompt builder, or crawler.
     truth = load_ground_truth(benchmark_id, root)
     labels = load_pr_labels(root)
+    expected_warning_alternatives = load_pr_expected_alternatives(root)
     if len(labels) != 20 or sorted(labels.values()).count("violation") != 5:
         raise ValueError("The held-out PR set must contain exactly 5 violations")
     if list(labels.values()).count("benign") != 10 or list(labels.values()).count("ambiguous") != 5:
@@ -79,9 +88,12 @@ def run_benchmark(
     truth_states = {p["proposal_id"]: p["ground_truth_status"] for p in gt_proposals}
     truth_anchors = [anchor for p in gt_proposals for anchor in p.get("code_anchors", [])]
     truth_vectors = {
-        p["proposal_id"]: p["rationale_embedding"]
+        p["proposal_id"]: (
+            hashed_text_embedding(p["rationale_text"])
+            if "rationale_text" in p else p["rationale_embedding"]
+        )
         for p in gt_proposals
-        if "rationale_embedding" in p
+        if "rationale_text" in p or "rationale_embedding" in p
     }
     raw = {msg["message_id"]: msg["raw_text"] for msg in thread["messages"]}
 
@@ -93,8 +105,10 @@ def run_benchmark(
             _metric("Evidence exact match rate", None, 1.0, 0),
             _metric("Invalid citation rate", None, 0.0, 0, "max"),
             _metric("AST grounding precision", None, 0.75, 0),
+            _metric("Alternative disambiguation rate", None, 1.0, 0),
             _metric("Causal rationale alignment", None, 0.82, 0),
             _metric("PR warning precision", None, 0.90, 0),
+            _metric("PR warning recall", None, 1.0, 0),
             _metric("Benign false alarm rate", None, 0.0, 0, "max"),
             _metric("Ambiguous abstention rate", None, 1.0, 0),
         )
@@ -113,16 +127,30 @@ def run_benchmark(
             anchor for p in recovered for anchor in p.get("code_anchors", [])
         ]
         found_vectors = {
-            p["proposal_id"]: p["rationale_embedding"]
+            p["proposal_id"]: (
+                hashed_text_embedding(p["rationale_text"])
+                if "rationale_text" in p else p["rationale_embedding"]
+            )
             for p in recovered
-            if "rationale_embedding" in p
+            if "rationale_text" in p or "rationale_embedding" in p
         }
         recovery = proposal_recovery(recovered_ids, list(truth_states))
         state = lifecycle_accuracy(recovered_states, truth_states)
         evidence = exact_evidence_match(predictions.get("evidence", []), raw)
         anchors = ast_grounding_precision(found_anchors, truth_anchors)
+        disambiguation = alternative_disambiguation_rate(
+            found_anchors, recovered_ids
+        )
         rationale = causal_rationale_alignment(found_vectors, truth_vectors)
-        watchdog = pr_warning_metrics(labels, predictions.get("warned_pr_ids", []))
+        # A bare list of PR IDs cannot establish the correct rejected alternative.
+        # Scoring such a list alone would reward unauthenticated warnings.
+        warning_records = predictions.get("warning_records", [])
+        watchdog = pr_warning_metrics(
+            labels,
+            predictions.get("warned_pr_ids", []),
+            warning_records=warning_records,
+            expected_alternatives=expected_warning_alternatives,
+        )
         if audit_db is not None:
             run_hash = hashlib.sha256(
                 json.dumps(
@@ -140,8 +168,10 @@ def run_benchmark(
             _metric("Evidence exact match rate", evidence["emr"], 1.0, evidence["total"]),
             _metric("Invalid citation rate", evidence["invalid_citation_rate"], 0.0, evidence["total"], "max"),
             _metric("AST grounding precision", anchors["precision"], 0.75, anchors["total"]),
+            _metric("Alternative disambiguation rate", disambiguation["rate"], 1.0, disambiguation["total"]),
             _metric("Causal rationale alignment", rationale["cra"], 0.82, rationale["evaluated"]),
             _metric("PR warning precision", watchdog["precision"], 0.90, watchdog["total"]),
+            _metric("PR warning recall", watchdog["recall"], 1.0, len(expected_warning_alternatives)),
             _metric("Benign false alarm rate", watchdog["benign_false_alarm_rate"], 0.0, watchdog["benign_total"], "max"),
             _metric("Ambiguous abstention rate", watchdog["ambiguous_abstention_rate"], 1.0, watchdog["ambiguous_total"]),
         )
@@ -152,7 +182,14 @@ def run_benchmark(
             "states": state,
             "evidence": evidence,
             "anchors": anchors,
-            "rationale": rationale,
+            "alternative_disambiguation": disambiguation,
+            "rationale": {
+                **rationale, "embedding_method": (
+                    "DETERMINISTIC_HASHED_TEXT_LEXICAL_PROXY_NOT_SEMANTIC"
+                    if any("rationale_text" in p for p in gt_proposals)
+                    else "EXTERNALLY_SUPPLIED_VECTORS"
+                )
+            },
             "watchdog": watchdog,
         }
     outcome = BenchmarkOutcome(
