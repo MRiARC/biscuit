@@ -26,7 +26,7 @@ if typer is not None:
 
     @app.command()
     def evaluate(
-        benchmark: str = typer.Option("pep-505", "--benchmark"),  # noqa: B008
+        benchmark: str = typer.Option("pep-505", "--benchmark"),
         predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
         output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
     ) -> None:
@@ -47,8 +47,8 @@ if typer is not None:
 
     @app.command()
     def ingest(
-        platform: str = typer.Option(..., "--platform"),  # noqa: B008
-        url: str = typer.Option(..., "--url"),  # noqa: B008
+        platform: str = typer.Option(..., "--platform"),
+        url: str = typer.Option(..., "--url"),
         db: Path | None = typer.Option(None, "--db"),  # noqa: B008
     ) -> None:
         """Ingest a complete Discourse topic snapshot into the local SQLite cache."""
@@ -64,7 +64,7 @@ if typer is not None:
 
     @decisions_app.command("list")
     def decisions_list(
-        status: str | None = typer.Option(None, "--status"),  # noqa: B008
+        status: str | None = typer.Option(None, "--status"),
         db: Path | None = typer.Option(None, "--db"),  # noqa: B008
     ) -> None:
         """Display the local decision index, optionally filtered by lifecycle state."""
