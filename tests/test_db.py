@@ -253,7 +253,8 @@ def test_postgres_sync_and_async_bootstrap_live():
 
         decision = Decision(
             source_thread_id=thread.id,
-            primary_subject="Postgres test decision",
+            title="Postgres Test Decision",
+            context_summary="Testing live PostgreSQL 16 and pgvector vector storage",
         )
         session.add(decision)
         session.flush()
