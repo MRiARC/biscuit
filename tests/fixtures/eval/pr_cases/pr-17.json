@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "Grammar/python.gram",
-      "diff": "+# tentative safe navigation proposal\n+trailer: '?.' NAME"
+      "diff": "diff --git a/Grammar/python.gram b/Grammar/python.gram\n--- a/Grammar/python.gram\n+++ b/Grammar/python.gram\n@@ -0,0 +1,2 @@\n+# tentative safe navigation proposal\n+trailer: '?.' NAME"
     }
   ],
   "fixture_origin": "SYNTHETIC"
