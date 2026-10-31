@@ -53,6 +53,7 @@ from biscuit.switch import (
     new_idempotency_key,
     sign_body,
 )
+from biscuit.switch.security import VerifiedProjectRoleGrant
 from biscuit.switch.server import FastMCPServer
 from biscuit.watchdog import (
     CandidateRetriever,
@@ -406,9 +407,9 @@ class TestBlockKitBuilder:
         assert payload["kind"] == "approval"
         assert payload["request_id"] == request.switch_approval_id
         assert payload["options"] == [
-            {"id": "approve_draft", "label": "Approve Draft", "decision": "approve"},
-            {"id": "edit_rationale", "label": "Edit Rationale", "decision": "edit"},
-            {"id": "dismiss_draft", "label": "Dismiss Draft", "decision": "reject"},
+            {"id": "approve_draft", "label": "Approve Draft", "decision": "accept"},
+            {"id": "edit_rationale", "label": "Edit Rationale", "decision": "cancel"},
+            {"id": "dismiss_draft", "label": "Dismiss Draft", "decision": "decline"},
         ]
         assert payload["questions"] == []
         assert "expires_at" in payload
@@ -420,13 +421,55 @@ class TestBlockKitBuilder:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_LATEST_CALLBACK_REQUEST: HITLApprovalRequest | None = None
+
+
 def callback_body(action: str, request_id: str, key: str | None = None) -> bytes:
+    request = _LATEST_CALLBACK_REQUEST
+    assert request is not None, "create a request before constructing a callback"
     payload = {
         "request_id": request_id,
         "action": action,
         "idempotency_key": key,
+        "action_payload_sha256": request.action_payload_sha256,
+        "actor_contributor_id": "c2",
+        "actor_platform_id": "U999",
+        "actor_source_platform": "slack",
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     return json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def _test_role_grants(
+    source_platform: str, platform_id: str, contributor_id: str, project: str
+):
+    if (
+        source_platform == "slack"
+        and platform_id == "U999"
+        and contributor_id == "c2"
+        and project == "https://github.com/python/cpython"
+    ):
+        return [
+            VerifiedProjectRoleGrant(
+                contributor_id="c2",
+                source_platform="slack",
+                platform_id="U999",
+                project_context=project,
+                role="Core Maintainer",
+            )
+        ]
+    return []
+
+
+def make_security(**kwargs) -> CallbackSecurity:
+    defaults = {
+        "secret": SECRET,
+        "role_grant_resolver": _test_role_grants,
+        "replay_db_path": ":memory:",
+        "allow_volatile_replay_for_tests": True,
+    }
+    defaults.update(kwargs)
+    return CallbackSecurity(**defaults)
 
 
 def make_request(**overrides) -> HITLApprovalRequest:
@@ -442,12 +485,14 @@ def make_request(**overrides) -> HITLApprovalRequest:
         "decision_alternative_id": "alt-1",
     }
     defaults.update(overrides)
-    return HITLApprovalRequest(**defaults)
+    global _LATEST_CALLBACK_REQUEST
+    _LATEST_CALLBACK_REQUEST = HITLApprovalRequest(**defaults)
+    return _LATEST_CALLBACK_REQUEST
 
 
 class TestCallbackSecurity:
     def test_valid_signature_is_accepted(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -459,7 +504,7 @@ class TestCallbackSecurity:
         assert body_hash == compute_sha256_hex(body.decode("utf-8"))
 
     def test_missing_or_malformed_signature_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -470,7 +515,7 @@ class TestCallbackSecurity:
             assert "signature" in reason.lower()
 
     def test_wrong_secret_signature_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -482,7 +527,7 @@ class TestCallbackSecurity:
         assert "does not match" in reason
 
     def test_tampered_body_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -496,7 +541,7 @@ class TestCallbackSecurity:
         assert "does not match" in reason
 
     def test_replayed_callback_is_rejected_409(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -509,7 +554,7 @@ class TestCallbackSecurity:
         assert "replay" in reason.lower()
 
     def test_finalized_request_rejects_further_callbacks(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -542,7 +587,7 @@ class TestCallbackSecurity:
         assert "409" in reason or "DECIDED" in reason
 
     def test_expired_request_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request(expires_at=datetime.now(UTC) - timedelta(minutes=1))
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -554,7 +599,7 @@ class TestCallbackSecurity:
         assert "expired" in reason
 
     def test_idempotency_key_mismatch_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body("AUTHORIZE_PR_COMMENT", request.switch_approval_id, "not-a-uuid")
         valid, reason, _ = security.verify(request, body, sign_body(SECRET, body), "not-a-uuid")
@@ -562,7 +607,7 @@ class TestCallbackSecurity:
         assert "UUIDv4" in reason
 
     def test_action_type_compatibility_enforced(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()  # AUTHORIZE_PR_WARNING request
         body = callback_body("APPROVE_DRAFT", request.switch_approval_id, request.idempotency_key)
         result, reason = security.finalize(
@@ -579,7 +624,7 @@ class TestCallbackSecurity:
         assert "not valid for request type" in reason
 
     def test_expiration_sweep_marks_pending_requests(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         stale = make_request(expires_at=datetime.now(UTC) - timedelta(hours=1))
         fresh = make_request()
         expired = security.expired_requests([stale, fresh])
@@ -822,7 +867,7 @@ class TestSwitchUpstreamSchemaContract:
 
 class TestCallbackSecurityNegative:
     def test_missing_caller_idempotency_key_is_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -833,7 +878,7 @@ class TestCallbackSecurityNegative:
         assert "idempotency key is missing" in reason
 
     def test_mismatched_idempotency_key_is_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         other_key = new_idempotency_key()
         body = callback_body("AUTHORIZE_PR_COMMENT", request.switch_approval_id, other_key)
@@ -843,7 +888,7 @@ class TestCallbackSecurityNegative:
         assert "idempotency key does not match" in reason
 
     def test_mismatched_signed_request_id_claim_is_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", "different-request-id", request.idempotency_key
@@ -856,7 +901,7 @@ class TestCallbackSecurityNegative:
         assert "does not match approval request" in reason
 
     def test_stale_callback_timestamp_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         stale_time = (datetime.now(UTC) - timedelta(minutes=6)).isoformat()
         payload = {
@@ -874,15 +919,13 @@ class TestCallbackSecurityNegative:
         assert "freshness window" in reason
 
     def test_fresh_callback_timestamp_accepted(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request()
         fresh_time = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
-        payload = {
-            "request_id": request.switch_approval_id,
-            "action": "AUTHORIZE_PR_COMMENT",
-            "idempotency_key": request.idempotency_key,
-            "timestamp": fresh_time,
-        }
+        payload = json.loads(
+            callback_body("AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key)
+        )
+        payload["timestamp"] = fresh_time
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         sig = sign_body(SECRET, body)
         valid, reason, _ = security.verify(
@@ -891,7 +934,7 @@ class TestCallbackSecurityNegative:
         assert valid, reason
 
     def test_unauthorized_actor_roles_rejected(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request(authorized_roles=("Core Maintainer", "BDFL"))
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -912,7 +955,7 @@ class TestCallbackSecurityNegative:
         assert "does not hold an authorized maintainer role" in reason
 
     def test_authorized_actor_roles_accepted(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request(authorized_roles=("Core Maintainer", "BDFL"))
         body = callback_body(
             "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
@@ -933,7 +976,7 @@ class TestCallbackSecurityNegative:
         assert request.status == HITLRequestStatus.DECIDED
 
     def test_edit_rationale_action_on_living_decision_card(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request(
             action_type=SwitchActionType.APPROVE_LIVING_DECISION,
             authorized_roles=("Core Maintainer",),
@@ -956,7 +999,7 @@ class TestCallbackSecurityNegative:
         assert request.idempotency_key in security.consumed_keys
 
     def test_dismiss_warning_action_on_pr_warning_card(self):
-        security = CallbackSecurity(secret=SECRET)
+        security = make_security()
         request = make_request(
             action_type=SwitchActionType.AUTHORIZE_PR_WARNING,
             authorized_roles=("Core Maintainer",),
@@ -1100,3 +1143,130 @@ class TestCommitSHABindingAndPersistence:
         reopened_versions = reopened_store.get_message_versions("msg-1")
         assert len(reopened_versions) == 2
         reopened_store.close()
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for pinned Switch schema and fail-closed callbacks
+# ---------------------------------------------------------------------------
+
+
+def test_switch_options_use_pinned_decision_literals_and_23h_expiry():
+    builder = BlockKitBuilder()
+    request = builder.build_approval_request(
+        action_type=SwitchActionType.APPROVE_LIVING_DECISION,
+        card_payload=builder.build_living_decision_card(DRAFT),
+        living_draft_id="ld-1",
+    )
+    payload = builder.build_approval_open_payload(request, session_id="sess-1")
+    assert {o["decision"] for o in payload["options"]} <= {
+        "accept", "acceptForSession", "decline", "cancel"
+    }
+    assert payload["questions"] == []
+    expires = datetime.fromisoformat(payload["expires_at"])
+    assert timedelta(hours=22) < expires - datetime.now(UTC) < timedelta(hours=24)
+
+
+def test_default_slack_button_has_no_invalid_style_field():
+    builder = BlockKitBuilder()
+    card = builder.build_living_decision_card(DRAFT)
+    actions = next(b for b in card["blocks"] if b["type"] == "actions")
+    buttons = {b["action_id"]: b for b in actions["elements"]}
+    assert "style" not in buttons["edit_rationale"]
+    assert buttons["approve_draft"]["style"] == "primary"
+    assert buttons["dismiss_draft"]["style"] == "danger"
+
+
+def test_callback_rejects_missing_timestamp_or_signed_payload_claim():
+    security = make_security()
+    request = make_request()
+    original = json.loads(callback_body(
+        "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+    ))
+    for missing in ("timestamp", "action_payload_sha256", "actor_contributor_id"):
+        payload = dict(original)
+        payload.pop(missing)
+        body = json.dumps(payload, sort_keys=True).encode()
+        valid, _, _ = security.verify(
+            request, body, sign_body(SECRET, body), request.idempotency_key
+        )
+        assert not valid, missing
+
+
+def test_callback_requires_trusted_project_role_resolver():
+    security = make_security(role_grant_resolver=None)
+    request = make_request()
+    body = callback_body(
+        "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+    )
+    result, reason = security.finalize(
+        request, HITLEventAction.AUTHORIZE_PR_COMMENT, body,
+        sign_body(SECRET, body), "U999", "slack", "c2",
+        idempotency_key=request.idempotency_key,
+    )
+    assert result is None
+    assert "role resolver" in reason
+
+
+def test_callback_rejects_revoked_and_cross_project_grants():
+    for project in ("https://github.com/another/repository", "https://github.com/python/cpython"):
+        def invalid_grants(source, platform, actor, target):
+            return [VerifiedProjectRoleGrant(
+                contributor_id=actor, source_platform=source, platform_id=platform,
+                project_context=project, role="Core Maintainer", revoked=True,
+            )]
+        security = make_security(role_grant_resolver=invalid_grants)
+        request = make_request()
+        body = callback_body(
+            "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+        )
+        result, reason = security.finalize(
+            request, HITLEventAction.AUTHORIZE_PR_COMMENT, body,
+            sign_body(SECRET, body), "U999", "slack", "c2",
+            idempotency_key=request.idempotency_key,
+        )
+        assert result is None
+        assert "does not hold" in reason
+
+
+def test_durable_replay_ledger_rejects_after_restart(tmp_path):
+    db = str(tmp_path / "switch-replay.sqlite3")
+    security = make_security(replay_db_path=db)
+    request = make_request()
+    body = callback_body(
+        "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+    )
+    args = (
+        request, HITLEventAction.AUTHORIZE_PR_COMMENT, body,
+        sign_body(SECRET, body), "U999", "slack", "c2",
+    )
+    result, reason = security.finalize(
+        *args, idempotency_key=request.idempotency_key
+    )
+    assert result is not None, reason
+    security.close()
+
+    restarted = make_security(replay_db_path=db)
+    pending_copy = replace(request, status=HITLRequestStatus.PENDING)
+    result, reason = restarted.finalize(
+        pending_copy, HITLEventAction.AUTHORIZE_PR_COMMENT,
+        body, sign_body(SECRET, body), "U999", "slack", "c2",
+        idempotency_key=request.idempotency_key,
+    )
+    assert result is None
+    assert "replayed" in reason
+    restarted.close()
+
+
+def test_no_durable_ledger_means_no_finalization():
+    security = CallbackSecurity(secret=SECRET, role_grant_resolver=_test_role_grants)
+    request = make_request()
+    body = callback_body(
+        "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+    )
+    result, reason = security.finalize(
+        request, HITLEventAction.AUTHORIZE_PR_COMMENT, body,
+        sign_body(SECRET, body), "U999", "slack", "c2",
+        idempotency_key=request.idempotency_key,
+    )
+    assert result is None
+    assert "replay ledger" in reason
