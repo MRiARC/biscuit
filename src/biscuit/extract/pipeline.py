@@ -1,0 +1,752 @@
+"""
+4-Pass Deliberation Extraction Pipeline Orchestrator.
+Sequences Pass 1 (Discovery) -> Pass 2 (Slicing) -> Pass 3 (Arguments) -> Pass 4 (MADR),
+followed by zero-based exact evidence verification.
+Strictly adheres to sequential memory offloading (<=8 GB RAM budget) and auditability.
+Enforces non-negotiable provenance and authority invariants:
+1. Valid EvidenceRole enum values only (no non-existent roles).
+2. Unauthorized REJECTED statuses are strictly downgraded to DISPUTED without verified human rulings.
+3. Quotes are matched to originating message authors, not quoted replies.
+4. Exactly one target ID (decision_id, alternative_id, argument_id) is bound per EvidenceSpan.
+5. Missing or invalid source_message_version_id values never receive fabricated synthetic UUIDs.
+6. Target alternative_id / argument_id values are never fabricated via synthetic UUIDs without caller grants.
+7. Rulings require independent source-to-alternative verification before authorizing alternative rejection.
+8. Core Maintainer consensus rejections require the ruling author PLUS at least one second distinct
+   maintainer sign-off on that same alternative.
+"""
+
+import re
+from typing import Any
+from uuid import UUID, uuid4
+
+from biscuit.extract.audit import AuditWriter, sha256_json
+from biscuit.extract.client import LocalLLMClient
+from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
+from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
+from biscuit.extract.pass3_arguments import Pass3ArgumentMining, find_originating_message
+from biscuit.extract.pass4_synthesis import Pass4SchemaSynthesis
+from biscuit.extract.prompts import get_prompt_templates_hash
+from biscuit.extract.types import (
+    ArgumentClassification,
+    DeliberationPacket,
+    ExtractedMADR,
+    ExtractionRunResult,
+    ProposalCandidate,
+)
+from biscuit.provenance.matcher import CandidateSpanMatcher
+from biscuit.provenance.types import (
+    EvidenceRole,
+    EvidenceSpan,
+    EvidenceStance,
+    VerificationStatus,
+)
+from biscuit.provenance.verifier import EvidenceVerifier
+
+
+def _parse_valid_uuid(val: Any) -> UUID | None:
+    """Parses a valid UUID object or string; returns None if absent or malformed."""
+    if isinstance(val, UUID):
+        return val
+    if isinstance(val, str):
+        try:
+            return UUID(val)
+        except ValueError:
+            return None
+    return None
+
+
+def _proposal_ids_in_clause(clause: str, proposals: list[ProposalCandidate]) -> set[str]:
+    """Find explicit proposal identifiers/names in one ruling clause, not the whole thread."""
+    found: set[str] = set()
+    for proposal in proposals:
+        pid = proposal.proposal_id
+        patterns = [rf"(?<!\w){re.escape(pid)}(?!\w)"]
+        digits = re.sub(r"[^\d]", "", pid)
+        if digits:
+            patterns.append(rf"\b(?:proposal|alternative|option)\s*{re.escape(digits)}\b")
+        if proposal.name and len(proposal.name) >= 4:
+            patterns.append(rf"\b{re.escape(proposal.name)}\b")
+        if any(re.search(pattern, clause, flags=re.IGNORECASE) for pattern in patterns):
+            found.add(pid)
+    return found
+
+
+def _rejection_clauses(quote: str) -> list[str]:
+    """Separate independent propositions so 'reject P1; P2 open' cannot reject P2."""
+    return [
+        clause.strip()
+        for clause in re.split(r"[;.\n]+|\b(?:but|however|whereas|while)\b", quote, flags=re.IGNORECASE)
+        if clause.strip()
+    ]
+
+
+def _affirmative_rejection(clause: str) -> bool:
+    """Conservatively identify affirmative rejections; negated/contested rejections fail closed."""
+    if not re.search(r"\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b", clause, re.IGNORECASE):
+        return False
+    return re.search(
+        r"\b(?:not|never|no|don't|do\s+not|does\s+not|oppose|opposing|"
+        r"against|object\s+to|disagree\s+with|reconsider)\b"
+        r"(?:\s+\w+){0,4}\s+\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b",
+        clause, re.IGNORECASE,
+    ) is None
+
+
+def _verify_ruling_alternative_link(
+    quote: str,
+    message_content: str,
+    target_proposal_id: str,
+    proposals: list[ProposalCandidate],
+) -> bool:
+    """Validate an explicitly *rejecting* ruling for this alternative, not a mere mention.
+
+    The human's verbatim quote, not unrelated context in the same message or an LLM's
+    proposed alternative ID, must express the rejection. Ambiguous multi-target
+    statements are intentionally not authorized.
+    """
+    del message_content  # Context may establish relevance, never rejection direction.
+    if not any(p.proposal_id == target_proposal_id for p in proposals):
+        return False
+
+    for clause in _rejection_clauses(quote):
+        if not _affirmative_rejection(clause):
+            continue
+        referenced = _proposal_ids_in_clause(clause, proposals)
+        if referenced == {target_proposal_id}:
+            return True
+        if not referenced and len(proposals) == 1:
+            return True
+    return False
+
+
+def _is_affirmative_signoff(quote: str, proposal_id: str, proposals: list[ProposalCandidate]) -> bool:
+    """A consensus sign-off explicitly agrees to reject this same proposal."""
+    for clause in _rejection_clauses(quote):
+        if not _affirmative_rejection(clause):
+            continue
+        if not re.search(r"\b(?:agree|concur|second|endorse|support)\b", clause, re.IGNORECASE):
+            continue
+        targets = _proposal_ids_in_clause(clause, proposals)
+        if targets == {proposal_id} or (not targets and len(proposals) == 1):
+            return True
+    return False
+
+class ExtractionPipeline:
+    """
+    Orchestrates the 4-Pass Local LLM Extraction Pipeline.
+    Enforces sequential model unloading to adhere to the <=8 GB RAM budget.
+    Performs zero-based exact substring evidence verification against source message versions.
+    """
+
+    def __init__(
+        self,
+        client: LocalLLMClient | None = None,
+        pass1_model: str = "llama3.2:3b",
+        pass3_model: str = "phi3.5",
+        pass4_model: str = "qwen2.5-coder:7b",
+        audit_writer: AuditWriter | None = None,
+    ):
+        self.client = client or LocalLLMClient()
+        self.pass1 = Pass1ProposalDiscovery(self.client, model=pass1_model)
+        self.pass2 = Pass2DeliberationSlicing()
+        self.pass3 = Pass3ArgumentMining(self.client, model=pass3_model)
+        self.pass4 = Pass4SchemaSynthesis(self.client, model=pass4_model)
+        self.verifier = EvidenceVerifier()
+        self.matcher = CandidateSpanMatcher()
+        self.audit_writer = audit_writer
+
+    def run(
+        self,
+        thread_id: str,
+        topic: str,
+        messages: list[dict[str, Any]],
+        edges: list[dict[str, Any]] | None = None,
+        decision_id: str | None = None,
+        alternative_ids: dict[str, UUID | str] | None = None,
+        argument_ids: dict[str, UUID | str] | None = None,
+        verified_project_roles: dict[str, str] | None = None,
+        source_thread_id: UUID | str | None = None,
+        environment_lock_sha256: str | None = None,
+        model_revisions: dict[str, str] | None = None,
+    ) -> ExtractionRunResult:
+        """Execute with a deterministic audit manifest and optional durable DB writer.
+
+        The zero-dependency workstream does not silently claim database persistence.
+        A configured writer requires a real source-thread UUID, dependency-lock digest,
+        and pinned model revisions; otherwise the run is rejected before inference.
+        """
+        run_id = str(uuid4())
+        revisions = model_revisions or {}
+        run_config = {
+            "pass1_chunk_word_limit": self.pass1.chunk_word_limit,
+            "pass2_target_word_limit": self.pass2.target_word_limit,
+            "temperature": 0.0,
+            "keep_alive": 0,
+            "mock_mode": bool(self.client.mock_mode),
+            "pipeline_version": "1.0.0",
+        }
+        manifest: dict[str, Any] = {
+            "id": UUID(run_id),
+            "source_thread_id": _parse_valid_uuid(source_thread_id),
+            "pipeline_version": "1.0.0",
+            "schema_version": "MADR-3.0",
+            "run_config": run_config,
+            "run_config_sha256": sha256_json(run_config),
+            "environment_lock_sha256": environment_lock_sha256,
+            "model_pass1_name": self.pass1.model,
+            "model_pass1_revision": revisions.get("pass1", "UNPINNED"),
+            "model_pass3_name": self.pass3.model,
+            "model_pass3_revision": revisions.get("pass3", "UNPINNED"),
+            "model_pass4_name": self.pass4.model,
+            "model_pass4_revision": revisions.get("pass4", "UNPINNED"),
+            "embedding_model_name": revisions.get("embedding_name", "NOT_USED"),
+            "embedding_model_revision": revisions.get("embedding", "NOT_USED"),
+            "prompt_templates_hash": get_prompt_templates_hash(),
+            "source_thread_snapshot_sha256": sha256_json({
+                "thread_id": thread_id, "topic": topic,
+                "messages": messages, "edges": edges or [],
+            }),
+            "run_status": "RUNNING",
+            "records_extracted": 0,
+        }
+        if self.audit_writer is not None:
+            if manifest["source_thread_id"] is None:
+                raise ValueError("Audit writer requires persisted source_thread_id UUID")
+            if not isinstance(environment_lock_sha256, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{64}", environment_lock_sha256
+            ):
+                raise ValueError("Audit writer requires real environment lock SHA-256")
+            if any(
+                manifest[key] in ("UNPINNED", "NOT_USED", "")
+                for key in (
+                    "model_pass1_revision", "model_pass3_revision",
+                    "model_pass4_revision", "embedding_model_revision",
+                )
+            ):
+                raise ValueError("Audit writer requires pinned model and embedding revisions")
+            self.audit_writer.write(manifest)
+
+        try:
+            result = self._run_impl(
+                thread_id=thread_id, topic=topic, messages=messages, edges=edges,
+                decision_id=decision_id, alternative_ids=alternative_ids,
+                argument_ids=argument_ids, verified_project_roles=verified_project_roles,
+                run_id=run_id,
+            )
+        except Exception:
+            if self.audit_writer is not None:
+                manifest["run_status"] = "FAILED"
+                self.audit_writer.write(manifest)
+            raise
+
+        result.audit_metadata.update({
+            "source_thread_snapshot_sha256": manifest["source_thread_snapshot_sha256"],
+            "run_config": run_config,
+            "run_config_sha256": manifest["run_config_sha256"],
+            "environment_lock_sha256": environment_lock_sha256,
+            "model_pass1_revision": manifest["model_pass1_revision"],
+            "model_pass3_revision": manifest["model_pass3_revision"],
+            "model_pass4_revision": manifest["model_pass4_revision"],
+            "embedding_model_name": manifest["embedding_model_name"],
+            "embedding_model_revision": manifest["embedding_model_revision"],
+            "audit_persisted": False,
+        })
+        if self.audit_writer is not None:
+            manifest["run_status"] = result.run_status
+            manifest["records_extracted"] = len(result.proposals)
+            self.audit_writer.write(manifest)
+            result.audit_metadata["audit_persisted"] = True
+        return result
+
+    def _run_impl(
+        self,
+        thread_id: str,
+        topic: str,
+        messages: list[dict[str, Any]],
+        edges: list[dict[str, Any]] | None = None,
+        decision_id: str | None = None,
+        alternative_ids: dict[str, UUID | str] | None = None,
+        argument_ids: dict[str, UUID | str] | None = None,
+        verified_project_roles: dict[str, str] | None = None,
+        run_id: str | None = None,
+    ) -> ExtractionRunResult:
+        """
+        Executes the full 4-pass extraction and provenance verification workflow.
+
+        Args:
+            thread_id: Unique identifier of the discussion thread.
+            topic: Title or subject of the deliberation thread.
+            messages: Chronological list of message dicts.
+            edges: Optional graph edges (discussion_edges).
+            decision_id: Optional decision ID string or UUID.
+            alternative_ids: Optional caller-provided persisted DB UUIDs for proposal alternatives.
+            argument_ids: Optional caller-provided persisted DB UUIDs for arguments.
+            verified_project_roles: Optional caller-provided project-scoped role grants (username -> role).
+
+        Returns:
+            ExtractionRunResult: Complete auditable extraction result.
+        """
+        run_id = run_id or str(uuid4())
+        dec_id = decision_id or f"DEC-{thread_id[:8]}"
+        dec_uuid = _parse_valid_uuid(dec_id)
+        prompt_templates_hash = get_prompt_templates_hash()
+        # Missing grants mean no authority. Message-supplied roles are never trusted.
+        trusted_roles = {
+            str(author).strip().lower(): str(role).strip().lower()
+            for author, role in (verified_project_roles or {}).items()
+        }
+
+        # Parse caller-provided database UUID mappings (Reviewer Issue 5)
+        persisted_alt_map: dict[str, UUID] = {}
+        if alternative_ids:
+            for k, v in alternative_ids.items():
+                parsed = _parse_valid_uuid(v)
+                if parsed:
+                    persisted_alt_map[k] = parsed
+
+        persisted_arg_map: dict[str, UUID] = {}
+        if argument_ids:
+            for k, v in argument_ids.items():
+                parsed = _parse_valid_uuid(v)
+                if parsed:
+                    persisted_arg_map[k] = parsed
+
+        unpersisted_candidate_targets: list[str] = []
+
+        # Build chronological thread text for Pass 1
+        thread_text_lines = []
+        for idx, m in enumerate(messages):
+            mid = m.get("message_id") or m.get("id") or f"msg-{idx}"
+            author = m.get("author", "unknown")
+            role = trusted_roles.get(str(author).strip().lower(), "contributor")
+            content = m.get("content") or m.get("raw_content") or ""
+            thread_text_lines.append(f"[{mid}] @{author} ({role}):\n{content}\n")
+        thread_text = "\n".join(thread_text_lines)
+
+        # -------------------------------------------------------------
+        # PASS 1: Candidate Proposal Discovery (Llama 3.2 3B)
+        # -------------------------------------------------------------
+        proposals: list[ProposalCandidate] = self.pass1.discover(thread_text)
+
+        # -------------------------------------------------------------
+        # PASS 2: Deliberation Slicing (Deterministic DAG, 0 GB RAM)
+        # -------------------------------------------------------------
+        packets: list[DeliberationPacket] = self.pass2.slice_deliberation(
+            messages=messages, proposals=proposals, edges=edges
+        )
+
+        # -------------------------------------------------------------
+        # PASS 3: Argument & Stance Mining (Phi-3.5-mini)
+        # -------------------------------------------------------------
+        arguments: list[ArgumentClassification] = []
+        for packet in packets:
+            # Role verification must precede Pass 4. Do not send untrusted BDFL
+            # classifications into synthesis and attempt to correct them afterward.
+            for message in packet.messages:
+                author = str(message.get("author") or "").strip().lower()
+                trusted_role = trusted_roles.get(author, "contributor")
+                message["author_role"] = trusted_role
+                message["role"] = trusted_role
+
+            packet_args = self.pass3.mine_arguments(packet)
+            for arg in packet_args:
+                trusted_role = trusted_roles.get(arg.author.strip().lower(), "contributor")
+                is_authorized = trusted_role in (
+                    "bdfl", "maintainer", "core maintainer", "core_maintainer",
+                    "working group chair", "working_group_chair", "wg_chair",
+                )
+                changes: dict[str, Any] = {"author_role": trusted_role}
+                if not is_authorized:
+                    changes.update(
+                        is_ruling=False, ruling_authority=None,
+                        fatal_rejection=False, fatal_reason=None,
+                    )
+                arg = arg.model_copy(update=changes)
+                arguments.append(arg)
+
+        # -------------------------------------------------------------
+        # PASS 4: Schema & MADR Synthesis (Qwen 2.5 Coder 7B)
+        # -------------------------------------------------------------
+        madr: ExtractedMADR = self.pass4.synthesize_madr(
+            topic=topic, decision_id=dec_id, proposals=proposals, arguments=arguments
+        )
+
+        # -------------------------------------------------------------
+        # STEP 5: Exact Evidence Verification & Span Matching
+        # -------------------------------------------------------------
+        evidence_spans: list[EvidenceSpan] = []
+        verified_spans: list[EvidenceSpan] = []
+        unanchored_warnings: list[str] = []
+
+        # Index messages for exact matching and author lookup
+        msg_lookup: list[dict[str, Any]] = []
+
+        for idx, m in enumerate(messages):
+            mid = str(m.get("message_id") or m.get("id") or f"msg-{idx}")
+            content = str(m.get("raw_content") or m.get("content") or "")
+            v_id = m.get("source_message_version_id") or m.get("version_id")
+            version_uuid = _parse_valid_uuid(v_id)
+            is_edited = bool(m.get("is_edited", False))
+            author = str(m.get("author", "unknown")).strip()
+            author_role = trusted_roles.get(author.lower(), "contributor")
+
+            msg_lookup.append(
+                {
+                    "message_id": mid,
+                    "author": author,
+                    "author_role": author_role,
+                    "version_uuid": version_uuid,
+                    "content": content,
+                    "is_edited": is_edited,
+                }
+            )
+
+        # Process Argument evidence spans
+        for arg in arguments:
+            if not arg.quote_text:
+                continue
+
+            quote = arg.quote_text.strip()
+
+            # Determine valid EvidenceRole (no CONTEXT)
+            if arg.is_ruling:
+                role = EvidenceRole.RULING
+            elif arg.stance == EvidenceStance.OBJECT:
+                role = EvidenceRole.OBJECTION
+            elif arg.stance == EvidenceStance.SUPPORT:
+                role = EvidenceRole.PROPOSAL
+            else:
+                role = EvidenceRole.PROPOSAL
+
+            # Locate originating message (Reviewer Issue 1 & 4: avoid quoted replies)
+            orig_msg_dict = find_originating_message(
+                quote=quote,
+                messages=msg_lookup,
+                claimed_author=arg.author,
+                require_unquoted=True,
+            )
+
+            if orig_msg_dict is None:
+                continue
+
+            v_uuid = orig_msg_dict["version_uuid"]
+            if v_uuid is None:
+                # Reviewer Issue 5: Do NOT fabricate synthetic UUIDs for absent version IDs
+                unanchored_warnings.append(
+                    f"Message {orig_msg_dict['message_id']} lacks a persisted source_message_version_id; "
+                    f"cannot create auditable EvidenceSpan."
+                )
+                continue
+
+            # Reviewer Issue 4: Ruling-to-alternative association verification
+            # Verify independently that the quote / message actually addresses arg.proposal_id
+            is_valid_alt_link = _verify_ruling_alternative_link(
+                quote=quote,
+                message_content=orig_msg_dict["content"],
+                target_proposal_id=arg.proposal_id,
+                proposals=proposals,
+            )
+
+            # Target binding: exactly one non-null target
+            # Rulings bind alternative_id ONLY if the linkage to the alternative is independently verified
+            # and caller provided a persisted alternative UUID (Reviewer Issue 4 & 5).
+            if role == EvidenceRole.RULING and is_valid_alt_link:
+                target_alt_id = persisted_alt_map.get(arg.proposal_id)
+                target_arg_id = None
+                target_dec_id = None
+                if target_alt_id is None:
+                    unpersisted_candidate_targets.append(
+                        f"Ruling on proposal '{arg.proposal_id}' has no caller-provided database UUID; "
+                        f"alternative_id left unbound."
+                    )
+            elif role == EvidenceRole.RULING and not is_valid_alt_link:
+                # Mismatched or ungrounded proposal linkage - do NOT bind to alternative
+                unanchored_warnings.append(
+                    f"Ruling quote '{quote[:40]}...' was assigned to proposal '{arg.proposal_id}' by model, "
+                    f"but verified text references another proposal or lacks verified linkage. Ruling detached."
+                )
+                target_alt_id = None
+                target_arg_id = persisted_arg_map.get(arg.argument_id)
+                target_dec_id = None
+                if target_arg_id is None:
+                    unpersisted_candidate_targets.append(
+                        f"Argument candidate '{arg.argument_id}' has no caller-provided database UUID; "
+                        f"argument_id left unbound."
+                    )
+            else:
+                target_alt_id = None
+                target_arg_id = persisted_arg_map.get(arg.argument_id)
+                target_dec_id = None
+                if target_arg_id is None:
+                    unpersisted_candidate_targets.append(
+                        f"Argument candidate '{arg.argument_id}' has no caller-provided database UUID; "
+                        f"argument_id left unbound."
+                    )
+
+            # Unbound model candidates are not persistable/verified evidence spans.
+            # PostgreSQL chk_evidence_target_exactly_one requires precisely one FK target.
+            if not any((target_alt_id, target_arg_id, target_dec_id)):
+                continue
+
+            span = self.matcher.create_evidence_span(
+                source_message_version_id=v_uuid,
+                message_content=orig_msg_dict["content"],
+                quote=quote,
+                evidence_role=role,
+                stance=arg.stance,
+                decision_id=target_dec_id,
+                alternative_id=target_alt_id,
+                argument_id=target_arg_id,
+            )
+            if span:
+                is_valid, checked_span = self.verifier.verify_span(
+                    span=span,
+                    message_content=orig_msg_dict["content"],
+                    is_edited=orig_msg_dict["is_edited"],
+                )
+                evidence_spans.append(checked_span)
+                if (
+                    is_valid
+                    and checked_span.verification_status == VerificationStatus.VERIFIED_EXACT
+                ):
+                    verified_spans.append(checked_span)
+
+        # Process MADR evidence quotes
+        for eq in madr.evidence_quotes:
+            if not isinstance(eq, dict):
+                continue
+            quote = str(eq.get("quote_text", "")).strip()
+            if not quote:
+                continue
+
+            raw_role_str = str(eq.get("role", "PROPOSAL")).upper()
+            if "RULING" in raw_role_str:
+                role = EvidenceRole.RULING
+            elif "OBJECTION" in raw_role_str:
+                role = EvidenceRole.OBJECTION
+            elif "REBUTTAL" in raw_role_str:
+                role = EvidenceRole.REBUTTAL
+            elif "BENCHMARK" in raw_role_str:
+                role = EvidenceRole.BENCHMARK_REPORT
+            elif "CONCESSION" in raw_role_str:
+                role = EvidenceRole.CONCESSION
+            else:
+                role = EvidenceRole.PROPOSAL
+
+            claimed_author = eq.get("author")
+            orig_msg_dict = find_originating_message(
+                quote=quote,
+                messages=msg_lookup,
+                claimed_author=claimed_author,
+                require_unquoted=True,
+            )
+
+            if orig_msg_dict is None:
+                continue
+
+            v_uuid = orig_msg_dict["version_uuid"]
+            if v_uuid is None:
+                unanchored_warnings.append(
+                    f"Message {orig_msg_dict['message_id']} lacks a persisted source_message_version_id; "
+                    f"cannot create auditable EvidenceSpan."
+                )
+                continue
+
+            # Never promote an unbound MADR-level candidate to VERIFIED_EXACT evidence.
+            if dec_uuid is None:
+                unpersisted_candidate_targets.append(
+                    "MADR evidence quote lacks a caller-provided persisted decision UUID."
+                )
+                continue
+
+            # MADR-level quotes target decision_id (if a valid UUID was provided by caller)
+            span = self.matcher.create_evidence_span(
+                source_message_version_id=v_uuid,
+                message_content=orig_msg_dict["content"],
+                quote=quote,
+                evidence_role=role,
+                stance=EvidenceStance.NEUTRAL,
+                decision_id=dec_uuid,
+                alternative_id=None,
+                argument_id=None,
+            )
+            if span:
+                is_valid, checked_span = self.verifier.verify_span(
+                    span=span,
+                    message_content=orig_msg_dict["content"],
+                    is_edited=orig_msg_dict["is_edited"],
+                )
+                evidence_spans.append(checked_span)
+                if (
+                    is_valid
+                    and checked_span.verification_status == VerificationStatus.VERIFIED_EXACT
+                ):
+                    verified_spans.append(checked_span)
+
+        # -------------------------------------------------------------
+        # STEP 6: Enforce Ruling Authority & Sign-Off Invariants (Reviewer Issues 3 & 4)
+        # -------------------------------------------------------------
+        # An alternative or decision CANNOT be marked REJECTED without:
+        # 1. A VERIFIED_EXACT human ruling evidence span independently verified to link to that proposal.
+        # 2. Verified project-scoped authority:
+        #    - BDFL: self-authorizing on that alternative.
+        #    - Core Maintainer consensus: ruling author + >=1 distinct verified maintainer sign-off on that same alternative.
+        #    - Working Group: WG Chair + >=1 distinct verified WG member/maintainer sign-off on that same alternative.
+        downgraded_rejections: list[str] = []
+
+        bdfl_rulings_by_prop: dict[str, set[str]] = {p.proposal_id: set() for p in proposals}
+        maintainer_rulings_by_prop: dict[str, set[str]] = {p.proposal_id: set() for p in proposals}
+        wg_chair_rulings_by_prop: dict[str, set[str]] = {p.proposal_id: set() for p in proposals}
+        maintainer_signoffs_by_prop: dict[str, set[str]] = {p.proposal_id: set() for p in proposals}
+        wg_member_signoffs_by_prop: dict[str, set[str]] = {p.proposal_id: set() for p in proposals}
+
+        # Collect rulings from verified_spans that link to each proposal
+        for v_span in verified_spans:
+            if v_span.evidence_role != EvidenceRole.RULING:
+                continue
+
+            span_msg = next(
+                (m for m in msg_lookup if m["version_uuid"] == v_span.source_message_version_id),
+                None,
+            )
+            if not span_msg:
+                continue
+
+            author = span_msg["author"].lower()
+            role = span_msg["author_role"]
+
+            for p in proposals:
+                pid = p.proposal_id
+                # Check independent link between ruling quote/message and this specific proposal
+                # A decision-level quote or a quote bound to another alternative
+                # must never become authoritative evidence for this alternative.
+                if (
+                    v_span.alternative_id is not None
+                    and v_span.alternative_id == persisted_alt_map.get(pid)
+                    and _verify_ruling_alternative_link(
+                        v_span.exact_quote, span_msg["content"], pid, proposals
+                    )
+                ):
+                    if role == "bdfl":
+                        bdfl_rulings_by_prop[pid].add(author)
+                    elif role in ("maintainer", "core maintainer", "core_maintainer"):
+                        maintainer_rulings_by_prop[pid].add(author)
+                        maintainer_signoffs_by_prop[pid].add(author)
+                    elif role in ("working group chair", "working_group_chair", "wg_chair"):
+                        wg_chair_rulings_by_prop[pid].add(author)
+
+        # Only explicit, correctly directed, exact-verified agreement counts as a sign-off.
+        # A generic objection to the proposal (or to its rejection) is never consensus.
+        for arg in arguments:
+            pid = arg.proposal_id
+            alt_uuid = persisted_alt_map.get(pid)
+            if not alt_uuid or pid not in maintainer_signoffs_by_prop:
+                continue
+            if not _is_affirmative_signoff(arg.quote_text, pid, proposals):
+                continue
+
+            orig_msg = find_originating_message(
+                quote=arg.quote_text,
+                messages=msg_lookup,
+                claimed_author=arg.author,
+                require_unquoted=True,
+            )
+            if not orig_msg:
+                continue
+            author = orig_msg["author"].lower()
+            role = orig_msg["author_role"]
+
+            # The sign-off must have been independently anchored to an exact,
+            # persisted alternative evidence span from the same source version.
+            verified_signoff = any(
+                span.verification_status == VerificationStatus.VERIFIED_EXACT
+                and span.alternative_id == alt_uuid
+                and span.source_message_version_id == orig_msg["version_uuid"]
+                and span.exact_quote == arg.quote_text.strip()
+                for span in verified_spans
+            )
+            if not verified_signoff:
+                continue
+
+            if role in ("maintainer", "core maintainer", "core_maintainer"):
+                maintainer_signoffs_by_prop[pid].add(author)
+            elif role in ("working group member", "working_group_member", "wg_member"):
+                wg_member_signoffs_by_prop[pid].add(author)
+
+        # Determine authorized rejections per proposal
+        authorized_rejected_proposals: set[str] = set()
+        for p in proposals:
+            pid = p.proposal_id
+            if bdfl_rulings_by_prop[pid]:
+                # BDFL is self-authorizing
+                authorized_rejected_proposals.add(pid)
+            elif maintainer_rulings_by_prop[pid]:
+                # Core Maintainer consensus requires ruling author + >=1 distinct maintainer sign-off on same proposal
+                all_maintainers = maintainer_rulings_by_prop[pid] | maintainer_signoffs_by_prop[pid]
+                if len(all_maintainers) >= 2:
+                    authorized_rejected_proposals.add(pid)
+            elif wg_chair_rulings_by_prop[pid]:
+                # Working Group requires Chair + >=1 distinct WG member/maintainer sign-off on same proposal
+                other_members = (
+                    maintainer_signoffs_by_prop[pid] | wg_member_signoffs_by_prop[pid]
+                ) - wg_chair_rulings_by_prop[pid]
+                if len(other_members) >= 1:
+                    authorized_rejected_proposals.add(pid)
+
+        # Validate considered_alternatives
+        updated_alternatives = []
+        for alt in madr.considered_alternatives:
+            alt_copy = dict(alt)
+            prop_id = str(alt.get("proposal_id", ""))
+            status = str(alt.get("status", "")).upper()
+
+            if status == "REJECTED" and prop_id not in authorized_rejected_proposals:
+                # Downgrade unauthorized rejection to DISPUTED
+                alt_copy["status"] = "DISPUTED"
+                alt_copy["unauthorized_ruling_note"] = (
+                    f"Status downgraded from model-authored REJECTED to DISPUTED: "
+                    f"requires verified BDFL ruling or Core Maintainer consensus sign-offs (>=2 maintainers) "
+                    f"specifically bound to alternative {prop_id}."
+                )
+                downgraded_rejections.append(f"Alternative {prop_id}")
+            updated_alternatives.append(alt_copy)
+        madr.considered_alternatives = updated_alternatives
+
+        # Validate overall decision status
+        overall_status = madr.status.upper()
+        if overall_status == "REJECTED" and not authorized_rejected_proposals:
+            madr.status = "DISPUTED"
+            downgraded_rejections.append("Overall Decision")
+
+        audit_metadata = {
+            "pipeline_version": "1.0.0",
+            "schema_version": "MADR-3.0",
+            "pass1_model": self.pass1.model,
+            "pass3_model": self.pass3.model,
+            "pass4_model": self.pass4.model,
+            "total_messages": len(messages),
+            "total_proposals": len(proposals),
+            "total_deliberation_packets": len(packets),
+            "total_arguments": len(arguments),
+            "evidence_spans_count": len(evidence_spans),
+            "verified_spans_count": len(verified_spans),
+            "unanchored_warnings": unanchored_warnings,
+            "pass4_validation_warnings": madr.validation_warnings,
+            "unpersisted_candidate_targets": unpersisted_candidate_targets,
+            "has_unpersisted_target_ids": bool(unpersisted_candidate_targets),
+            "downgraded_rejections": downgraded_rejections,
+        }
+
+        return ExtractionRunResult(
+            run_id=run_id,
+            thread_id=thread_id,
+            proposals=proposals,
+            deliberation_packets=packets,
+            arguments=arguments,
+            madr=madr,
+            evidence_spans=evidence_spans,
+            verified_spans=verified_spans,
+            prompt_templates_hash=prompt_templates_hash,
+            run_status="SUCCESS",
+            audit_metadata=audit_metadata,
+        )
