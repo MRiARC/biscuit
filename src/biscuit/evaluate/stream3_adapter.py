@@ -100,14 +100,31 @@ def stream3_predictor(
                     )) if hasattr(span, "verification_status") else "UNVERIFIED",
                 })
 
-        warning_records = watchdog(run, source["pr_cases"]) if watchdog else []
-        if not isinstance(warning_records, list):
-            raise TypeError("Watchdog must return a list of warning records")
+        # Stream 4 emits audit records for both authorized and abstained
+        # candidates. An ABSTAINED_UNCERTAIN/NO_REJECTED_MATCH audit is not
+        # a warning, even when it mentions a candidate alternative.
+        audit_records = watchdog(run, source["pr_cases"]) if watchdog else []
+        if not isinstance(audit_records, list):
+            raise TypeError("Watchdog must return a list of audit/warning records")
+        warning_records = []
+        seen_warning_ids: set[str] = set()
+        for record in audit_records:
+            if not isinstance(record, dict):
+                raise TypeError("Watchdog records must be dictionaries")
+            verdict = record.get("verdict")
+            if verdict is not None and verdict != "WARNING_AUTHORIZED":
+                continue
+            case_id = record.get("case_id")
+            if not isinstance(case_id, str) or not case_id or case_id in seen_warning_ids:
+                raise ValueError("Authorized warnings need unique, nonempty case IDs")
+            seen_warning_ids.add(case_id)
+            warning_records.append(record)
         return {
             "proposals": proposals,
             "evidence": evidence,
             "warning_records": warning_records,
-            "warned_pr_ids": [str(record["case_id"]) for record in warning_records],
+            "watchdog_audit_records": audit_records,
+            "warned_pr_ids": [record["case_id"] for record in warning_records],
             "prediction_origin": "STREAM3_PIPELINE_NOT_SYNTHETIC_REPLAY",
             "extraction_run_id": str(run.run_id),
         }

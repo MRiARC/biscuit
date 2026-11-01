@@ -437,6 +437,43 @@ def test_stream3_adapter_calls_real_extraction_without_labels() -> None:
     assert run_benchmark("pep-505", predictor=lambda _: prediction).verdict != "PASSED"
 
 
+def test_stream3_adapter_does_not_score_abstentions_as_warnings() -> None:
+    """Stream 4's complete audit stream is not a list of published warnings."""
+    from types import SimpleNamespace
+
+    from biscuit.evaluate.stream3_adapter import stream3_predictor
+
+    class FakePipeline:
+        def run(self, **kwargs):
+            return SimpleNamespace(
+                run_id="audit-run", run_status="SUCCESS", proposals=[],
+                madr=SimpleNamespace(considered_alternatives=[]),
+                evidence_spans=[],
+            )
+
+    audit = [
+        {"case_id": "pr-06", "verdict": "ABSTAINED_UNCERTAIN"},
+        {"case_id": "pr-16", "verdict": "NO_REJECTED_MATCH"},
+        {"case_id": "pr-01", "verdict": "WARNING_AUTHORIZED",
+         "alternative_id": "model-proposal"},
+    ]
+    source = predictor_input(load_thread("pep-505"))
+    result = stream3_predictor(
+        FakePipeline(), watchdog=lambda run, cases: audit
+    )(source)
+    assert result["watchdog_audit_records"] == audit
+    assert result["warned_pr_ids"] == ["pr-01"]
+    assert result["warning_records"] == [audit[-1]]
+
+    with pytest.raises(ValueError, match="unique, nonempty"):
+        stream3_predictor(
+            FakePipeline(),
+            watchdog=lambda run, cases: [
+                {"verdict": "WARNING_AUTHORIZED", "case_id": ""}
+            ],
+        )(source)
+
+
 def test_stream3_adapter_untraceable_version_is_never_verified() -> None:
     from types import SimpleNamespace
 
