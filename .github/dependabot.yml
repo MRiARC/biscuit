@@ -3,7 +3,10 @@
 
 version: 2
 updates:
-  # Python production + dev dependencies (root pyproject.toml)
+  # Python production + dev dependencies (root pyproject.toml).
+  # All pip deps — including the [grounding] extra's tree-sitter grammars —
+  # come from the same pyproject.toml, so they live in one ecosystem block
+  # (Dependabot requires a unique ecosystem+directory combination).
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -40,27 +43,8 @@ updates:
           - "fastmcp"
           - "httpx"
           - "pydantic"
-
-  # Optional tree-sitter grammars (the [grounding] extra)
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Asia/Kolkata"
-    open-pull-requests-limit: 3
-    labels:
-      - "dependencies"
-      - "python"
-      - "grounding"
-    commit-message:
-      prefix: "build(grounding)"
-      include: "scope"
-    allow:
-      - dependency-name: "tree-sitter*"
-    groups:
-      tree-sitter:
+      # Group the optional tree-sitter grounding grammars
+      python-tree-sitter:
         patterns:
           - "tree-sitter"
           - "tree-sitter-python"
