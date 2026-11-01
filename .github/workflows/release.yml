@@ -1,0 +1,115 @@
+name: Release
+
+# Continuous Deployment: on tag push (v*), build the sdist + wheel and
+# publish to PyPI via Trusted Publishing (no long-lived API tokens).
+#
+# Trusted Publishing setup (one-time, by a maintainer with PyPI access):
+#   1. Create the project https://pypi.org/project/biscuit-intel/
+#   2. Publishing → Add a Trusted Publisher
+#        PyPI Workflow name:   release.yml
+#        GitHub repository:    MRiARC/biscuit
+#        Workflow filename:     .github/workflows/release.yml
+#        Environment:           pypi
+#   Until that is configured, the publish step will fail (by design).
+#   The build step still runs and uploads artifacts so the release is usable
+#   via `pip install <artifact>` from the GitHub Release page.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist in the repo)"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # to create the GitHub Release
+  id-token: write    # for PyPI Trusted Publishing (OIDC)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # so setuptools-scm / tag metadata works if added later
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Verify distributions
+        run: |
+          twine check dist/*
+          echo "--- contents ---"
+          ls -la dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/biscuit-intel/
+    # Only publish when the trigger was a tag push (not workflow_dispatch
+    # unless explicitly confirmed). workflow_dispatch is for re-running
+    # a release that already has a tag.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # Trusted Publishing uses OIDC; no API token needed.
+
+  github-release:
+    name: Attach artifacts to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

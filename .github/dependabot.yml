@@ -1,0 +1,114 @@
+# Dependabot configuration for biscuit
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Python production + dev dependencies (root pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "build(deps)"
+      include: "scope"
+    groups:
+      # Group patch-level updates together to reduce PR noise
+      python-patches:
+        update-types:
+          - "patch"
+      # Group SQLAlchemy + asyncpg + psycopg + pgvector (DB stack)
+      python-db-stack:
+        patterns:
+          - "sqlalchemy"
+          - "sqlmodel"
+          - "aiosqlite"
+          - "asyncpg"
+          - "psycopg2-binary"
+          - "psycopg"
+          - "pgvector"
+          - "greenlet"
+      # Group the local LLM / agent bridge stack
+      python-llm-stack:
+        patterns:
+          - "fastmcp"
+          - "httpx"
+          - "pydantic"
+
+  # Optional tree-sitter grammars (the [grounding] extra)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "python"
+      - "grounding"
+    commit-message:
+      prefix: "build(grounding)"
+      include: "scope"
+    allow:
+      - dependency-name: "tree-sitter*"
+    groups:
+      tree-sitter:
+        patterns:
+          - "tree-sitter"
+          - "tree-sitter-python"
+          - "tree-sitter-c"
+
+  # GitHub Actions workflow versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "build(ci)"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "actions/*"
+
+  # Intro Next.js app (Node.js)
+  - package-ecosystem: "npm"
+    directory: "/intro"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "intro"
+    commit-message:
+      prefix: "build(intro-deps)"
+      include: "scope"
+    groups:
+      npm-next:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      npm-dev:
+        dependency-type: "development"

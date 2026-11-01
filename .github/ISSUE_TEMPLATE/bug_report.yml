@@ -1,0 +1,126 @@
+name: 🐛 Bug report
+description: Report something that is not working as expected
+title: "bug: <short imperative summary>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the
+        sections below — the more concrete the reproduction, the faster we
+        can triage. If you are reporting a security vulnerability, **stop**
+        and follow the private disclosure process in
+        [SECURITY.md](../blob/main/SECURITY.md) instead.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear, concise description of what is broken.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal, copy-pasteable steps. Include a code snippet, a CLI
+        invocation, or a fixture path. Wrap code in ``` blocks.
+      value: |
+        ```
+        # clone, install, run
+        git clone https://github.com/MRiARC/biscuit.git
+        cd biscuit
+        pip install -e ".[dev,grounding]"
+        <command that triggers the bug>
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened. Include the full error / stack trace.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stream
+    attributes:
+      label: Affected stream
+      description: Which implementation stream does this touch?
+      options:
+        - Stream 1 — Core models, DB, ingestion
+        - Stream 2 — Code grounding & lineage
+        - Stream 3 — Extraction & provenance
+        - Stream 4 — Watchdog & Switch bridge
+        - Stream 5 — Evaluation & CLI
+        - Cross-stream / infrastructure
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Biscuit version
+      description: Git commit SHA, release tag, or `pip show biscuit-intel` output.
+      placeholder: "abc57e5 or v0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.3"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / macOS 14 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: pg
+    attributes:
+      label: PostgreSQL (if relevant)
+      description: |
+        If your bug involves the database, include the PostgreSQL + pgvector
+        version and the value of `TEST_POSTGRES_URL` (without credentials).
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / audit trail
+      description: |
+        Relevant `pytest -v` output, `pr_watchdog_audit_log` rows, or CLI
+        Rich output. Redact secrets.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I have searched the existing issues for duplicates
+          required: true
+        - label: I am **not** reporting a security vulnerability (use SECURITY.md instead)
+          required: true
+        - label: I can reproduce on the latest `main`
+          required: true
