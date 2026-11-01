@@ -43,3 +43,9 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+
+# Next.js introduction app
+intro/node_modules/
+intro/.next/
+intro/out/
+intro/.vercel/
