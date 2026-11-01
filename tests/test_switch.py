@@ -1176,6 +1176,39 @@ def test_default_slack_button_has_no_invalid_style_field():
     assert buttons["dismiss_draft"]["style"] == "danger"
 
 
+def test_signed_callback_requires_utc_and_limits_future_clock_skew():
+    """The signed body, not an unsigned header, supplies an RFC3339 UTC timestamp."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    request = make_request()
+    original = json.loads(callback_body(
+        "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+    ))
+    cases = [
+        (now.replace(tzinfo=None).isoformat(), False, "malformed"),
+        ((now + timedelta(seconds=90)).isoformat(), False, "future clock skew"),
+        ((now + timedelta(seconds=30)).isoformat(), True, "authenticated"),
+    ]
+    for timestamp, expected, reason_substring in cases:
+        payload = {**original, "timestamp": timestamp}
+        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        security = make_security()
+        valid, reason, _ = security.verify(
+            request, body, sign_body(SECRET, body),
+            request.idempotency_key, now=now,
+        )
+        assert valid is expected, reason
+        assert reason_substring in reason
+
+    non_utc = {**original, "timestamp": now.isoformat().replace("+00:00", "+05:30")}
+    body = json.dumps(non_utc, sort_keys=True).encode("utf-8")
+    valid, reason, _ = make_security().verify(
+        request, body, sign_body(SECRET, body),
+        request.idempotency_key, now=now,
+    )
+    assert not valid
+    assert "malformed" in reason
+
+
 def test_callback_rejects_missing_timestamp_or_signed_payload_claim():
     security = make_security()
     request = make_request()

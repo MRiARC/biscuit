@@ -96,13 +96,19 @@ def _parse_signature(header_value: str | None) -> str | None:
     return match.group(1).lower() if match else None
 
 
+_UTC_TIMESTAMP_RE = re.compile(
+    r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|\\+00:00)$"
+)
+
+
 def _parse_iso(ts_str: str) -> datetime:
-    cleaned = ts_str.strip()
-    if cleaned.endswith(("Z", "z")):
-        cleaned = cleaned[:-1] + "+00:00"
+    """Accept only explicitly UTC RFC3339 timestamps from the signed body."""
+    if not _UTC_TIMESTAMP_RE.fullmatch(ts_str):
+        raise ValueError("callback timestamp requires RFC3339 UTC with Z or +00:00")
+    cleaned = ts_str[:-1] + "+00:00" if ts_str.endswith("Z") else ts_str
     dt = datetime.fromisoformat(cleaned)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+    if dt.tzinfo is None or dt.utcoffset() is None or dt.utcoffset().total_seconds() != 0:
+        raise ValueError("callback timestamp must be UTC")
     return dt
 
 
@@ -155,7 +161,7 @@ class CallbackSecurity:
 
         Requires caller to explicitly provide the UUIDv4 ``idempotency_key``
         (no silent fallback to request). Enforces HMAC integrity, replay prevention,
-        72h request TTL, and 5-minute callback freshness when timestamped.
+        72h request TTL, required signed UTC timestamp, 5-minute past freshness and at most 1-minute future skew.
         """
         body_sha256 = compute_sha256_hex(body.decode("utf-8", errors="replace"))
 
@@ -208,7 +214,13 @@ class CallbackSecurity:
             return False, "signed callback timestamp is required", body_sha256
         try:
             cb_time = _parse_iso(ts_str)
-            if abs((current - cb_time).total_seconds()) > self.tolerance_seconds:
+            elapsed = (current - cb_time).total_seconds()
+            # The signed callback may be at most one minute ahead (clock skew),
+            # even though past callbacks have a five-minute replay window.
+            # Using abs(elapsed) here incorrectly grants five future minutes.
+            if elapsed < -min(self.tolerance_seconds, 60.0):
+                return False, "callback timestamp exceeds 1-minute future clock skew", body_sha256
+            if elapsed > self.tolerance_seconds:
                 return False, "callback timestamp outside 5-minute freshness window", body_sha256
         except (ValueError, TypeError, OverflowError):
             return False, "malformed callback timestamp format", body_sha256
