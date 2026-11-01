@@ -169,6 +169,10 @@ class Pass3ArgumentMining:
             else:
                 return []
 
+        # A syntactically valid JSON scalar or array is not a valid Pass-3
+        # response. Fail closed instead of raising AttributeError on .get().
+        if not isinstance(data, dict):
+            return []
         raw_args = data.get("arguments", [])
         if not isinstance(raw_args, list):
             return []

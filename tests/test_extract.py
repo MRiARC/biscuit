@@ -199,6 +199,25 @@ def test_pass3_argument_mining():
     assert args[1].fatal_rejection is False
 
 
+@pytest.mark.parametrize("response", ['[]', '"not an object"', 'null', '1', '{"arguments":"bad"}'])
+def test_pass3_nonobject_json_and_invalid_arguments_fail_closed(response):
+    """Malformed but valid JSON cannot crash or authorize a ruling."""
+    client = LocalLLMClient(mock_mode=True, mock_responses={"phi3.5": response})
+    miner = Pass3ArgumentMining(client=client, model="phi3.5")
+    packet = DeliberationPacket(
+        proposal_id="P1",
+        proposal_name="Example",
+        message_ids=["m1"],
+        messages=[{
+            "message_id": "m1",
+            "author": "alice",
+            "author_role": "contributor",
+            "content": "Example proposal",
+        }],
+    )
+    assert miner.mine_arguments(packet) == []
+
+
 def test_pass3_argument_mining_model_inferred_invariant():
     """
     NON-NEGOTIABLE INVARIANT TEST:
