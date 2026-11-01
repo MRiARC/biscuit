@@ -1078,6 +1078,19 @@ class TestCommitSHABindingAndPersistence:
                 )
             )
 
+    def test_check_pr_diff_rejects_nonhex_commit_sha(self):
+        """Forty arbitrary characters do not authenticate a Git commit."""
+        server = make_server()
+        with pytest.raises(ValueError, match="verified PR commit SHA"):
+            server._check_pr_diff(
+                CheckPRDiffInput(
+                    repository_url="https://github.com/python/cpython",
+                    pr_number=412,
+                    commit_sha="z" * 40,
+                    diff_text=VIOLATION_DIFF,
+                )
+            )
+
     def test_transcript_store_persistence_and_restart_durability(self, tmp_path):
         from biscuit.switch.persistence import TranscriptStore
 
