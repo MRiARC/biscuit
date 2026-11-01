@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-16",
+  "title": "Potential moved grammar file",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "diff --git a/Grammar/python.gram b/Grammar/python.gram\n--- a/Grammar/python.gram\n+++ b/Grammar/python.gram\n@@ -1,1 +1,1 @@\n-unary_expr: NAME\n+# moved parser rules to new module"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-12",
+  "title": "Insert type annotation",
+  "files": [
+    {
+      "path": "Lib/dataclasses.py",
+      "diff": "diff --git a/Lib/dataclasses.py b/Lib/dataclasses.py\n--- a/Lib/dataclasses.py\n+++ b/Lib/dataclasses.py\n@@ -1,1 +1,1 @@\n-def helper(value):\n+def helper(value: str) -> str:"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

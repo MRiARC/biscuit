@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-05",
+  "title": "Rejected mutable-namedtuple architecture",
+  "files": [
+    {
+      "path": "Lib/dataclasses.py",
+      "diff": "diff --git a/Lib/dataclasses.py b/Lib/dataclasses.py\n--- a/Lib/dataclasses.py\n+++ b/Lib/dataclasses.py\n@@ -0,0 +1,2 @@\n+# Rejected architecture\n+class MutableNamedTuple(namedtuple): pass"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

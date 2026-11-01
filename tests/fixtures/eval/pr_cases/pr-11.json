@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-11",
+  "title": "Reorder imports",
+  "files": [
+    {
+      "path": "Lib/test/test_grammar.py",
+      "diff": "diff --git a/Lib/test/test_grammar.py b/Lib/test/test_grammar.py\n--- a/Lib/test/test_grammar.py\n+++ b/Lib/test/test_grammar.py\n@@ -1,2 +1,2 @@\n-import sys\n-import os\n+import os\n+import sys"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

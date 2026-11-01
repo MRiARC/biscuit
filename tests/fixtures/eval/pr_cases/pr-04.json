@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-04",
+  "title": "Rejected assign-call semantics",
+  "files": [
+    {
+      "path": "Python/bltinmodule.c",
+      "diff": "diff --git a/Python/bltinmodule.c b/Python/bltinmodule.c\n--- a/Python/bltinmodule.c\n+++ b/Python/bltinmodule.c\n@@ -0,0 +1,2 @@\n+# Proposed rejected special form\n+assign(NAME, EXPR)"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}

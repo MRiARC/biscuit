@@ -1,0 +1,11 @@
+{
+  "case_id": "pr-06",
+  "title": "Change Python comment",
+  "files": [
+    {
+      "path": "Grammar/python.gram",
+      "diff": "diff --git a/Grammar/python.gram b/Grammar/python.gram\n--- a/Grammar/python.gram\n+++ b/Grammar/python.gram\n@@ -1,1 +1,1 @@\n-# argument parsing\n+# Parser argument handling"
+    }
+  ],
+  "fixture_origin": "SYNTHETIC"
+}
