@@ -22,7 +22,9 @@ produces an approval request card payload for Switch.
 
 from __future__ import annotations
 
+import re
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 try:  # pragma: no cover - import guard exercised in tests via FASTMCP_MISSING
@@ -119,6 +121,7 @@ class FastMCPServer:
         gate: WarningAuthorizationGate,
         retriever: CandidateRetriever,
         inspector: PRDiffInspector | None = None,
+        pr_snapshot_resolver: Callable[[str, int], tuple[str, str]] | None = None,
         decision_summaries: list[dict[str, Any]] | None = None,
         switch_client: SwitchActivityClient | None = None,
         card_builder: BlockKitBuilder | None = None,
@@ -130,6 +133,9 @@ class FastMCPServer:
         self.gate = gate
         self.retriever = retriever
         self.inspector = inspector or PRDiffInspector()
+        # Trusted GitHub adapter must return a single head-SHA + diff snapshot.
+        # Untrusted MCP arguments cannot authorize a real approval/public comment.
+        self.pr_snapshot_resolver = pr_snapshot_resolver
         self.decision_summaries = decision_summaries or []
         self.switch_client = switch_client or SwitchActivityClient(
             MockTransport(), base_url=DEFAULT_BASE_URL
@@ -244,11 +250,25 @@ class FastMCPServer:
     ) -> dict:
         """Run the full watchdog pipeline for one PR diff."""
         sha = commit_sha or params.commit_sha
-        if not sha or sha == "0" * 40 or len(sha) != 40:
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha) or sha == "0" * 40:
             raise ValueError(
-                "A verified PR commit SHA must be supplied; synthetic or all-zero SHAs are not permitted."
+                "A verified PR commit SHA must be supplied; non-hex or all-zero SHAs are not permitted."
             )
         mode = self._resolve_execution_mode(execution_mode)
+        if mode != ExecutionMode.AUDIT_DRY_RUN:
+            if self.pr_snapshot_resolver is None:
+                raise ValueError(
+                    "Actionable watchdog mode requires a trusted GitHub PR head and diff snapshot resolver"
+                )
+            # The snapshot must be fetched from trusted repository credentials,
+            # not from another caller-controlled tool argument.
+            trusted_sha, trusted_diff = self.pr_snapshot_resolver(
+                params.repository_url, params.pr_number
+            )
+            if not isinstance(trusted_sha, str) or trusted_sha.lower() != sha.lower():
+                raise ValueError("PR head changed or supplied commit SHA does not match trusted snapshot")
+            if not isinstance(trusted_diff, str) or trusted_diff != params.diff_text:
+                raise ValueError("Supplied PR diff does not match the trusted head snapshot")
         pr_diff = self.inspector.parse_and_analyze(
             params.diff_text, repository_url=params.repository_url
         )

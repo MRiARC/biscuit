@@ -1029,6 +1029,32 @@ class TestCallbackSecurityNegative:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def test_actionable_watchdog_requires_trusted_head_and_exact_diff_snapshot():
+    """Model-supplied commit/diff strings may be inspected but never authorize actions."""
+    params = CheckPRDiffInput(
+        repository_url="https://github.com/python/cpython",
+        pr_number=412,
+        commit_sha="a" * 40,
+        diff_text=VIOLATION_DIFF,
+    )
+    with pytest.raises(ValueError, match="trusted GitHub"):
+        make_server()._check_pr_diff(params, execution_mode="INTERACTIVE_HITL")
+    with pytest.raises(ValueError, match="head changed"):
+        make_server(pr_snapshot_resolver=lambda url, number: (
+            "b" * 40, VIOLATION_DIFF
+        ))._check_pr_diff(params, execution_mode="INTERACTIVE_HITL")
+    with pytest.raises(ValueError, match="does not match"):
+        make_server(pr_snapshot_resolver=lambda url, number: (
+            "a" * 40, HARD_NEGATIVE_TERNARY_DIFF
+        ))._check_pr_diff(params, execution_mode="PRODUCTION_COMMENT")
+
+    trusted = make_server(pr_snapshot_resolver=lambda url, number: (
+        "a" * 40, VIOLATION_DIFF
+    ))._check_pr_diff(params, execution_mode="INTERACTIVE_HITL")
+    assert trusted["authorization_verdict"] == "WARNING_AUTHORIZED"
+    assert trusted["action_taken"] == "HITL_PENDING"
+
+
 class TestCommitSHABindingAndPersistence:
     def test_check_pr_diff_rejects_missing_or_synthetic_commit_sha(self):
         server = make_server()
