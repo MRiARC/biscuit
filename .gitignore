@@ -33,9 +33,14 @@ venv.bak/
 # Testing & Coverage
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 .tox/
 .nox/
+# CLI local audit cache (biscuit evaluate audit persistence)
+scorecard.json
+biscuit-audit.db
+biscuit-audit.db-journal
 
 # IDE & OS
 .DS_Store
@@ -49,3 +54,4 @@ intro/node_modules/
 intro/.next/
 intro/out/
 intro/.vercel/
+intro/tsconfig.tsbuildinfo

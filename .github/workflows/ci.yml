@@ -42,15 +42,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff pytest pytest-cov
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install -e .
+          pip install -e ".[dev]"
+          pip install -e ".[grounding]"
 
       # Cross-stream integration gate: optional grammars must actually parse both
       # Python and C; BISCUIT_REQUIRE_TREE_SITTER disables the test skip.
-      - name: Install optional grounding grammar dependencies
-        run: python -m pip install -e ".[grounding]"
-
       - name: Exercise real Python and C Tree-sitter in strict mode
         env:
           BISCUIT_REQUIRE_TREE_SITTER: "1"
@@ -60,8 +56,31 @@ jobs:
         run: |
           ruff check .
 
-      - name: Run Pytest Suite
+      - name: Run Pytest Suite with Coverage
         env:
           TEST_POSTGRES_URL: postgresql://biscuit:biscuit_test_password@localhost:5432/biscuit_test
+          BISCUIT_REQUIRE_TREE_SITTER: "1"
         run: |
-          pytest -v --tb=short
+          pytest -v --tb=short \
+            --cov=src/biscuit \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov
+
+      - name: Upload coverage XML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-${{ matrix.python-version }}
+          path: htmlcov/
+          if-no-files-found: warn
+          retention-days: 14
