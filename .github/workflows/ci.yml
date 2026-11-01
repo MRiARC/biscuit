@@ -14,6 +14,21 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: biscuit
+          POSTGRES_PASSWORD: biscuit_test_password
+          POSTGRES_DB: biscuit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,10 +46,22 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install -e .
 
+      # Cross-stream integration gate: optional grammars must actually parse both
+      # Python and C; BISCUIT_REQUIRE_TREE_SITTER disables the test skip.
+      - name: Install optional grounding grammar dependencies
+        run: python -m pip install -e ".[grounding]"
+
+      - name: Exercise real Python and C Tree-sitter in strict mode
+        env:
+          BISCUIT_REQUIRE_TREE_SITTER: "1"
+        run: python -m pytest -q tests/test_grounding.py
+
       - name: Run Ruff Lint Check
         run: |
           ruff check .
 
       - name: Run Pytest Suite
+        env:
+          TEST_POSTGRES_URL: postgresql://biscuit:biscuit_test_password@localhost:5432/biscuit_test
         run: |
           pytest -v --tb=short

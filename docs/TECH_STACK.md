@@ -180,6 +180,12 @@ Full-Stack Memory Profile (Peak Execution Budget):
 * **Features:**
   * Auto-generated shell completion (`biscuit --install-completion`).
   * Rich terminal scorecards, benchmark execution tables, and colored diff outputs.
+* **Command Surface (Stream 5, per issue #21; implemented in PR #25):**
+  * `biscuit evaluate --benchmark pep-505 [--all] [--predictions <path>] [--format rich|json] [--output scorecard.json] [--strict-offsets] [--verbose]` — runs the offline benchmark. `--format` selects terminal presentation (Rich scorecard or JSON on stdout); `--output` always writes the scorecard file (default `scorecard.json`).
+  * `biscuit ingest --platform discourse --url <url>` — ingests a Discourse topic into the local SQLite cache (`--db` overrides the database path; default `BISCUIT_DB` or `~/.local/share/biscuit/workspace.sqlite3`). Mbox and GitHub ingestion are **planned** (pending Stream 1 adapter wiring); the CLI rejects other platforms until then.
+  * `biscuit decisions list [--status REJECTED]` — Rich table of the local decision index; `biscuit decisions import --file <path>` loads already-verified records (no automatic LLM extraction).
+  * `biscuit export [--output docs/decisions]` — exports MADR-style markdown files to disk.
+  * The module-level runner `python -m biscuit.evaluate` (`EVALUATION_AND_BENCHMARKS.md` §5) is a separate no-network interface with its own `--output` contract (a scorecard file path, or the literal `json` to print JSON to stdout); its flags are not a 1:1 alias of the Typer CLI.
 
 ---
 

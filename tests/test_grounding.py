@@ -1,0 +1,706 @@
+"""Isolated Stream-2 regression tests: stdlib + Git; optional Tree-sitter CST."""
+
+from __future__ import annotations
+
+import ast
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from biscuit.grounding import (
+    AnchorState,
+    ParseError,
+    ParserUnavailable,
+    extract_symbols,
+    fingerprint_python_ast,
+    normalized_python_ast,
+)
+from biscuit.grounding.lineage import GitLineageError, forward_commits, trace_lineage
+from biscuit.grounding.merge_resolver import resolve_merge_parents
+
+
+def git(root: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True, check=True,
+        timeout=30,
+    )
+    return proc.stdout.strip()
+
+
+def initialize_repo(tmp_path: Path) -> tuple[Path, str]:
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Grounding Test")
+    git(root, "config", "user.email", "grounding@example.invalid")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 1\n")
+    first = commit(root, "initial code")
+    return root, first
+
+
+def write(root: Path, path: str, data: str) -> None:
+    full = root / path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(data, encoding="utf-8")
+
+
+def commit(root: Path, message: str) -> str:
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", message)
+    return git(root, "rev-parse", "HEAD")
+
+
+def test_python_qualified_symbol_and_byte_offsets() -> None:
+    text = "# café\nclass Parser:\n    def tok_get(self, stream):\n        return stream + 1\n"
+    syms = extract_symbols(text, "python", "cpython/parser.py")
+    assert [s.qualified_name for s in syms] == [
+        "parser.Parser", "parser.Parser.tok_get",
+    ]
+    method = syms[1]
+    assert method.symbol_type == "method"
+    assert method.start_line == 3 and method.end_line == 4
+    assert text.encode()[method.start_byte:method.end_byte].startswith(b"def tok_get")
+    assert method.signature_hash and len(method.signature_hash) == 64
+    assert method.structural_fingerprint and len(method.structural_fingerprint) == 64
+    assert method.parser_backend in ("tree-sitter", "stdlib-ast")
+
+
+def test_c_qualified_symbol_and_struct() -> None:
+    code = "struct tok_state { int next; };\nint tok_get(struct tok_state *tok) { return tok->next; }\n"
+    syms = extract_symbols(code, "c", "Parser/tokenizer.c")
+    assert any(x.qualified_name == "tokenizer.c.tok_state"
+               and x.symbol_type == "ast_node" for x in syms)
+    function = next(s for s in syms if s.symbol_name == "tok_get")
+    assert function.qualified_name == "tokenizer.c.tok_state.tok_get"
+    assert function.start_line == 2
+    assert code.encode()[function.start_byte:function.end_byte].endswith(b"}")
+    assert len(function.signature_hash) == 64
+
+
+def test_python_lowercase_class_and_nested_functions() -> None:
+    text = "class handler:\n    def run(self):\n        def helper(x):\n            return x\n        return helper(2)\n"
+    symbols = extract_symbols(text, "python", "pkg/handler.py")
+    assert {x.qualified_name: x.symbol_type for x in symbols} == {
+        "handler.handler": "class",
+        "handler.handler.run": "method",
+        "handler.handler.run.helper": "function",
+    }
+    assert all(x.start_byte < x.end_byte for x in symbols)
+
+
+def test_c_filename_qualification_and_structural_hash() -> None:
+    text = "int tok_get(int x) { return x + 1; }\n"
+    sym = next(x for x in extract_symbols(text, "c", "Parser/tokenizer.c")
+               if x.symbol_type == "function")
+    assert sym.qualified_name == "tokenizer.c.tok_get"
+    assert sym.structural_fingerprint is not None
+    assert len(sym.structural_fingerprint) == 64
+
+
+def test_python_ast_variable_and_argument_renames() -> None:
+    a = "def parse(stream):\n    value = stream + 1\n    return value\n"
+    b = "def parse(thing):\n\n    result = thing + 1\n    return result\n"
+    c = "def parse(thing):\n    result = thing + 2\n    return result\n"
+    assert normalized_python_ast(a) == normalized_python_ast(b)
+    assert fingerprint_python_ast(a) == fingerprint_python_ast(b)
+    assert fingerprint_python_ast(a) != fingerprint_python_ast(c)
+    tree = ast.parse(a)
+    before = ast.dump(tree)
+    fingerprint_python_ast(tree)
+    assert ast.dump(tree) == before  # Caller-owned AST is not mutated.
+
+
+def test_normalizer_nested_scope_and_closure_renames() -> None:
+    original = "def outer(first):\n    local = first + 1\n    def inner(second):\n        return local + second\n    return inner(first)\n"
+    renamed = "def outer(start):\n    value = start + 1\n    def inner(term):\n        return value + term\n    return inner(start)\n"
+    changed = "def outer(start):\n    value = start + 2\n    def inner(term):\n        return value + term\n    return inner(start)\n"
+    assert fingerprint_python_ast(original) == fingerprint_python_ast(renamed)
+    assert fingerprint_python_ast(original) != fingerprint_python_ast(changed)
+
+
+def test_unsupported_language_and_invalid_python() -> None:
+    with pytest.raises(ValueError):
+        extract_symbols("fn run() {}", "rust", "a.rs")
+    with pytest.raises(ParseError):
+        extract_symbols("def broken(:\n", "python", "broken.py")
+
+
+def test_forward_rename_and_immutable_mapping_evidence(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "mv", "old/parser.py", "old/lexer.py")
+    rename = commit(root, "rename parser file")
+    write(root, "old/lexer.py", "def tok_get(x):\n    return x + 1\n")
+    head = commit(root, "rename variable")
+    assert forward_commits(root, past) == (rename, head)
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "old/lexer.py"
+    assert result.mapping_confidence is None
+    assert any(e.transition_type == "RENAME_M" for e in result.events)
+    # Without installed Tree-sitter grammars, fallback is never authoritative.
+    assert result.safe_for_automatic_migration == result.verified_parser
+    assert all(e.confidence_score is None for e in result.events)
+    assert all(len(e.mapping_evidence["diff_patch_sha256"]) == 64 for e in result.events)
+    assert all(e.compared_parent_sha for e in result.events)
+
+
+def test_symbol_moves_into_another_module_without_git_file_rename(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    (root / "old/parser.py").unlink()
+    write(root, "new/helper.py", "def tok_get(value):\n    return value + 1\n")
+    commit(root, "move symbol to helper")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.resolved_path == "new/helper.py"
+    assert result.anchor_state == AnchorState.MIGRATED
+
+
+def test_symbol_split_marks_ambiguous(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    (root / "old/parser.py").unlink()
+    write(root, "new/one.py", "def tok_get(x):\n    return x + 1\n")
+    write(root, "new/two.py", "def tok_get(y):\n    return y + 1\n")
+    commit(root, "copy into two alternatives")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert result.resolved_path is None
+    assert set(result.candidates) == {"new/one.py", "new/two.py"}
+    assert not result.safe_for_automatic_migration
+
+
+def test_exact_git_copy_is_classified_copy_c(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    original = (root / "old/parser.py").read_text(encoding="utf-8")
+    write(root, "copied/parser.py", original)
+    commit(root, "copy complete original source file")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get", find_copies_harder=True)
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert set(result.candidates) == {"old/parser.py", "copied/parser.py"}
+    assert any(e.transition_type == "COPY_C" for e in result.events)
+    assert result.mapping_confidence is None
+
+
+def test_file_rewrite_without_symbol_is_classified_and_deleted(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    write(root, "old/parser.py", "def new_feature(x):\n    return x * 50\n")
+    commit(root, "rewrite file and remove historical symbol")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.DELETED
+    assert result.resolved_path is None
+    assert any(e.transition_type == "REWRITE_SPLIT_B" for e in result.events)
+    assert not result.safe_for_automatic_migration
+
+
+def test_copy_with_original_remaining_requires_abstention(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    write(root, "new/copy.py", "def tok_get(other):\n    return other + 1\n")
+    commit(root, "copy symbol without deleting original")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert result.resolved_path is None
+    assert set(result.candidates) == {"old/parser.py", "new/copy.py"}
+    assert result.mapping_confidence is None
+
+
+def test_same_name_unrelated_function_does_not_create_false_move(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    (root / "old/parser.py").unlink()
+    write(root, "unrelated/other.py", "def tok_get(stream):\n    return stream * 999\n")
+    commit(root, "delete old function and introduce unrelated same-name function")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.DELETED
+    assert result.resolved_path is None
+    assert not result.safe_for_automatic_migration
+
+
+def test_conflict_mainline_selected_with_combined_diff_evidence(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "old/parser.py", "def unrelated(x):\n    return x * 3\n")
+    commit(root, "replace historical symbol in feature")
+    git(root, "checkout", "-q", "main")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 42\n")
+    commit(root, "change original symbol on mainline")
+    attempted = subprocess.run(["git", "-C", str(root), "merge", "--no-ff", "feature"],
+                               capture_output=True, text=True, check=False)
+    assert attempted.returncode != 0
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 42\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "resolve conflict with first-parent content")
+    merge = git(root, "rev-parse", "HEAD")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.resolved_path == "old/parser.py"
+    assert result.anchor_state == AnchorState.MIGRATED
+    merge_events = [e for e in result.events if e.transition_commit_sha == merge]
+    assert len(merge_events) == 2
+    assert all(e.mapping_evidence["first_parent_selected"] for e in merge_events)
+    assert all(len(e.mapping_evidence["combined_diff_sha256"]) == 64 for e in merge_events)
+
+
+def test_combined_diff_conflict_rewrite_abstains(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 5\n")
+    commit(root, "feature edits historical function")
+    git(root, "checkout", "-q", "main")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 7\n")
+    commit(root, "mainline edits historical function")
+    attempted = subprocess.run(["git", "-C", str(root), "merge", "--no-ff", "feature"],
+                               capture_output=True, text=True, check=False)
+    assert attempted.returncode != 0
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream * 99\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "conflict resolved to third implementation")
+    merge = git(root, "rev-parse", "HEAD")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert result.resolved_path is None
+    merge_events = [e for e in result.events if e.transition_commit_sha == merge]
+    assert len(merge_events) == 2
+    assert all("old/parser.py" in e.mapping_evidence["combined_changed_paths"]
+               for e in merge_events)
+    assert all("structural match" in e.mapping_evidence["merge_resolution_reason"]
+               for e in merge_events)
+    assert not result.safe_for_automatic_migration
+
+
+def test_clean_two_parent_merge(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "feature.txt", "feature work\n")
+    commit(root, "feature unrelated")
+    git(root, "checkout", "-q", "main")
+    write(root, "main.txt", "main work\n")
+    commit(root, "main unrelated")
+    git(root, "merge", "--no-ff", "-qm", "combine clean branches", "feature")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.resolved_path == "old/parser.py"
+    assert result.anchor_state in (AnchorState.MERGED, AnchorState.CURRENT)
+    merge = git(root, "rev-parse", "HEAD")
+    assert len([e for e in result.events if e.transition_commit_sha == merge]) == 2
+    assert {e.parent_index for e in result.events if e.transition_commit_sha == merge} == {0, 1}
+    assert all(e.confidence_score is None for e in result.events)
+
+
+def test_divergent_merge_paths_are_ambiguous(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    git(root, "mv", "old/parser.py", "old/feature_parser.py")
+    commit(root, "feature path")
+    git(root, "checkout", "-q", "main")
+    git(root, "mv", "old/parser.py", "old/main_parser.py")
+    commit(root, "main path")
+    # A rename/rename merge needs human conflict resolution. Retain both
+    # surviving alternatives so the lineage engine must abstain.
+    subprocess.run(
+        ["git", "-C", str(root), "merge", "--no-ff", "feature"],
+        capture_output=True, text=True, check=False,
+    )
+    for path in ("old/feature_parser.py", "old/main_parser.py"):
+        write(root, path, "def tok_get(arg):\n    return arg + 1\n")
+    (root / "old/parser.py").unlink(missing_ok=True)
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "retain both divergent paths")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.AMBIGUOUS
+    assert result.resolved_path is None
+    assert not result.safe_for_automatic_migration
+
+
+def test_abstain_on_non_ancestor_or_unknown_symbol(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    with pytest.raises(GitLineageError, match="symbol not found"):
+        trace_lineage(root, past, "old/parser.py", "nonexistent")
+    git(root, "checkout", "--orphan", "independent")
+    git(root, "rm", "-rfq", ".")
+    write(root, "independent.py", "print('not descended')\n")
+    commit(root, "unrelated root")
+    with pytest.raises(GitLineageError, match="not an ancestor"):
+        forward_commits(root, past)
+
+
+def test_merge_resolver_abstains_on_conflict() -> None:
+    decision = resolve_merge_parents([{"a.py"}, {"b.py"}], {"a.py", "b.py"})
+    assert decision.state == AnchorState.AMBIGUOUS
+    assert decision.confidence_score is None
+    assert resolve_merge_parents([{"a.py"}, {"a.py"}], {"a.py"}).state == AnchorState.MERGED
+
+
+def test_strict_mode_either_uses_treesitter_or_abstains() -> None:
+    try:
+        syms = extract_symbols("def f(x):\n    return x\n", "python", "a.py",
+                               require_tree_sitter=True)
+    except ParserUnavailable:
+        return  # Minimal package CI lacks optional grammar dependencies.
+    assert syms and all(s.parser_backend == "tree-sitter" for s in syms)
+
+
+def test_only_named_tree_sitter_modules_are_optional() -> None:
+    try:
+        py = extract_symbols("def f(x):\n    return x\n", "python", "a.py",
+                             require_tree_sitter=True)
+        c = extract_symbols("int f(int x) { return x; }", "c", "a.c",
+                            require_tree_sitter=True)
+    except ParserUnavailable:
+        if os.environ.get("BISCUIT_REQUIRE_TREE_SITTER") == "1":
+            pytest.fail("Tree-sitter integration required but grammar packages are missing")
+        pytest.skip("Optional Tree-sitter grammars not installed in minimal CI")
+    assert py[0].parser_backend == c[0].parser_backend == "tree-sitter"
+
+
+def test_anchor_contract_serialization_and_authority_scope() -> None:
+    """Stream 2 produces the exact Stream 1 CodeAnchor column contract."""
+    import uuid
+
+    from biscuit.grounding import CodeSymbolAnchor
+
+    symbol = extract_symbols("def f(x):\n    return x\n", "python", "pkg/a.py")[0]
+    alternative = uuid.uuid4()
+    anchor = CodeSymbolAnchor.from_symbol(
+        symbol, alternative_id=alternative,
+        repository_url="https://github.com/owner/repo",
+        historical_commit_sha="a" * 40,
+    )
+    record = anchor.to_storage_record()
+    assert record["alternative_id"] == alternative
+    assert record["symbol_type"] == "function"  # PostgreSQL lowercase enum value
+    assert record["source_locator_type"] in {"AST_NODE_QUERY", "FILE_BYTE_RANGE"}
+    assert record["anchor_state"] == "HISTORICAL"
+    assert record["mapping_confidence"] is None
+    assert record["signature_hash"] == symbol.signature_hash
+    assert record["historical_file_path"] == "pkg/a.py"
+    assert record["parser_version"] and record["grammar_version"]
+    assert record["ast_normalization_version"]
+    assert "verified_parser" not in record
+    with pytest.raises(ValueError, match="canonical symbol type"):
+        from dataclasses import replace
+
+        CodeSymbolAnchor.from_symbol(
+            replace(symbol, symbol_type="FUNCTION"),
+            alternative_id=alternative, repository_url="https://example.com",
+            historical_commit_sha="a" * 40,
+        )
+
+
+def test_lineage_storage_records_cover_canonical_ddl(tmp_path: Path) -> None:
+    import uuid
+    from datetime import UTC, datetime
+
+    from biscuit.grounding import CodeSymbolAnchor, lineage_storage_records
+
+    root, past = initialize_repo(tmp_path)
+    extracted = extract_symbols((root / "old/parser.py").read_bytes(), "python", "old/parser.py")[0]
+    anchor = CodeSymbolAnchor.from_symbol(
+        extracted, alternative_id=uuid.uuid4(),
+        repository_url="https://github.com/owner/repo", historical_commit_sha=past,
+    )
+    git(root, "mv", "old/parser.py", "old/renamed.py")
+    commit(root, "rename")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    now = datetime.now(UTC)
+    records = lineage_storage_records(anchor, result, recorded_at=now)
+    assert records
+    required = {
+        "code_anchor_id", "historical_commit_sha", "transition_commit_sha",
+        "compared_parent_sha", "parent_index", "target_commit_sha",
+        "traversal_strategy", "historical_path", "migrated_path",
+        "transition_type", "mapping_evidence", "confidence_score", "recorded_at",
+    }
+    assert set(records[0]) == required
+    assert records[0]["code_anchor_id"] == anchor.id
+    assert records[0]["target_commit_sha"] == records[0]["transition_commit_sha"]
+    assert records[0]["recorded_at"] == now
+    assert records[0]["confidence_score"] is None
+    assert records[0]["mapping_evidence"]["verified_parser"] == result.verified_parser
+    with pytest.raises(ValueError, match="different historical revision"):
+        from dataclasses import replace
+
+        lineage_storage_records(replace(anchor, historical_commit_sha="b" * 40), result)
+
+
+def test_git_similarity_boundary_79_vs_81(tmp_path: Path) -> None:
+    """Git's actual -M80% boundary: 81% is R081; 79% cannot be R status."""
+    root = tmp_path / "score"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Similarity Test")
+    git(root, "config", "user.email", "similarity@example.invalid")
+    before = [f"line_{i:04d} something very repeatable {i}\n" for i in range(100)]
+    write(root, "old.txt", "".join(before))
+    past = commit(root, "original")
+    for edits in (19, 21):
+        (root / "old.txt").unlink(missing_ok=True)
+        after = [f"mutated_{i:04d} truly different {i}!\n" if i < edits else before[i]
+                 for i in range(100)]
+        write(root, "new.txt", "".join(after))
+        new = commit(root, f"change {edits} lines")
+        status = git(root, "diff-tree", "-r", "-M80%", "--name-status", past, new)
+        if edits == 19:
+            assert "R081\told.txt\tnew.txt" in status
+        else:
+            assert "R079" not in status
+            assert "D\told.txt" in status and "A\tnew.txt" in status
+            assert "R079\told.txt\tnew.txt" in git(
+                root, "diff-tree", "-r", "-M1%", "--name-status", past, new)
+        git(root, "reset", "--hard", past)
+
+
+def test_c_symbol_renamed_through_forward_git_lineage(tmp_path: Path) -> None:
+    root, _ = initialize_repo(tmp_path)
+    source = "struct tok_state { int count; };\nint tok_get(struct tok_state *s) { return s->count; }\n"
+    write(root, "Parser/tokenizer.c", source)
+    past = commit(root, "add C parser")
+    git(root, "mv", "Parser/tokenizer.c", "Parser/lexer.c")
+    final = commit(root, "rename C source")
+    result = trace_lineage(root, past, "Parser/tokenizer.c", "tok_get", head=final,
+                           language="c")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "Parser/lexer.c"
+    assert any(e.transition_type == "RENAME_M" for e in result.events)
+    assert result.mapping_confidence is None
+
+
+def test_octopus_merge_inspects_all_three_parents(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    for branch in ("alpha", "beta", "gamma"):
+        git(root, "checkout", "-qb", branch, past)
+        write(root, f"{branch}.txt", f"data for {branch}\n")
+        commit(root, branch)
+    git(root, "checkout", "-q", "main")
+    git(root, "merge", "--no-ff", "-qm", "octopus merge", "alpha", "beta", "gamma")
+    head = git(root, "rev-parse", "HEAD")
+    assert len(git(root, "rev-list", "--parents", "-n", "1", head).split()) == 5
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.resolved_path == "old/parser.py"
+    merge_events = [e for e in result.events if e.transition_commit_sha == head]
+    assert len(merge_events) == 4
+    assert {e.parent_index for e in merge_events} == {0, 1, 2, 3}
+    assert all(e.confidence_score is None for e in merge_events)
+
+
+def test_real_tree_sitter_both_grammars_and_git_lineage(tmp_path: Path) -> None:
+    """Dedicated strict integration; the dependency CI must require both backends."""
+    try:
+        py = extract_symbols("class Parser:\n    def get(self, s):\n        return s\n",
+                             "python", "Parser/parser.py", require_tree_sitter=True)
+        c = extract_symbols(
+            "struct tok_state { int count; };\n"
+            "int tok_get(struct tok_state *s) { return s->count; }\n",
+            "c", "Parser/tokenizer.c", require_tree_sitter=True,
+        )
+    except ParserUnavailable:
+        if os.getenv("BISCUIT_REQUIRE_TREE_SITTER") == "1":
+            pytest.fail("Strict CST integration cannot skip when packages are required")
+        pytest.skip("Tree-sitter optional extra not installed")
+    assert all(s.parser_backend == "tree-sitter" for s in (*py, *c))
+    assert any(s.qualified_name == "parser.Parser.get" for s in py)
+    assert any(s.qualified_name == "tokenizer.c.tok_state.tok_get" for s in c)
+    root, _ = initialize_repo(tmp_path)
+    write(root, "Parser/tokenizer.c", "int tok_get(int x) { return x + 1; }\n")
+    past = commit(root, "C lineage start")
+    git(root, "mv", "Parser/tokenizer.c", "Parser/lexer.c")
+    commit(root, "C rename")
+    result = trace_lineage(root, past, "Parser/tokenizer.c", "tok_get", language="c",
+                           require_tree_sitter=True)
+    assert result.verified_parser
+    assert result.safe_for_automatic_migration
+    assert result.resolved_path == "Parser/lexer.c"
+
+
+@pytest.mark.parametrize(
+    ("original", "renamed"),
+    [
+        ("return [x for x in items if x > 0]", "return [y for y in values if y > 0]"),
+        ("return {x for x in items}", "return {y for y in values}"),
+        ("return {x: x + 1 for x in items}", "return {y: y + 1 for y in values}"),
+        ("return sum(x for x in items)", "return sum(y for y in values)"),
+        ("return [(z := x) for x in items]", "return [(w := y) for y in values]"),
+        ("return [x + y for x in items for y in range(x)]",
+         "return [a + b for a in values for b in range(a)]"),
+    ],
+)
+def test_comprehension_and_walrus_rename_invariance(original: str, renamed: str) -> None:
+    source = "def f(items):\n    " + original + "\n"
+    rewritten = "def g(values):\n    " + renamed + "\n"
+    assert fingerprint_python_ast(source) == fingerprint_python_ast(rewritten)
+
+
+@pytest.mark.parametrize("inert", [
+    'const char *s = "}";',
+    "char literal = '{';",
+    'const char *s = "\\"}";',
+    "/* } in a comment */",
+    "// } ignored\n",
+])
+def test_c_fallback_ignores_braces_in_literals_and_comments(
+    inert: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from biscuit.grounding import cst_parser
+
+    def no_grammar(_: str) -> None:
+        raise ParserUnavailable("C restricted fallback test")
+
+    monkeypatch.setattr(cst_parser, "_ts_parser", no_grammar)
+    text = ("int tok_get(int x) {\n    " + inert +
+            "\n    return x + 1;\n}\nint other(int y) { return y; }\n")
+    syms = extract_symbols(text, "c", "parser.c")
+    match = next(s for s in syms if s.symbol_name == "tok_get")
+    assert text.encode()[match.start_byte:match.end_byte].endswith(b"return x + 1;\n}")
+    assert match.end_line == text[:match.end_byte].count("\n") + 1
+    other = next(s for s in syms if s.symbol_name == "other")
+    assert other.start_byte >= match.end_byte
+
+
+def test_c_fallback_rejects_unterminated_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from biscuit.grounding import cst_parser
+
+    def no_grammar(_: str) -> None:
+        raise ParserUnavailable("C restricted fallback test")
+
+    monkeypatch.setattr(cst_parser, "_ts_parser", no_grammar)
+    with pytest.raises(ParseError, match="Unterminated"):
+        extract_symbols('int tok_get(int x) { char *s = "unterminated; }', "c", "a.c")
+
+
+def test_python_parser_provenance_records_interpreter_version() -> None:
+    import sys
+
+    from biscuit.grounding import cst_parser
+
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    symbol = cst_parser._python_ast_symbols(b"def f(x):\n    return x\n", "a.py")[0]
+    assert version in symbol.parser_version
+    ts_symbols = extract_symbols("def f(x):\n    return x\n", "python", "a.py")
+    assert version in ts_symbols[0].parser_version
+
+
+def test_anchor_rejects_missing_parser_provenance() -> None:
+    import uuid
+    from dataclasses import replace
+
+    from biscuit.grounding import CodeSymbolAnchor
+
+    symbol = extract_symbols("def run(x):\n    return x\n", "python", "a.py")[0]
+    with pytest.raises(ValueError, match="provenance"):
+        CodeSymbolAnchor.from_symbol(
+            replace(symbol, parser_version=""), alternative_id=uuid.uuid4(),
+            repository_url="https://github.com/a/b", historical_commit_sha="a" * 40,
+        )
+
+
+
+def test_edit_then_move_uses_latest_verified_symbol_exemplar(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 2\n")
+    commit(root, "legitimate in-place edit")
+    (root / "old/parser.py").unlink()
+    write(root, "new/helper.py", (
+        "def helper_one():\n    return 123\n\n"
+        "def helper_two():\n    return 456\n\n"
+        "def tok_get(source):\n    return source + 2\n"
+    ))
+    commit(root, "move updated symbol into a larger module")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "new/helper.py"
+    assert result.mapping_confidence is None
+
+
+def test_clean_merge_with_only_mainline_edit_never_claims_first_parent_selection(
+    tmp_path: Path,
+) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "feature.txt", "unrelated work\n")
+    commit(root, "feature untouched source")
+    git(root, "checkout", "-q", "main")
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 42\n")
+    commit(root, "main edits source")
+    git(root, "merge", "--no-ff", "-qm", "clean merge", "feature")
+    merge = git(root, "rev-parse", "HEAD")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    events = [e for e in result.events if e.transition_commit_sha == merge]
+    assert len(events) == 2
+    assert all(not e.mapping_evidence["first_parent_selected"] for e in events)
+
+
+def test_dead_lineage_has_no_current_state_on_later_unrelated_commit(tmp_path: Path) -> None:
+    root, past = initialize_repo(tmp_path)
+    (root / "old/parser.py").unlink()
+    commit(root, "remove historical symbol")
+    write(root, "unrelated.txt", "later unrelated change\n")
+    later = commit(root, "after deletion")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.DELETED
+    assert not [e for e in result.events if e.transition_commit_sha == later]
+
+
+def test_git_environment_does_not_redirect_lineage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, past = initialize_repo(tmp_path)
+    git(root, "mv", "old/parser.py", "old/new_parser.py")
+    commit(root, "rename source")
+    monkeypatch.setenv("GIT_DIR", str(root / "missing-git-dir"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(root / "wrong-worktree"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(root / "wrong-index"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.repositoryformatversion")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "999")
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.MIGRATED
+    assert result.resolved_path == "old/new_parser.py"
+
+
+
+def test_storage_transition_labels_match_stream_one_enum(tmp_path: Path) -> None:
+    import uuid
+    from dataclasses import replace
+
+    from biscuit.grounding import CodeSymbolAnchor, lineage_storage_records
+
+    root, past = initialize_repo(tmp_path)
+    symbol = extract_symbols((root / "old/parser.py").read_bytes(), "python", "old/parser.py")[0]
+    anchor = CodeSymbolAnchor.from_symbol(
+        symbol, alternative_id=uuid.uuid4(),
+        repository_url="https://github.com/owner/repo", historical_commit_sha=past,
+    )
+    write(root, "old/parser.py", "def tok_get(stream):\n    return stream + 2\n")
+    commit(root, "modify in place")
+    lineage = trace_lineage(root, past, "old/parser.py", "tok_get")
+    raw = [e.transition_type for e in lineage.events]
+    assert "MODIFY" in raw
+    records = lineage_storage_records(anchor, lineage)
+    assert records[0]["transition_type"] == "EXACT_MATCH"
+    assert records[0]["mapping_evidence"]["raw_transition_type"] == "MODIFY"
+
+    deleted = replace(
+        lineage,
+        events=(replace(lineage.events[0], transition_type="DELETE"),),
+    )
+    assert lineage_storage_records(anchor, deleted)[0]["transition_type"] == "DELETED"
+
+
+
+def test_noop_history_compacts_lineage_events_but_preserves_replay_digest(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    root, past = initialize_repo(tmp_path)
+    commits = []
+    for index in range(8):
+        write(root, f"docs/{index}.md", f"unrelated change {index}\n")
+        commits.append(commit(root, f"documentation {index}"))
+    result = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert result.anchor_state == AnchorState.CURRENT
+    assert result.resolved_path == "old/parser.py"
+    assert result.events == ()
+    git(root, "mv", "old/parser.py", "old/lexer.py")
+    commit(root, "real rename")
+    changed = trace_lineage(root, past, "old/parser.py", "tok_get")
+    assert len(changed.events) == 1
+    assert changed.events[0].mapping_evidence["traversed_commit_count"] == 9
+    all_commits = forward_commits(root, past)
+    expected = hashlib.sha256("\n".join(all_commits).encode("ascii")).hexdigest()
+    assert changed.events[0].mapping_evidence["traversed_commit_sha256"] == expected
+    assert changed.events[0].mapping_evidence["find_copies_harder"] is False
