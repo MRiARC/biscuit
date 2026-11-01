@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📚 Project documentation
+    url: https://github.com/MRiARC/biscuit/tree/main/docs
+    about: Read the authoritative design specs before opening an issue. Most "how does X work?" questions are answered there.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/MRiARC/biscuit/security/advisories/new
+    about: Found a security issue? Use private vulnerability reporting — do not open a public issue.
+  - name: 💬 Discussions
+    url: https://github.com/MRiARC/biscuit/discussions
+    about: Open-ended questions, design ideas, and community discussion that is not a bug or feature request.
