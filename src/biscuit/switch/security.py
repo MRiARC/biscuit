@@ -156,6 +156,7 @@ class CallbackSecurity:
         signature_header: str | None,
         idempotency_key: str | None = None,
         now: datetime | None = None,
+        mark_seen: bool = True,
     ) -> tuple[bool, str, str]:
         """Authenticate one callback; returns ``(valid, reason, body_sha256)``.
 
@@ -239,7 +240,12 @@ class CallbackSecurity:
             if not isinstance(payload_data.get(claim), str) or not payload_data[claim]:
                 return False, f"signed callback {claim} is required", body_sha256
 
-        self._seen_bodies.setdefault(request.id, set()).add(body_sha256)
+        # Standalone verification can burn the body for duplicate verification.
+        # Finalization instead defers consumption until *after* authorization and
+        # atomic durable ledger insert; invalid actor/action claims must not
+        # permanently prevent a legitimate retry of the same signed callback.
+        if mark_seen:
+            self._seen_bodies.setdefault(request.id, set()).add(body_sha256)
         return True, "callback authenticated", body_sha256
 
     # ── finalization ────────────────────────────────────────────────────
@@ -263,7 +269,10 @@ class CallbackSecurity:
         is burned atomically, and the action and project-scoped maintainer
         authority are validated.
         """
-        valid, reason, _ = self.verify(request, body, signature_header, idempotency_key, now)
+        valid, reason, body_hash = self.verify(
+            request, body, signature_header, idempotency_key, now,
+            mark_seen=False,
+        )
         if not valid:
             return None, reason
 
@@ -326,6 +335,7 @@ class CallbackSecurity:
                 return None, "replayed callback: request already finalized (409 Conflict)"
             request.status = HITLRequestStatus.DECIDED
             self._consumed_keys.add(request.idempotency_key)
+            self._seen_bodies.setdefault(request.id, set()).add(body_hash)
         return request, "approved"
 
     # ── helpers ─────────────────────────────────────────────────────────

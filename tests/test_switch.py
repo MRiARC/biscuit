@@ -1261,6 +1261,40 @@ def test_callback_rejects_revoked_and_cross_project_grants():
         assert "does not hold" in reason
 
 
+def test_failed_actor_authorization_does_not_burn_valid_signed_callback():
+    """A denied finalize must not consume a callback before trusted role checks."""
+    security = make_security()
+    request = make_request()
+    body = callback_body(
+        "AUTHORIZE_PR_COMMENT", request.switch_approval_id, request.idempotency_key
+    )
+    signature = sign_body(SECRET, body)
+    denied, reason = security.finalize(
+        request, HITLEventAction.AUTHORIZE_PR_COMMENT, body, signature,
+        "U999", "slack", "unverified-actor",
+        idempotency_key=request.idempotency_key,
+    )
+    assert denied is None
+    assert "contributor" in reason or "authenticated actor" in reason
+    assert request.status == HITLRequestStatus.PENDING
+
+    approved, reason = security.finalize(
+        request, HITLEventAction.AUTHORIZE_PR_COMMENT, body, signature,
+        "U999", "slack", "c2",
+        idempotency_key=request.idempotency_key,
+    )
+    assert approved is request, reason
+    assert request.status == HITLRequestStatus.DECIDED
+
+    replay, reason = security.finalize(
+        request, HITLEventAction.AUTHORIZE_PR_COMMENT, body, signature,
+        "U999", "slack", "c2",
+        idempotency_key=request.idempotency_key,
+    )
+    assert replay is None
+    assert "replay" in reason
+
+
 def test_durable_replay_ledger_rejects_after_restart(tmp_path):
     db = str(tmp_path / "switch-replay.sqlite3")
     security = make_security(replay_db_path=db)
