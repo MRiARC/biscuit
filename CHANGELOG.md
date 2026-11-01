@@ -8,7 +8,54 @@ with the pre-1.0 caveat that minor versions may contain breaking changes.
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added — End-to-end cross-stream wiring (Streams 1, 3, 4, 5)
+
+- **`src/biscuit/db/decision_store.py`** — `DatabaseDecisionStore` implements
+  the watchdog's `DecisionStore` Protocol against the authoritative
+  PostgreSQL relational store. Reads `decision_alternatives`,
+  `evidence_spans`, `code_anchors`, `decision_alternative_ruling_signoffs`,
+  `contributor_project_role_grants` (+ revocations), `decisions`, and
+  `source_threads` to materialise the frozen dataclass records the
+  4-invariant authorization gate consumes. For BDFL rulings, the ruling
+  actor's grant is synthesised as a sign-off when no explicit row exists,
+  mirroring the `enforce_authoritative_alternative_rejection` PostgreSQL
+  trigger semantics. Also provides `persist_watchdog_audit_log()` which
+  writes `AuthorizationResult` audit entries to the append-only
+  `pr_watchdog_audit_log` table.
+- **`src/biscuit/db/bootstrap.py`** — `upsert_contributor()`,
+  `grant_project_role()`, `revoke_project_role()`,
+  `import_provenanced_decision()`, and `load_bootstrap_fixture()` for
+  seeding `ContributorProjectRoleGrant` rows and importing fully-provenanced
+  REJECTED decision records (source thread → message → version → VERIFIED_EXACT
+  RULING evidence span → alternative with ruling metadata + signoffs) in a
+  single transaction. Verifies the substring + SHA-256 contract client-side
+  so SQLite (which lacks the `verify_evidence_span_exactness` trigger)
+  cannot store a mismatched span.
+- **CLI `db` command group** — `biscuit db init`, `biscuit db bootstrap-roles`,
+  `biscuit db import-decision`, `biscuit db watchdog-check`. The watchdog-check
+  command runs the full 4-invariant gate against the authoritative store and
+  persists the audit row.
+- **CLI `decisions list` / `export` wired to the authoritative store** — both
+  commands now accept `--db-url` (and respect `DATABASE_URL` /
+  `BISCUIT_TEST_PG_DSN`) and read directly from the production PostgreSQL
+  store when available, with a documented fallback to the local SQLite cache
+  for offline / development use. The `--store/--local-cache` flag and explicit
+  `--db` path control the source.
+- **`tests/test_cross_stream_wiring.py`** — 11 integration tests covering
+  `DatabaseDecisionStore` reads, the watchdog gate authorizing a warning
+  with real seeded BDFL + ruling + anchor data (`tp > 0`), audit-log
+  persistence, and CLI `decisions list` / `export` reading from the store.
+- **`tests/fixtures/bootstrap/`** — `sample_roles.json` fixture and a README
+  documenting the fixture format and provenance contract.
+
+### Resolved acceptance gate
+
+The watchdog's "fail closed unless backed by a verified human ruling"
+contract (Issue #20) is now satisfiable end-to-end: a fresh environment can
+be bootstrapped with `biscuit db bootstrap-roles`, a provenanced REJECTED
+decision imported with `biscuit db import-decision`, and the watchdog gate
+will authorise a warning (`WARNING_AUTHORIZED`) when all four invariants
+hold against the real relational store.
 
 ## [0.1.0] — 2026-11-01
 

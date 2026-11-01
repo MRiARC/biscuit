@@ -1,0 +1,37 @@
+{
+  "contributors": {
+    "gvanrossum": {
+      "source_platform": "discourse",
+      "platform_user_id": "gvanrossum",
+      "canonical_name": "Guido van Rossum",
+      "author_handle": "gvanrossum"
+    },
+    "brettcannon": {
+      "source_platform": "discourse",
+      "platform_user_id": "brett.cannon",
+      "canonical_name": "Brett Cannon",
+      "author_handle": "brettcannon"
+    }
+  },
+  "role_grants": [
+    {
+      "contributor": "gvanrossum",
+      "project_context": "python/cpython",
+      "role": "BDFL",
+      "verification_source_url": "https://www.python.org/community/diversity/",
+      "verified_by": "brettcannon",
+      "valid_from": "2024-01-01T00:00:00+00:00",
+      "valid_until": null
+    },
+    {
+      "contributor": "brettcannon",
+      "project_context": "python/cpython",
+      "role": "Core Maintainer",
+      "verification_source_url": "https://www.python.org/community/diversity/",
+      "verified_by": "gvanrossum",
+      "valid_from": "2024-01-01T00:00:00+00:00",
+      "valid_until": null
+    }
+  ],
+  "decisions": []
+}
