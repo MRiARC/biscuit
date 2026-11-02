@@ -40,7 +40,7 @@ biscuit = "biscuit.cli.main:main"
 [project.optional-dependencies]
 # Optional strict CST backend. The core package stays zero-dependency for Stream 2.
 grounding = [
-    "tree-sitter>=0.22,<0.26",
+    "tree-sitter>=0.22,<0.27",
     "tree-sitter-python>=0.21,<0.26",
     "tree-sitter-c>=0.21,<0.26",
 ]
