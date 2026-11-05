@@ -15,12 +15,13 @@ Enforces non-negotiable provenance and authority invariants:
    maintainer sign-off on that same alternative.
 """
 
+import os
 import re
 from typing import Any
 from uuid import UUID, uuid4
 
 from biscuit.extract.audit import AuditWriter, sha256_json
-from biscuit.extract.client import LocalLLMClient
+from biscuit.extract.client import LLMClient, LocalLLMClient
 from biscuit.extract.pass1_discovery import Pass1ProposalDiscovery
 from biscuit.extract.pass2_slicing import Pass2DeliberationSlicing
 from biscuit.extract.pass3_arguments import Pass3ArgumentMining, find_originating_message
@@ -75,7 +76,9 @@ def _rejection_clauses(quote: str) -> list[str]:
     """Separate independent propositions so 'reject P1; P2 open' cannot reject P2."""
     return [
         clause.strip()
-        for clause in re.split(r"[;.\n]+|\b(?:but|however|whereas|while)\b", quote, flags=re.IGNORECASE)
+        for clause in re.split(
+            r"[;.\n]+|\b(?:but|however|whereas|while)\b", quote, flags=re.IGNORECASE
+        )
         if clause.strip()
     ]
 
@@ -84,12 +87,16 @@ def _affirmative_rejection(clause: str) -> bool:
     """Conservatively identify affirmative rejections; negated/contested rejections fail closed."""
     if not re.search(r"\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b", clause, re.IGNORECASE):
         return False
-    return re.search(
-        r"\b(?:not|never|no|don't|do\s+not|does\s+not|oppose|opposing|"
-        r"against|object\s+to|disagree\s+with|reconsider)\b"
-        r"(?:\s+\w+){0,4}\s+\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b",
-        clause, re.IGNORECASE,
-    ) is None
+    return (
+        re.search(
+            r"\b(?:not|never|no|don't|do\s+not|does\s+not|oppose|opposing|"
+            r"against|object\s+to|disagree\s+with|reconsider)\b"
+            r"(?:\s+\w+){0,4}\s+\b(?:reject(?:s|ed|ing|ion)?|veto(?:es|ed|ing)?)\b",
+            clause,
+            re.IGNORECASE,
+        )
+        is None
+    )
 
 
 def _verify_ruling_alternative_link(
@@ -119,7 +126,9 @@ def _verify_ruling_alternative_link(
     return False
 
 
-def _is_affirmative_signoff(quote: str, proposal_id: str, proposals: list[ProposalCandidate]) -> bool:
+def _is_affirmative_signoff(
+    quote: str, proposal_id: str, proposals: list[ProposalCandidate]
+) -> bool:
     """A consensus sign-off explicitly agrees to reject this same proposal."""
     for clause in _rejection_clauses(quote):
         if not _affirmative_rejection(clause):
@@ -131,6 +140,7 @@ def _is_affirmative_signoff(quote: str, proposal_id: str, proposals: list[Propos
             return True
     return False
 
+
 class ExtractionPipeline:
     """
     Orchestrates the 4-Pass Local LLM Extraction Pipeline.
@@ -140,17 +150,35 @@ class ExtractionPipeline:
 
     def __init__(
         self,
-        client: LocalLLMClient | None = None,
-        pass1_model: str = "llama3.2:3b",
-        pass3_model: str = "phi3.5",
-        pass4_model: str = "qwen2.5-coder:7b",
+        client: LLMClient | LocalLLMClient | None = None,
+        pass1_model: str | None = None,
+        pass3_model: str | None = None,
+        pass4_model: str | None = None,
         audit_writer: AuditWriter | None = None,
     ):
-        self.client = client or LocalLLMClient()
-        self.pass1 = Pass1ProposalDiscovery(self.client, model=pass1_model)
+        self.client = client or LLMClient()
+        p1 = (
+            pass1_model
+            or os.getenv("BISCUIT_PASS1_MODEL")
+            or os.getenv("BISCUIT_LLM_MODEL")
+            or "llama3.2:3b"
+        )
+        p3 = (
+            pass3_model
+            or os.getenv("BISCUIT_PASS3_MODEL")
+            or os.getenv("BISCUIT_LLM_MODEL")
+            or "phi3.5"
+        )
+        p4 = (
+            pass4_model
+            or os.getenv("BISCUIT_PASS4_MODEL")
+            or os.getenv("BISCUIT_LLM_MODEL")
+            or "qwen2.5-coder:7b"
+        )
+        self.pass1 = Pass1ProposalDiscovery(self.client, model=p1)
         self.pass2 = Pass2DeliberationSlicing()
-        self.pass3 = Pass3ArgumentMining(self.client, model=pass3_model)
-        self.pass4 = Pass4SchemaSynthesis(self.client, model=pass4_model)
+        self.pass3 = Pass3ArgumentMining(self.client, model=p3)
+        self.pass4 = Pass4SchemaSynthesis(self.client, model=p4)
         self.verifier = EvidenceVerifier()
         self.matcher = CandidateSpanMatcher()
         self.audit_writer = audit_writer
@@ -202,10 +230,14 @@ class ExtractionPipeline:
             "embedding_model_name": revisions.get("embedding_name", "NOT_USED"),
             "embedding_model_revision": revisions.get("embedding", "NOT_USED"),
             "prompt_templates_hash": get_prompt_templates_hash(),
-            "source_thread_snapshot_sha256": sha256_json({
-                "thread_id": thread_id, "topic": topic,
-                "messages": messages, "edges": edges or [],
-            }),
+            "source_thread_snapshot_sha256": sha256_json(
+                {
+                    "thread_id": thread_id,
+                    "topic": topic,
+                    "messages": messages,
+                    "edges": edges or [],
+                }
+            ),
             "run_status": "RUNNING",
             "records_extracted": 0,
         }
@@ -219,8 +251,10 @@ class ExtractionPipeline:
             if any(
                 manifest[key] in ("UNPINNED", "NOT_USED", "")
                 for key in (
-                    "model_pass1_revision", "model_pass3_revision",
-                    "model_pass4_revision", "embedding_model_revision",
+                    "model_pass1_revision",
+                    "model_pass3_revision",
+                    "model_pass4_revision",
+                    "embedding_model_revision",
                 )
             ):
                 raise ValueError("Audit writer requires pinned model and embedding revisions")
@@ -228,9 +262,14 @@ class ExtractionPipeline:
 
         try:
             result = self._run_impl(
-                thread_id=thread_id, topic=topic, messages=messages, edges=edges,
-                decision_id=decision_id, alternative_ids=alternative_ids,
-                argument_ids=argument_ids, verified_project_roles=verified_project_roles,
+                thread_id=thread_id,
+                topic=topic,
+                messages=messages,
+                edges=edges,
+                decision_id=decision_id,
+                alternative_ids=alternative_ids,
+                argument_ids=argument_ids,
+                verified_project_roles=verified_project_roles,
                 run_id=run_id,
             )
         except Exception:
@@ -239,18 +278,20 @@ class ExtractionPipeline:
                 self.audit_writer.write(manifest)
             raise
 
-        result.audit_metadata.update({
-            "source_thread_snapshot_sha256": manifest["source_thread_snapshot_sha256"],
-            "run_config": run_config,
-            "run_config_sha256": manifest["run_config_sha256"],
-            "environment_lock_sha256": environment_lock_sha256,
-            "model_pass1_revision": manifest["model_pass1_revision"],
-            "model_pass3_revision": manifest["model_pass3_revision"],
-            "model_pass4_revision": manifest["model_pass4_revision"],
-            "embedding_model_name": manifest["embedding_model_name"],
-            "embedding_model_revision": manifest["embedding_model_revision"],
-            "audit_persisted": False,
-        })
+        result.audit_metadata.update(
+            {
+                "source_thread_snapshot_sha256": manifest["source_thread_snapshot_sha256"],
+                "run_config": run_config,
+                "run_config_sha256": manifest["run_config_sha256"],
+                "environment_lock_sha256": environment_lock_sha256,
+                "model_pass1_revision": manifest["model_pass1_revision"],
+                "model_pass3_revision": manifest["model_pass3_revision"],
+                "model_pass4_revision": manifest["model_pass4_revision"],
+                "embedding_model_name": manifest["embedding_model_name"],
+                "embedding_model_revision": manifest["embedding_model_revision"],
+                "audit_persisted": False,
+            }
+        )
         if self.audit_writer is not None:
             manifest["run_status"] = result.run_status
             manifest["records_extracted"] = len(result.proposals)
@@ -352,14 +393,21 @@ class ExtractionPipeline:
             for arg in packet_args:
                 trusted_role = trusted_roles.get(arg.author.strip().lower(), "contributor")
                 is_authorized = trusted_role in (
-                    "bdfl", "maintainer", "core maintainer", "core_maintainer",
-                    "working group chair", "working_group_chair", "wg_chair",
+                    "bdfl",
+                    "maintainer",
+                    "core maintainer",
+                    "core_maintainer",
+                    "working group chair",
+                    "working_group_chair",
+                    "wg_chair",
                 )
                 changes: dict[str, Any] = {"author_role": trusted_role}
                 if not is_authorized:
                     changes.update(
-                        is_ruling=False, ruling_authority=None,
-                        fatal_rejection=False, fatal_reason=None,
+                        is_ruling=False,
+                        ruling_authority=None,
+                        fatal_rejection=False,
+                        fatal_reason=None,
                     )
                 arg = arg.model_copy(update=changes)
                 arguments.append(arg)

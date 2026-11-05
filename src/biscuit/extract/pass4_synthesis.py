@@ -4,12 +4,15 @@ Synthesizes structured MADR 3.0 records and extracts candidate verbatim evidence
 """
 
 import json
+import os
 import re
 from typing import Any
 
-from biscuit.extract.client import LocalLLMClient
+from biscuit.extract.client import LLMClient, LocalLLMClient
 from biscuit.extract.prompts import PASS4_SCHEMA_SYNTHESIS_PROMPT
 from biscuit.extract.types import ArgumentClassification, ExtractedMADR, ProposalCandidate
+
+DEFAULT_PASS4_MODEL = "qwen2.5-coder:7b"
 
 
 def _clean_json_response(raw_text: str) -> str:
@@ -28,9 +31,18 @@ class Pass4SchemaSynthesis:
     Uses Qwen 2.5 Coder 7B Instruct with keep_alive: 0.
     """
 
-    def __init__(self, client: LocalLLMClient, model: str = "qwen2.5-coder:7b"):
+    def __init__(
+        self,
+        client: LLMClient | LocalLLMClient,
+        model: str | None = None,
+    ):
         self.client = client
-        self.model = model
+        self.model = (
+            model
+            or os.getenv("BISCUIT_PASS4_MODEL")
+            or os.getenv("BISCUIT_LLM_MODEL")
+            or DEFAULT_PASS4_MODEL
+        )
 
     def synthesize_madr(
         self,

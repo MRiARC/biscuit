@@ -125,9 +125,9 @@ pip install -e ".[dev,grounding]"
   pytest tests/test_db.py
   ```
 
-- **Local LLM runtime** (Ollama or equivalent) for live inference. The test
-  suite and `biscuit evaluate` default to **recorded-replay mode** so nothing
-  requires a running model.
+- **Pluggable LLM runtime** (Ollama, OpenAI, DeepSeek, vLLM, OpenRouter, Groq, or any OpenAI-compatible provider)
+  for live extraction and semantic scoring. Supports custom base URLs, API keys, and arbitrary foundation models.
+  The test suite and `biscuit evaluate` default to **recorded-replay mode** so offline testing requires no live daemon or credentials.
 
 ---
 
@@ -149,8 +149,11 @@ biscuit decisions list
 biscuit decisions import path/to/decision.json
 biscuit export --format madr --out ./adr/
 
-# 5. Ingest a Discourse topic snapshot into the local SQLite cache
-biscuit ingest --source discourse --topic 12345
+# 5. Extract MADR decisions from a discussion thread (pluggable LLM)
+biscuit extract --input thread.json --output madr.json --llm-model gpt-4o
+
+# 6. Ingest a Discourse topic snapshot into the local SQLite cache
+biscuit ingest --platform discourse --url https://discuss.python.org/t/pep-505/12345
 ```
 
 CLI help is always one flag away:

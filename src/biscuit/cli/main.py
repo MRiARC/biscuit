@@ -17,7 +17,9 @@ except ImportError:  # Dependency-owning stream must add typer to pyproject.toml
 
 
 def _default_db() -> Path:
-    return Path(os.environ.get("BISCUIT_DB", "~/.local/share/biscuit/workspace.sqlite3")).expanduser()
+    return Path(
+        os.environ.get("BISCUIT_DB", "~/.local/share/biscuit/workspace.sqlite3")
+    ).expanduser()
 
 
 def _resolve_db_url(db_url: str | None, local_db: Path | None = None) -> str | None:
@@ -53,22 +55,22 @@ def _list_decisions_from_store(db_url: str, status: str | None) -> list[dict]:
             if status is not None and alt.lifecycle_status.value != status:
                 continue
             decision = store.get_decision(alt.decision_id)
-            records.append({
-                "decision_id": alt.id,
-                "status": alt.lifecycle_status.value,
-                "title": decision.title if decision else alt.proposal_text,
-                "context": decision.context_summary if decision else alt.proposal_text,
-                "rationale": alt.rejection_summary or "",
-                "consequences": "",
-                "record_json": {
-                    "deciders": [],
-                    "considered_options": [
-                        {"name": alt.proposal_text, "pros": [], "cons": []}
-                    ],
-                    "decision_drivers": [],
-                    "links": [],
-                },
-            })
+            records.append(
+                {
+                    "decision_id": alt.id,
+                    "status": alt.lifecycle_status.value,
+                    "title": decision.title if decision else alt.proposal_text,
+                    "context": decision.context_summary if decision else alt.proposal_text,
+                    "rationale": alt.rejection_summary or "",
+                    "consequences": "",
+                    "record_json": {
+                        "deciders": [],
+                        "considered_options": [{"name": alt.proposal_text, "pros": [], "cons": []}],
+                        "decision_drivers": [],
+                        "links": [],
+                    },
+                }
+            )
         records.sort(key=lambda r: r["decision_id"])
         return records
 
@@ -101,14 +103,22 @@ def _export_madr_from_store(db_url: str, output: Path) -> int:
             detail.append("*No option-specific trade-offs supplied in the source record.*")
         document = (
             "\n".join(header)
-            + "\n\n## Status\n\n" + item["status"]
-            + "\n\n## Context and Problem Statement\n\n" + item["context"]
-            + "\n\n## Decision Drivers\n\n" + _madr_list(record.get("decision_drivers"))
-            + "\n\n## Considered Options\n\n" + _option_text(options)
-            + "\n\n## Decision Outcome\n\n" + item["rationale"]
-            + "\n\n### Consequences\n\n" + item.get("consequences", "")
-            + "\n\n## Pros and Cons of the Options\n\n" + "\n\n".join(detail)
-            + "\n\n## Links\n\n" + _madr_list(record.get("links"))
+            + "\n\n## Status\n\n"
+            + item["status"]
+            + "\n\n## Context and Problem Statement\n\n"
+            + item["context"]
+            + "\n\n## Decision Drivers\n\n"
+            + _madr_list(record.get("decision_drivers"))
+            + "\n\n## Considered Options\n\n"
+            + _option_text(options)
+            + "\n\n## Decision Outcome\n\n"
+            + item["rationale"]
+            + "\n\n### Consequences\n\n"
+            + item.get("consequences", "")
+            + "\n\n## Pros and Cons of the Options\n\n"
+            + "\n\n".join(detail)
+            + "\n\n## Links\n\n"
+            + _madr_list(record.get("links"))
             + "\n"
         )
         (output / f"{item['decision_id']}.md").write_text(document, encoding="utf-8")
@@ -135,6 +145,30 @@ if typer is not None:
         output_format: str = typer.Option("rich", "--format"),
         strict_offsets: bool = typer.Option(False, "--strict-offsets"),
         verbose: bool = typer.Option(False, "--verbose"),
+        llm_base_url: str | None = typer.Option(
+            None, "--llm-base-url", help="Base URL for LLM provider"
+        ),
+        llm_api_key: str | None = typer.Option(
+            None, "--llm-api-key", help="API key for LLM provider"
+        ),
+        llm_model: str | None = typer.Option(
+            None, "--llm-model", help="Model name for extraction passes"
+        ),
+        llm_provider: str = typer.Option(
+            "auto", "--llm-provider", help="Provider: auto, openai, or ollama"
+        ),
+        embedding_base_url: str | None = typer.Option(
+            None, "--embedding-base-url", help="Base URL for embeddings"
+        ),
+        embedding_api_key: str | None = typer.Option(
+            None, "--embedding-api-key", help="API key for embeddings"
+        ),
+        embedding_model: str | None = typer.Option(
+            None, "--embedding-model", help="Model name for embeddings"
+        ),
+        embedding_provider: str = typer.Option(
+            "auto", "--embedding-provider", help="Provider for embeddings: auto, openai, or ollama"
+        ),
     ) -> None:
         """Evaluate offline predictions; do not expose hidden ground truth to predictors."""
         import json
@@ -148,20 +182,37 @@ if typer is not None:
         if stream3:
             try:
                 from biscuit.evaluate.stream3_adapter import stream3_predictor
+                from biscuit.extract.client import LLMClient
                 from biscuit.extract.pipeline import ExtractionPipeline
 
-                predictor = stream3_predictor(ExtractionPipeline())
+                client = LLMClient(
+                    base_url=llm_base_url,
+                    api_key=llm_api_key,
+                    provider=llm_provider,
+                )
+                pipeline = ExtractionPipeline(
+                    client=client,
+                    pass1_model=llm_model,
+                    pass3_model=llm_model,
+                    pass4_model=llm_model,
+                )
+                predictor = stream3_predictor(pipeline)
             except ImportError as exc:
                 typer.echo(
-                    "Stream 3 extraction is not installed; integrate PR #23 first: "
-                    + str(exc), err=True,
+                    "Stream 3 extraction is not installed; integrate PR #23 first: " + str(exc),
+                    err=True,
                 )
                 raise typer.Exit(1) from exc
         embedder = None
         if semantic_embeddings:
-            from biscuit.evaluate.embeddings import LocalOllamaEmbedder
+            from biscuit.evaluate.embeddings import get_embedder
 
-            embedder = LocalOllamaEmbedder()
+            embedder = get_embedder(
+                model=embedding_model,
+                base_url=embedding_base_url,
+                api_key=embedding_api_key,
+                provider=embedding_provider,
+            )
         root = fixtures_root or DEFAULT_FIXTURE_ROOT
         if output_format not in {"rich", "json"}:
             typer.echo("--format must be rich or json", err=True)
@@ -171,7 +222,8 @@ if typer is not None:
                 typer.echo("--all requires a prediction directory", err=True)
                 raise typer.Exit(2)
             names = sorted(
-                folder.name for folder in root.iterdir()
+                folder.name
+                for folder in root.iterdir()
                 if folder.is_dir() and (folder / "raw_thread.json").exists()
             )
         else:
@@ -185,7 +237,8 @@ if typer is not None:
                     benchmark_id=name,
                     predictions_path=(
                         predictions / f"{name}.json"
-                        if all_benchmarks and predictions is not None else predictions
+                        if all_benchmarks and predictions is not None
+                        else predictions
                     ),
                     fixtures_root=root,
                     predictor=predictor,
@@ -200,14 +253,17 @@ if typer is not None:
             typer.echo(f"Evaluation failed: {exc}", err=True)
             raise typer.Exit(1) from exc
         payload = (
-            outcomes[0].to_dict() if len(outcomes) == 1
+            outcomes[0].to_dict()
+            if len(outcomes) == 1
             else {
                 "schema_version": 1,
                 "benchmarks": [outcome.to_dict() for outcome in outcomes],
                 "aggregate": aggregate_outcomes(outcomes),
                 "verdict": (
-                    "FAILED" if any(x.verdict == "FAILED" for x in outcomes)
-                    else "INCOMPLETE" if any(x.verdict != "PASSED" for x in outcomes)
+                    "FAILED"
+                    if any(x.verdict == "FAILED" for x in outcomes)
+                    else "INCOMPLETE"
+                    if any(x.verdict != "PASSED" for x in outcomes)
                     else "PASSED"
                 ),
             }
@@ -231,7 +287,8 @@ if typer is not None:
             typer.echo(f"Saved: {output}")
         if strict_offsets and any(
             metric.name == "Evidence exact match rate" and metric.status != "PASSED"
-            for outcome in outcomes for metric in outcome.metrics
+            for outcome in outcomes
+            for metric in outcome.metrics
         ):
             typer.echo("Strict offsets: unverified or absent evidence", err=True)
             raise typer.Exit(1)
@@ -239,6 +296,98 @@ if typer is not None:
             raise typer.Exit(1)
         if any(outcome.verdict != "PASSED" for outcome in outcomes):
             raise typer.Exit(2)
+
+    @app.command()
+    def extract(
+        input_file: Path = typer.Option(..., "--input", "-i", help="Path to raw thread JSON"),  # noqa: B008
+        output: Path = typer.Option(  # noqa: B008
+            Path("madr_extracted.json"), "--output", "-o", help="Path to write extracted MADR"
+        ),
+        topic: str | None = typer.Option(None, "--topic", help="Topic or title for deliberation"),
+        llm_base_url: str | None = typer.Option(
+            None, "--llm-base-url", help="Base URL for LLM provider"
+        ),
+        llm_api_key: str | None = typer.Option(
+            None, "--llm-api-key", help="API key for LLM provider"
+        ),
+        llm_model: str | None = typer.Option(
+            None, "--llm-model", help="Model name for extraction passes"
+        ),
+        llm_provider: str = typer.Option(
+            "auto", "--llm-provider", help="Provider: auto, openai, or ollama"
+        ),
+    ) -> None:
+        """Run the 4-pass deliberation extraction pipeline on a thread snapshot."""
+        import json
+
+        from biscuit.extract.client import LLMClient
+        from biscuit.extract.pipeline import ExtractionPipeline
+
+        if not input_file.is_file():
+            typer.echo(f"Input file not found: {input_file}", err=True)
+            raise typer.Exit(2)
+
+        try:
+            thread_data = json.loads(input_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Failed to read input thread JSON: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
+        thread_id = str(thread_data.get("thread_id", input_file.stem))
+        delib_topic = topic or str(
+            thread_data.get("topic") or thread_data.get("title") or thread_id
+        )
+        raw_messages = thread_data.get("messages", [])
+        messages = [
+            {
+                "message_id": str(m.get("message_id", idx)),
+                "author": str(m.get("author") or m.get("author_handle") or "contributor"),
+                "author_role": str(m.get("author_role") or "contributor"),
+                "content": str(m.get("content") or m.get("raw_text") or ""),
+                "raw_content": str(
+                    m.get("raw_content") or m.get("raw_text") or m.get("content") or ""
+                ),
+                **(
+                    {"source_message_version_id": m["source_message_version_id"]}
+                    if m.get("source_message_version_id")
+                    else {}
+                ),
+            }
+            for idx, m in enumerate(raw_messages)
+        ]
+
+        client = LLMClient(
+            base_url=llm_base_url,
+            api_key=llm_api_key,
+            provider=llm_provider,
+        )
+        pipeline = ExtractionPipeline(
+            client=client,
+            pass1_model=llm_model,
+            pass3_model=llm_model,
+            pass4_model=llm_model,
+        )
+
+        try:
+            result = pipeline.run(
+                thread_id=thread_id,
+                topic=delib_topic,
+                messages=messages,
+                edges=thread_data.get("edges"),
+            )
+        except Exception as exc:
+            typer.echo(f"Extraction failed: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        typer.echo(
+            f"Extraction completed: {len(result.madr.considered_alternatives)} alternatives, "
+            f"status={result.madr.status}. Saved to {output}"
+        )
 
     @app.command()
     def ingest(
