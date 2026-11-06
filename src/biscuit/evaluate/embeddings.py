@@ -171,6 +171,23 @@ def get_embedder(
         base_url or os.getenv("BISCUIT_EMBEDDING_BASE_URL") or os.getenv("OPENAI_BASE_URL")
     )
 
+    # Explicit provider selection takes precedence over auto-detection
+    if resolved_provider == "ollama":
+        resolved_model = model or os.getenv("BISCUIT_EMBEDDING_MODEL") or "nomic-embed-text"
+        allow_remote = bool(
+            resolved_base
+            and not any(
+                resolved_base.startswith(prefix)
+                for prefix in ("http://localhost", "http://127.0.0.1", "http://::1")
+            )
+        )
+        return LocalOllamaEmbedder(
+            model=resolved_model,
+            base_url=resolved_base or "http://127.0.0.1:11434",
+            timeout_seconds=timeout_seconds,
+            allow_remote=allow_remote,
+        )
+
     if (
         resolved_provider in ("openai", "remote")
         or resolved_key

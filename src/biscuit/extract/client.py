@@ -319,4 +319,28 @@ class LLMClient:
 
 
 class LocalLLMClient(LLMClient):
-    """Backward-compatible alias for LLMClient."""
+    """Backward-compatible alias for LLMClient preserving legacy constructor positional arguments.
+
+    Legacy positional arguments:
+        (base_url, mock_mode, mock_responses, timeout_seconds)
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        mock_mode: bool = False,
+        mock_responses: dict[str, str] | None = None,
+        timeout_seconds: float = 60.0,
+        **kwargs: Any,
+    ):
+        super().__init__(
+            base_url=base_url,
+            mock_mode=mock_mode,
+            mock_responses=mock_responses,
+            timeout_seconds=timeout_seconds,
+            provider=kwargs.get("provider", "ollama"),
+            api_key=kwargs.get("api_key"),
+            headers=kwargs.get("headers"),
+            skip_unload=kwargs.get("skip_unload"),
+        )
+

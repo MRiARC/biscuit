@@ -201,6 +201,33 @@ def test_openai_embedder_and_factory(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen[0][1]["Authorization"] == "Bearer sk-test-embed"
     assert seen[0][2]["input"] == "Semantic rationale query"
 
+    # 4. Regression test (Review finding 2): Explicit provider="ollama" MUST take
+    # precedence over presence of api_key
+    embedder_ollama_override = get_embedder(provider="ollama", api_key="sk-test-embed")
+    assert isinstance(embedder_ollama_override, LocalOllamaEmbedder)
+    assert embedder_ollama_override.endpoint == "http://127.0.0.1:11434/api/embed"
+
+
+def test_local_llm_client_backward_compatibility() -> None:
+    """Regression test (Review finding 1): LocalLLMClient constructor positional arguments.
+
+    Legacy positional argument signature was: (base_url, mock_mode, mock_responses, timeout_seconds)
+    Calling LocalLLMClient('http://localhost:11434', True) MUST set mock_mode=True, NOT api_key=True.
+    """
+    from biscuit.extract.client import LocalLLMClient
+
+    # Positional invocation: second argument is mock_mode
+    client = LocalLLMClient("http://localhost:11434", True)
+    assert client.mock_mode is True
+    assert client.api_key is None
+    assert client.provider == "ollama"
+
+    # Keyword invocation still works
+    client_kw = LocalLLMClient(base_url="http://custom:11434", mock_mode=False)
+    assert client_kw.mock_mode is False
+    assert client_kw.base_url == "http://custom:11434"
+
+
 
 def test_cli_extract_command(tmp_path: Path) -> None:
     raw_thread = {

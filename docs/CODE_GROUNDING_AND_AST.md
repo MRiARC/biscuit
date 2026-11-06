@@ -187,12 +187,12 @@ Per **PR #7 Review (5)**:
 | **1. Decision State** | `decision_alternatives.lifecycle_status == 'REJECTED'` | **ABSTAIN.** (Never warn on `DISPUTED`, `UNRESOLVED`, or `PROPOSED` items). |
 | **2. Authoritative Ruling** | `ruling_evidence_id` is a `VERIFIED_EXACT` `RULING` span linked to this exact alternative and authored by an identified authorized human. The database enforces a BDFL ruling, Core Maintainer consensus (ruling author plus one other verified Core Maintainer), or Working Group authority (Chair plus one other verified group member); model inference is never authority. | **ABSTAIN.** (Never warn based on unverified or speculative evidence). |
 | **3. Alternative Code Anchor** | Modified PR code touches an active `code_anchor` bound directly to THIS alternative. | **ABSTAIN.** (Never warn based on semantic similarity to unrelated code). |
-| **4. AST Structural Equivalence** | AST/CST subtree comparison confirms PR introduces the rejected syntax/construct (not an accepted or refactored pattern). | **ABSTAIN.** (Never warn on semantic embedding similarity alone). |
+| **4. Construct Equivalence** | Structural / semantic comparison verifies the PR actually introduces the rejected construct (not a benign refactor or accepted alternative in the same file). Evaluated via masked AST structural subtree matching or semantic reasoning via the connected Switch coding agent across polyglot languages (TypeScript, Rust, Go, Python). | **ABSTAIN.** (Never warn on semantic embedding similarity or mere file-path overlap alone). |
 
-### Hard Negatives and Threshold Recalibration:
-- **Hard Negative Filtering:** If a PR modifies syntax for an accepted language feature (e.g. ternary operator `a if b else c`) in the same file where unary `?` was rejected, the verifier checks the actual AST/CST node; file or symbol overlap is insufficient.
-- **Abstention:** Unsupported syntax, parser errors, unknown parser/grammar versions, ambiguous lineage, missing evidence, or incomplete mapping evidence cause abstention.
-- **Calibration Governance:** Candidate-retrieval thresholds are recalibrated only in a versioned offline evaluation using labeled positives, benign refactors, hard negatives, and ambiguous cases. Runtime threshold changes cannot weaken or bypass authorization invariants.
+### Hard Negatives and Polyglot Verification:
+- **Hard Negative Filtering:** If a PR modifies syntax for an accepted language feature (e.g. ternary operator `a if b else c`, or regex optimization in `parser.ts`) in the same file where a construct was rejected, file or symbol overlap is insufficient: the added code must actually re-introduce the prohibited construct.
+- **Polyglot & Multi-Language Support:** For non-Python codebases (e.g. TypeScript/Next.js, Rust, Go), construct equivalence is evaluated against anchor target constructs and verified semantically by the connected Switch reasoning agent.
+- **Abstention:** Ambiguous lineage, missing evidence, or unverified author consensus causes abstention.
 
 ---
 
