@@ -41,6 +41,8 @@ from biscuit.watchdog.types import (
     ACTIVE_ANCHOR_STATES,
     BDFL_ROLE,
     CORE_MAINTAINER_ROLE,
+    LEAD_MAINTAINER_ROLE,
+    PROJECT_OWNER_ROLE,
     WG_CHAIR_ROLE,
     WG_MEMBER_ROLE,
     AuditLogEntry,
@@ -297,8 +299,17 @@ class WarningAuthorizationGate:
                 return "BDFL ruling requires this project's verified BDFL as ruling actor"
             return None
 
+        if alternative.ruling_authority in ("LEAD_MAINTAINER", "PROJECT_OWNER"):
+            leads = active(LEAD_MAINTAINER_ROLE) + active(PROJECT_OWNER_ROLE)
+            if not any(s.contributor_id == actor_id for s in leads):
+                return "ruling author must be a verified Lead Maintainer or Project Owner"
+            return None
+
         if alternative.ruling_authority == "CORE_MAINTAINER_CONSENSUS":
             maintainers = active(CORE_MAINTAINER_ROLE)
+            leads = active(LEAD_MAINTAINER_ROLE) + active(PROJECT_OWNER_ROLE)
+            if any(s.contributor_id == actor_id for s in leads):
+                return None
             if not any(s.contributor_id == actor_id for s in maintainers):
                 return "consensus ruling author must be a verified Core Maintainer"
             if not [s for s in maintainers if s.contributor_id != actor_id]:
@@ -365,23 +376,25 @@ class WarningAuthorizationGate:
         if not active_touched:
             return InvariantCheck(key, False, "no active lineage-resolved anchor to verify against")
 
+        anchor = active_touched[0]
         fingerprints = {
             a.ast_structural_fingerprint
             for a in active_touched
             if a.ast_structural_fingerprint is not None
         }
-        if len(fingerprints) != 1 or (len(active_touched) > 1 and len(fingerprints) > 1):
+        if len(fingerprints) > 1:
             return InvariantCheck(
                 key,
                 False,
                 "ambiguous multiple differing anchor fingerprints; watchdog abstains",
             )
-        if any(a.ast_structural_fingerprint is None for a in active_touched):
+        if anchor.language == "python" and (
+            len(fingerprints) != 1
+            or any(a.ast_structural_fingerprint is None for a in active_touched)
+        ):
             return InvariantCheck(
                 key, False, "anchor lacks a structural fingerprint; cannot verify"
             )
-
-        anchor = active_touched[0]
         analysis = pr_diff.analysis_for(anchor.current_path) or pr_diff.analysis_for(
             anchor.historical_file_path
         )
@@ -391,6 +404,14 @@ class WarningAuthorizationGate:
             )
         if not analysis.parseable:
             if analysis.language != "python":
+                target_token = anchor.symbol_name or anchor.qualified_symbol_name
+                if target_token and target_token in analysis.added_text:
+                    return InvariantCheck(
+                        key,
+                        True,
+                        f"prohibited construct '{target_token}' of the rejected alternative "
+                        "is reintroduced in the added code",
+                    )
                 return InvariantCheck(
                     key,
                     False,
@@ -402,12 +423,28 @@ class WarningAuthorizationGate:
                 False,
                 "added fragment is unparseable; watchdog abstains rather than guess",
             )
-        if anchor.ast_structural_fingerprint in analysis.subtree_fingerprints:
+        if anchor.ast_structural_fingerprint:
+            if anchor.ast_structural_fingerprint in analysis.subtree_fingerprints:
+                return InvariantCheck(
+                    key,
+                    True,
+                    "masked-AST subtree fingerprint of the rejected construct is "
+                    "present in the added code",
+                )
+            return InvariantCheck(
+                key,
+                False,
+                "added code is not structurally equivalent to the rejected construct "
+                "(possible benign refactor or hard negative); file/symbol overlap is "
+                "insufficient",
+            )
+        target_token = anchor.symbol_name or anchor.qualified_symbol_name
+        if target_token and target_token in analysis.added_text:
             return InvariantCheck(
                 key,
                 True,
-                "masked-AST subtree fingerprint of the rejected construct is "
-                "present in the added code",
+                f"prohibited construct '{target_token}' of the rejected alternative "
+                "is reintroduced in the added code",
             )
         return InvariantCheck(
             key,

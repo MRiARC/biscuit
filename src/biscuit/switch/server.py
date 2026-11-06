@@ -22,6 +22,7 @@ produces an approval request card payload for Switch.
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from collections.abc import Callable
@@ -68,7 +69,8 @@ class QueryDecisionsParams(BaseModel):
 
     query_text: str = Field(description="Natural language question about past decisions")
     repository_context: str = Field(
-        default="python/cpython", description="Target repository context"
+        default_factory=lambda: os.getenv("BISCUIT_PROJECT_CONTEXT", "python/cpython"),
+        description="Target repository context",
     )
     top_k: int = Field(default=3, ge=1, le=25, description="Number of decisions to retrieve")
 
@@ -281,6 +283,65 @@ class FastMCPServer:
             commit_sha=sha,
             execution_mode=mode,
         )
+        directional_guidance = None
+        if result.candidate_evaluations:
+            top_eval = next(
+                (e for e in result.candidate_evaluations if e.authorized),
+                result.candidate_evaluations[0],
+            )
+            store = getattr(self.gate, "_store", getattr(self.gate, "store", None)) or getattr(
+                self.retriever, "_store", None
+            )
+            alt = (
+                store.get_alternative(top_eval.alternative_id)
+                if (store and hasattr(store, "get_alternative"))
+                else None
+            )
+            dec = (
+                store.get_decision(alt.decision_id)
+                if (alt and store and hasattr(store, "get_decision"))
+                else None
+            )
+            anchor = alt.anchors[0] if (alt and alt.anchors) else None
+            ruling_span = (
+                store.get_evidence_span(alt.ruling_evidence_id)
+                if (alt and alt.ruling_evidence_id and store and hasattr(store, "get_evidence_span"))
+                else None
+            )
+
+            quote = ruling_span.exact_quote if ruling_span else ""
+            author = ruling_span.author_handle if ruling_span else ""
+            url = ruling_span.permalink if ruling_span else ""
+            authority = alt.ruling_authority if alt else "CORE_MAINTAINER_CONSENSUS"
+            rejection_text = (
+                alt.rejection_summary if (alt and alt.rejection_summary) else top_eval.proposal_text
+            )
+            prohibited = anchor.qualified_symbol_name if anchor else top_eval.proposal_text
+
+            directional_guidance = {
+                "verdict": result.verdict.value,
+                "decision_id": dec.id if dec else (alt.decision_id if alt else None),
+                "decision_title": dec.title if dec else "Architectural Decision",
+                "prohibited_construct": prohibited,
+                "anchor_path": anchor.current_path if anchor else None,
+                "authoritative_ruling": {
+                    "quote": quote,
+                    "author": author,
+                    "authority": authority,
+                    "url": url,
+                },
+                "contradiction_analysis": (
+                    f"The PR diff reintroduces '{anchor.symbol_name if anchor else prohibited}', "
+                    f"which was previously rejected: {rejection_text}"
+                ),
+                "tradeoffs": {
+                    "rejected_approach": rejection_text,
+                    "accepted_approach": "Alternative approved by maintainer consensus",
+                },
+                "accepted_alternative": (alt.rejection_category if alt else None)
+                or "Approved Architectural Solution",
+            }
+
         return {
             "repository_url": params.repository_url,
             "pr_number": params.pr_number,
@@ -304,6 +365,7 @@ class FastMCPServer:
                 }
                 for evaluation in result.candidate_evaluations
             ],
+            "directional_guidance": directional_guidance,
             "comment_markdown": result.comment_markdown,
             "hitl_card": result.hitl_card_payload,
             "audit": result.to_audit_entry().to_json_dict(),

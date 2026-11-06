@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -285,7 +286,7 @@ class QueryDecisionsInput:
     """``query_decisions`` MCP tool input."""
 
     query_text: str
-    repository_context: str = "python/cpython"
+    repository_context: str = os.getenv("BISCUIT_PROJECT_CONTEXT", "python/cpython")
     top_k: int = 3
 
 

@@ -172,10 +172,15 @@ def split_sql_statements(sql: str) -> list[str]:
 def get_database_url() -> str:
     """Retrieve database URL from environment or return default SQLite memory URL.
 
-    Accepts BISCUIT_TEST_PG_DSN (Issue #17) as an alias for DATABASE_URL so local
-    integration tests and CI (TEST_POSTGRES_URL) share one resolution path.
+    Accepts SWITCH_DATABASE_URL and BISCUIT_TEST_PG_DSN as aliases for DATABASE_URL
+    so local integration tests, Switch shared Postgres, and CI share one resolution path.
     """
-    return os.getenv("DATABASE_URL") or os.getenv("BISCUIT_TEST_PG_DSN") or DEFAULT_SQLITE_URL
+    return (
+        os.getenv("DATABASE_URL")
+        or os.getenv("SWITCH_DATABASE_URL")
+        or os.getenv("BISCUIT_TEST_PG_DSN")
+        or DEFAULT_SQLITE_URL
+    )
 
 
 def get_engine(db_url: str | None = None, echo: bool = False):

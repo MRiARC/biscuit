@@ -12,7 +12,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from .normalizer import NORMALIZATION_VERSION
+NORMALIZATION_VERSION = "python-ast-mask-v3-comp-scoped"
+
+
+class ParseError(ValueError):
+    """Raised when source cannot be parsed into code symbols."""
+
+
+class ParserUnavailable(RuntimeError):
+    """Raised when a language parser backend is unavailable."""
 
 
 class AnchorState(str, Enum):

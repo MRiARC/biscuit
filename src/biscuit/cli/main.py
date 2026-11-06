@@ -26,15 +26,20 @@ def _resolve_db_url(db_url: str | None, local_db: Path | None = None) -> str | N
     """Resolve an authoritative database URL for the CLI commands that support it.
 
     Priority: explicit ``--db-url`` option, then ``DATABASE_URL``, then
-    ``BISCUIT_TEST_PG_DSN`` (the CI alias). When the user explicitly passes
-    ``--db`` (a local SQLite path), we honour that and return ``None`` so the
-    local cache is used — explicit user intent beats env-var defaults.
-    Returns ``None`` when no authoritative store is configured; the local
-    SQLite cache is then the documented fallback for offline use.
+    ``SWITCH_DATABASE_URL``, then ``BISCUIT_TEST_PG_DSN`` (the CI alias).
+    When the user explicitly passes ``--db`` (a local SQLite path), we honour
+    that and return ``None`` so the local cache is used — explicit user intent
+    beats env-var defaults. Returns ``None`` when no authoritative store is
+    configured; the local SQLite cache is then the documented fallback for offline use.
     """
     if local_db is not None:
         return None
-    return db_url or os.getenv("DATABASE_URL") or os.getenv("BISCUIT_TEST_PG_DSN")
+    return (
+        db_url
+        or os.getenv("DATABASE_URL")
+        or os.getenv("SWITCH_DATABASE_URL")
+        or os.getenv("BISCUIT_TEST_PG_DSN")
+    )
 
 
 def _list_decisions_from_store(db_url: str, status: str | None) -> list[dict]:
@@ -396,12 +401,20 @@ if typer is not None:
         db: Path | None = typer.Option(None, "--db"),  # noqa: B008
         output_thread: Path | None = typer.Option(None, "--output-thread"),  # noqa: B008
     ) -> None:
-        """Ingest a complete Discourse topic snapshot into the local SQLite cache."""
-        if platform.lower() != "discourse":
-            typer.echo("Only Discourse ingestion is supported in this workstream", err=True)
-            raise typer.Exit(2)
+        """Ingest a discussion thread into the local cache or store."""
+        plat = platform.lower()
         try:
-            count = ingest_discourse(url, db or _default_db(), output_thread=output_thread)
+            if plat in ("github", "gh"):
+                from biscuit.ingest.github import GitHubAdapter
+
+                adapter = GitHubAdapter()
+                thread = adapter.fetch(url)
+                count = len(thread.messages)
+                if output_thread is not None:
+                    output_thread.parent.mkdir(parents=True, exist_ok=True)
+                    output_thread.write_text(thread.model_dump_json(indent=2), encoding="utf-8")
+            else:
+                count = ingest_discourse(url, db or _default_db(), output_thread=output_thread)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             typer.echo(f"Ingestion failed: {exc}", err=True)
             raise typer.Exit(1) from exc
@@ -625,8 +638,6 @@ if typer is not None:
             f"candidates={len(result.candidate_evaluations)} "
             f"authorized={len(result.authorized_alternative_ids)}"
         )
-        if result.verdict.value != "WARNING_AUTHORIZED":
-            raise typer.Exit(2)
 
 else:
     app = None

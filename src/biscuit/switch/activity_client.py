@@ -22,6 +22,7 @@ without a live Switch host.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Protocol
 
 from biscuit.switch.types import (
@@ -30,7 +31,7 @@ from biscuit.switch.types import (
     HITLApprovalRequest,
 )
 
-DEFAULT_BASE_URL = "http://switch.local:8787"
+DEFAULT_BASE_URL = os.getenv("SWITCH_BASE_URL", "http://localhost:8000")
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
 
