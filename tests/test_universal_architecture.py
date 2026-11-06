@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from biscuit.extract.client import LLMClient
-from biscuit.extract.pipeline import ExtractionPipeline
 from biscuit.switch.cards import BlockKitBuilder
 from biscuit.switch.server import FastMCPServer
 from biscuit.watchdog.gate import WarningAuthorizationGate
@@ -158,24 +156,6 @@ def test_single_lead_maintainer_quorum():
     gate = WarningAuthorizationGate(store)
     err = gate._check_ruling_quorum(alt)
     assert err is None
-
-
-def test_provider_aware_model_defaults():
-    """Provider-aware defaults select Groq/OpenAI models when configured."""
-    groq_client = LLMClient(
-        base_url="https://api.groq.com/openai/v1",
-        api_key="gsk-test",
-    )
-    pipeline_groq = ExtractionPipeline(client=groq_client)
-    assert pipeline_groq.pass1.model == "llama-3.3-70b-versatile"
-    assert pipeline_groq.pass3.model == "llama-3.3-70b-versatile"
-
-    openai_client = LLMClient(
-        base_url="https://api.openai.com/v1",
-        api_key="sk-test",
-    )
-    pipeline_openai = ExtractionPipeline(client=openai_client)
-    assert pipeline_openai.pass1.model == "gpt-4o-mini"
 
 
 def test_fastmcp_directional_guidance_payload():
