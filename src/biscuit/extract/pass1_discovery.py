@@ -4,11 +4,14 @@ Extracts distinct technical proposals from open-source discussion threads.
 """
 
 import json
+import os
 import re
 
-from biscuit.extract.client import LocalLLMClient
+from biscuit.extract.client import LLMClient, LocalLLMClient
 from biscuit.extract.prompts import PASS1_PROPOSAL_DISCOVERY_PROMPT
 from biscuit.extract.types import ProposalCandidate
+
+DEFAULT_PASS1_MODEL = "llama3.2:3b"
 
 
 def _clean_json_response(raw_text: str) -> str:
@@ -28,13 +31,20 @@ class Pass1ProposalDiscovery:
     """
 
     def __init__(
-        self, client: LocalLLMClient, model: str = "llama3.2:3b",
+        self,
+        client: LLMClient | LocalLLMClient,
+        model: str | None = None,
         chunk_word_limit: int = 1400,
     ):
         if chunk_word_limit < 1:
             raise ValueError("chunk_word_limit must be positive")
         self.client = client
-        self.model = model
+        self.model = (
+            model
+            or os.getenv("BISCUIT_PASS1_MODEL")
+            or os.getenv("BISCUIT_LLM_MODEL")
+            or DEFAULT_PASS1_MODEL
+        )
         self.chunk_word_limit = chunk_word_limit
 
     def _chunks(self, thread_text: str) -> list[str]:
@@ -49,7 +59,7 @@ class Pass1ProposalDiscovery:
         for block in blocks:
             words = block.split()
             for offset in range(0, len(words), self.chunk_word_limit):
-                segment_words = words[offset:offset + self.chunk_word_limit]
+                segment_words = words[offset : offset + self.chunk_word_limit]
                 segment = " ".join(segment_words)
                 if count + len(segment_words) > self.chunk_word_limit and current:
                     chunks.append("\n".join(current))
@@ -119,7 +129,8 @@ class Pass1ProposalDiscovery:
                 candidates.append(
                     ProposalCandidate(
                         proposal_id=(
-                            str(proposal["proposal_id"]) if len(chunks) == 1
+                            str(proposal["proposal_id"])
+                            if len(chunks) == 1
                             else f"P{len(candidates) + 1}"
                         ),
                         name=name,

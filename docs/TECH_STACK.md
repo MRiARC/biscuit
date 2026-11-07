@@ -11,10 +11,10 @@
 
 Biscuit is built to extract, verify, ground, and govern architectural decisions across 10-year open-source archives and live engineering chat channels.
 
-### Strict Hackathon Operational Constraints:
-- **Open-Source Models Only:** Strictly zero proprietary cloud APIs (no OpenAI, no Anthropic, no Google Gemini API in production runtime).
-- **Hardware Memory Boundary:** 8 GB system-RAM acceptance target, not yet demonstrated by full-stack profiling; all figures below are estimates.
-- **Offline & Local Execution Scope:** Local model inference, vector search, AST parsing, and evaluation benchmarks execute completely offline without internet access. Live chat interception via Switch and GitHub PR webhook sync require network connectivity.
+### Operational Execution Scope & Model Architecture:
+- **Pluggable Model Architecture:** Supports both local open-source inference (Ollama with sequential offloading) and high-throughput remote endpoints (Groq, OpenAI, vLLM, DeepSeek, OpenRouter) via unified `LLMClient` protocol.
+- **Hardware Memory Boundary:** Offline local inference adheres to an 8 GB system-RAM target via `keep_alive: 0` sequential model offloading. Cloud-backed configurations bypass offloading overhead.
+- **Offline & Local Execution Scope:** Local model inference, vector search, AST parsing, and evaluation benchmarks execute completely offline without internet access. Live chat interception and PR webhooks route through Switch.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐

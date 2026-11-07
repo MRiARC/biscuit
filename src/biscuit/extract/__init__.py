@@ -2,7 +2,7 @@
 Biscuit Extract Module: 4-Pass Local LLM Extraction Pipeline.
 """
 
-from .client import LocalLLMClient
+from .client import LLMClient, LocalLLMClient
 from .pass1_discovery import Pass1ProposalDiscovery
 from .pass2_slicing import Pass2DeliberationSlicing
 from .pass3_arguments import Pass3ArgumentMining
@@ -31,6 +31,7 @@ __all__ = [
     "ExtractedMADR",
     "ExtractionPipeline",
     "ExtractionRunResult",
+    "LLMClient",
     "LocalLLMClient",
     "Pass1ProposalDiscovery",
     "Pass2DeliberationSlicing",

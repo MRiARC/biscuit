@@ -6,13 +6,16 @@ and validates all claimed rulings against actual message author project roles.
 """
 
 import json
+import os
 import re
 from typing import Any
 
-from biscuit.extract.client import LocalLLMClient
+from biscuit.extract.client import LLMClient, LocalLLMClient
 from biscuit.extract.prompts import PASS3_ARGUMENT_MINING_PROMPT
 from biscuit.extract.types import ArgumentClassification, DeliberationPacket
 from biscuit.provenance.types import EvidenceStance
+
+DEFAULT_PASS3_MODEL = "phi3.5"
 
 # Authorized ruling authorities per docs/STORAGE_AND_RETRIEVAL.md and docs/INGESTION_AND_EXTRACTION.md
 AUTHORIZED_RULING_ROLE_MAP = {
@@ -124,9 +127,18 @@ class Pass3ArgumentMining:
     Uses Phi-3.5 mini instruct with keep_alive: 0.
     """
 
-    def __init__(self, client: LocalLLMClient, model: str = "phi3.5"):
+    def __init__(
+        self,
+        client: LLMClient | LocalLLMClient,
+        model: str | None = None,
+    ):
         self.client = client
-        self.model = model
+        self.model = (
+            model
+            or os.getenv("BISCUIT_PASS3_MODEL")
+            or os.getenv("BISCUIT_LLM_MODEL")
+            or DEFAULT_PASS3_MODEL
+        )
 
     def mine_arguments(self, packet: DeliberationPacket) -> list[ArgumentClassification]:
         """
