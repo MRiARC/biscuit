@@ -1,9 +1,7 @@
 """Unit and integration tests for universal ingestion adapters and versioning."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
 
-import httpx
 import pytest
 from sqlmodel import Session, create_engine, select
 
@@ -14,10 +12,8 @@ from biscuit.db.session import (
     init_db,
 )
 from biscuit.ingest import (
-    DiscourseAdapter,
     GitHubAdapter,
     IngestService,
-    MboxAdapter,
     clean_derived_content,
     compute_sha256,
     is_bot_message,
@@ -87,109 +83,39 @@ def test_cleaner_transformations():
     assert is_bot_message("gvanrossum", "I propose we reject this syntax.") is False
 
 
-def test_discourse_adapter():
-    """Test Discourse JSON payload parsing into RawThreadPayload."""
-    adapter = DiscourseAdapter()
-    payload = {
-        "id": 5050,
-        "title": "Discussion on None-aware operators",
-        "slug": "discussion-on-none-aware-operators",
-        "post_stream": {
-            "posts": [
-                {
-                    "id": 101,
-                    "post_number": 1,
-                    "user_id": 42,
-                    "username": "gvanrossum",
-                    "name": "Guido van Rossum",
-                    "created_at": "2023-01-10T14:30:00.000Z",
-                    "raw": "I propose we reconsider PEP 505.\r\nIt would be very helpful.",
-                },
-                {
-                    "id": 102,
-                    "post_number": 2,
-                    "reply_to_post_number": 1,
-                    "user_id": 99,
-                    "username": "markshannon",
-                    "name": "Mark Shannon",
-                    "created_at": "2023-01-10T15:00:00.000Z",
-                    "raw": "The syntax creates ambiguities in the parser grammar.",
-                },
-            ]
-        },
-    }
-
-    thread_payload = adapter.parse_payload(
-        data=payload,
-        project_context="python/cpython",
-        base_url="https://discuss.python.org",
+def test_universal_payload_ingest():
+    """Test universal thread payload representation."""
+    now = datetime.now(UTC)
+    p1 = RawMessagePayload(
+        external_message_id="msg_001",
+        author_platform_id="u_001",
+        author_handle="alice",
+        author_name="Alice Contributor",
+        original_timestamp=now,
+        canonical_permalink="https://github.com/MRIARC-08/DevLens/pull/100#issuecomment-1",
+        raw_content="I propose an alternative.",
     )
-
-    assert thread_payload.source_platform == PlatformType.DISCOURSE
-    assert thread_payload.project_context == "python/cpython"
-    assert thread_payload.external_thread_id == "topic_5050"
-    assert len(thread_payload.messages) == 2
-
-    # Post 1
-    p1 = thread_payload.messages[0]
-    assert p1.external_message_id == "post_101"
-    assert p1.author_handle == "gvanrossum"
-    assert p1.author_name == "Guido van Rossum"
-    assert p1.parent_message_id is None
-    assert "\r\n" in p1.raw_content  # Wire bytes untouched
-
-    # Post 2
-    p2 = thread_payload.messages[1]
-    assert p2.external_message_id == "post_102"
-    assert p2.author_handle == "markshannon"
-    assert p2.parent_message_id == "post_101"
-
-
-def test_mbox_adapter():
-    """Test RFC-822 email payload parsing."""
-    adapter = MboxAdapter()
-    email_text = (
-        "From: Guido van Rossum <guido@python.org>\n"
-        "To: python-dev@python.org\n"
-        "Subject: [Python-Dev] Re: PEP 505: None-aware operators\n"
-        "Date: Mon, 15 Jan 2024 10:00:00 +0000\n"
-        "Message-ID: <msg_001@mail.python.org>\n"
-        "\n"
-        "I am rejecting this proposal due to syntactic ambiguity.\n"
+    p2 = RawMessagePayload(
+        external_message_id="msg_002",
+        author_platform_id="u_002",
+        author_handle="bob",
+        author_name="Bob Maintainer",
+        original_timestamp=now,
+        canonical_permalink="https://github.com/MRIARC-08/DevLens/pull/100#issuecomment-2",
+        raw_content="This violates performance constraints.",
+        parent_message_id="msg_001",
     )
-
-    thread_payload = adapter.parse_payload(
-        data=email_text,
-        project_context="python/cpython",
+    thread = RawThreadPayload(
+        source_platform=PlatformType.GITHUB_PR,
+        project_context="MRIARC-08/DevLens",
+        external_thread_id="pr_100",
+        title="Optimization Proposal",
+        canonical_url="https://github.com/MRIARC-08/DevLens/pull/100",
+        messages=[p1, p2],
     )
-
-    assert thread_payload.source_platform == PlatformType.MBOX
-    assert thread_payload.title == "PEP 505: None-aware operators"
-    assert len(thread_payload.messages) == 1
-
-    msg = thread_payload.messages[0]
-    assert msg.external_message_id == "msg_001@mail.python.org"
-    assert msg.author_handle == "guido"
-    assert msg.author_name == "Guido van Rossum"
-    assert "rejecting this proposal" in msg.raw_content
-
-    # Test multipart and mbox From envelope
-    multipart_mbox = (
-        "From guido@python.org Mon Jan 15 10:00:00 2024\n"
-        "From: Guido van Rossum <guido@python.org>\n"
-        "Subject: Multipart Test\n"
-        "MIME-Version: 1.0\n"
-        "Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\n"
-        "\n"
-        "--BOUNDARY\n"
-        "Content-Type: text/plain; charset=utf-8\n"
-        "\n"
-        "Plain text body part.\n"
-        "--BOUNDARY--\n"
-    )
-    mp_payload = adapter.parse_payload(multipart_mbox, project_context="python/cpython")
-    assert len(mp_payload.messages) == 1
-    assert "Plain text body part." in mp_payload.messages[0].raw_content
+    assert thread.project_context == "MRIARC-08/DevLens"
+    assert len(thread.messages) == 2
+    assert thread.messages[1].parent_message_id == "msg_001"
 
 
 def test_github_adapter():
@@ -466,153 +392,6 @@ def test_remote_deletion_tombstone():
     assert res2.unchanged_count == 1
 
 
-def test_discourse_pagination_and_stream():
-    """Verify DiscourseAdapter correctly detects un-fetched stream IDs and incorporates additional posts."""
-    adapter = DiscourseAdapter()
-    data = {
-        "id": 9999,
-        "title": "Long Paginated Topic",
-        "slug": "long-topic",
-        "post_stream": {
-            "posts": [
-                {"id": 1, "post_number": 1, "user_id": 1, "username": "alice", "raw": "Post 1"},
-                {"id": 2, "post_number": 2, "user_id": 2, "username": "bob", "raw": "Post 2", "reply_to_post_number": 1},
-            ],
-            "stream": [1, 2, 3, 4],
-        },
-    }
-
-    additional_posts = [
-        {"id": 3, "post_number": 3, "user_id": 3, "username": "carol", "raw": "Post 3", "reply_to_post_number": 2},
-        {"id": 4, "post_number": 4, "user_id": 4, "username": "dave", "raw": "Post 4", "deleted_at": "2023-01-01T00:00:00Z"},
-    ]
-
-    payload = adapter.parse_payload(
-        data=data,
-        project_context="python/cpython",
-        additional_posts=additional_posts,
-    )
-
-    assert len(payload.messages) == 4
-    assert payload.messages[0].external_message_id == "post_1"
-    assert payload.messages[1].external_message_id == "post_2"
-    assert payload.messages[1].parent_message_id == "post_1"
-    assert payload.messages[2].external_message_id == "post_3"
-    assert payload.messages[2].parent_message_id == "post_2"
-    assert payload.messages[3].is_deleted is True
-
-
-def test_mbox_byte_level_non_utf8():
-    """Verify MboxAdapter parses non-UTF-8 bytes without destructive pre-decoding."""
-    adapter = MboxAdapter()
-    raw_email_bytes = (
-        b"From: Author <author@example.com>\n"
-        b"Subject: Non-UTF8 Message\n"
-        b"Message-ID: <non_utf8_001@example.com>\n"
-        b"Content-Type: text/plain; charset=latin-1\n"
-        b"\n"
-        b"Character in Latin-1: \xe9\n"
-    )
-
-    thread = adapter.parse_payload(raw_email_bytes, project_context="test/repo")
-    assert len(thread.messages) == 1
-    assert "\xe9" in thread.messages[0].raw_content
-
-
-def test_discourse_hidden_post_not_marked_deleted():
-    """Verify that a moderated/hidden Discourse post is not marked as deleted, but preserves hidden metadata."""
-    adapter = DiscourseAdapter()
-    data = {
-        "id": 101,
-        "title": "Moderated Topic",
-        "slug": "moderated-topic",
-        "post_stream": {
-            "posts": [
-                {
-                    "id": 11,
-                    "post_number": 1,
-                    "user_id": 1,
-                    "username": "mod_user",
-                    "raw": "Flagged under review",
-                    "hidden": True,
-                },
-                {
-                    "id": 12,
-                    "post_number": 2,
-                    "user_id": 2,
-                    "username": "del_user",
-                    "raw": "Deleted post",
-                    "deleted_at": "2024-01-01T00:00:00Z",
-                    "hidden": True,
-                },
-            ],
-            "stream": [11, 12],
-        },
-    }
-    payload = adapter.parse_payload(data=data, project_context="python/cpython")
-    assert len(payload.messages) == 2
-
-    # Post 1: Hidden but not deleted
-    msg1 = payload.messages[0]
-    assert msg1.is_deleted is False
-    assert msg1.metadata.get("hidden") is True
-
-    # Post 2: Deleted (has deleted_at)
-    msg2 = payload.messages[1]
-    assert msg2.is_deleted is True
-    assert msg2.metadata.get("hidden") is True
-
-
-def test_discourse_internal_client_pagination_with_mock(monkeypatch):
-    """Verify DiscourseAdapter uses managed internal HTTP client when client=None and base_url is supplied."""
-    adapter = DiscourseAdapter()
-    data = {
-        "id": 500,
-        "title": "Paginated Topic",
-        "slug": "paginated-topic",
-        "post_stream": {
-            "posts": [
-                {"id": 100, "post_number": 1, "user_id": 1, "username": "alice", "raw": "Initial post"},
-            ],
-            "stream": [100, 200, 300],
-        },
-    }
-
-    def mock_get(url, *args, **kwargs):
-        params = kwargs.get("params", [])
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        pids = [val for key, val in params if key == "post_ids[]"]
-        posts = [
-            {
-                "id": pid,
-                "post_number": pid // 100,
-                "user_id": pid // 100,
-                "username": f"user_{pid}",
-                "raw": f"Post {pid}",
-            }
-            for pid in pids
-        ]
-        mock_response.json.return_value = {"post_stream": {"posts": posts}}
-        return mock_response
-
-    monkeypatch.setattr(httpx.Client, "get", mock_get)
-    payload = adapter.parse_payload(
-        data=data,
-        project_context="python/cpython",
-        base_url="https://forum.example.com",
-        chunk_size=1,
-    )
-
-    # Assert every stream ID is accounted for across multiple chunks
-    assert len(payload.messages) == 3
-    assert payload.messages[0].external_message_id == "post_100"
-    assert payload.messages[1].external_message_id == "post_200"
-    assert payload.messages[2].external_message_id == "post_300"
-
-    # Also verify that missing IDs without client or base_url raises ValueError
-    with pytest.raises(ValueError, match="neither an HTTP client nor a valid base_url"):
-        adapter.parse_payload(data=data, project_context="python/cpython", base_url="")
 
 
 def test_live_to_deleted_to_restored_lifecycle():
@@ -880,158 +659,7 @@ async def test_noise_suppression_async_path():
         assert result2.first().derived_cleaned_content == ""
 
 
-def test_discourse_partial_response_raises_on_missing_ids():
-    """A partial 200 response that cannot return all stream IDs fails closed."""
-    adapter = DiscourseAdapter()
-    payload = {
-        "id": 900,
-        "title": "Partial topic",
-        "slug": "partial",
-        "post_stream": {
-            "stream": [100, 200, 300],
-            "posts": [
-                {"id": 100, "post_number": 1, "raw": "first"},
-                {"id": 200, "post_number": 2, "raw": "second"},
-                # 300 never returned
-            ],
-        },
-    }
 
-    class _PartialClient(httpx.Client):
-        def get(self, url, params=None):
-            class _Resp:
-                def raise_for_status(self):
-                    pass
-
-                def json(self):
-                    # Server returns only post 200 despite being asked for 300
-                    return {"post_stream": {"posts": [{"id": 200, "post_number": 2}]}}
-
-            return _Resp()
-
-    from biscuit.ingest.discourse import DiscourseIncompletenessError
-
-    with pytest.raises(DiscourseIncompletenessError):
-        adapter.parse_payload(
-            data=payload,
-            project_context="python/cpython",
-            base_url="https://discuss.python.org",
-            client=_PartialClient(),
-        )
-
-
-def test_discourse_partial_response_non_strict_records_unavailable():
-    """Non-strict mode records unavailable post IDs explicitly instead of raising."""
-    adapter = DiscourseAdapter()
-    payload = {
-        "id": 901,
-        "title": "Partial topic 2",
-        "slug": "partial2",
-        "post_stream": {
-            "stream": [10, 20, 30],
-            "posts": [{"id": 10, "post_number": 1, "raw": "only one"}],
-        },
-    }
-
-    class _PartialClient(httpx.Client):
-        def get(self, url, params=None):
-            class _Resp:
-                def raise_for_status(self):
-                    pass
-
-                def json(self):
-                    return {"post_stream": {"posts": [{"id": 20, "post_number": 2}]}}
-
-            return _Resp()
-
-    thread = adapter.parse_payload(
-        data=payload,
-        project_context="python/cpython",
-        base_url="https://discuss.python.org",
-        client=_PartialClient(),
-        strict_completeness=False,
-    )
-    assert thread.ingestion_metadata["unavailable_post_ids"] == [30]
-    assert len(thread.messages) == 2
-
-
-def test_discourse_raw_vs_cooked_provenance():
-    """raw is used even when empty; cooked fallback is recorded in metadata."""
-    adapter = DiscourseAdapter()
-    payload = {
-        "id": 910,
-        "title": "Provenance topic",
-        "slug": "prov",
-        "post_stream": {
-            "posts": [
-                {"id": 1, "post_number": 1, "raw": "**raw** markdown"},
-                {"id": 2, "post_number": 2, "raw": ""},
-                {"id": 3, "post_number": 3, "cooked": "<p>rendered</p>"},
-            ]
-        },
-    }
-    thread = adapter.parse_payload(
-        data=payload, project_context="python/cpython", base_url="https://discuss.python.org"
-    )
-    m1, m2, m3 = thread.messages
-    assert m1.raw_content == "**raw** markdown"
-    assert m1.metadata["content_representation"] == "raw"
-    # Empty raw string is still "raw present" — no cooked substitution.
-    assert m2.raw_content == ""
-    assert m2.metadata["content_representation"] == "raw"
-    # cooked only when raw key is genuinely absent, and marked as such.
-    assert m3.raw_content == "<p>rendered</p>"
-    assert m3.metadata["content_representation"] == "cooked"
-    assert thread.ingestion_metadata["contains_cooked_only_posts"] is True
-
-
-def test_discourse_url_entrypoint_parses_and_enforces_host_policy():
-    """URL entrypoint extracts topic id; foreign hosts are rejected."""
-    adapter = DiscourseAdapter()
-    base, topic_id = adapter.parse_topic_url(
-        "https://discuss.python.org/t/none-aware-operators/1234/7"
-    )
-    assert base == "https://discuss.python.org"
-    assert topic_id == "1234"
-
-    with pytest.raises(ValueError, match="not in the allowed hosts"):
-        adapter.parse_topic_url("https://evil.example.com/t/1234")
-
-    with pytest.raises(ValueError, match="does not match"):
-        adapter.parse_topic_url("https://discuss.python.org/u/someuser")
-
-
-def test_discourse_fetch_topic_from_url_mock():
-    """fetch_topic_from_url retrieves /t/{id}.json and feeds the canonical path."""
-    adapter = DiscourseAdapter()
-    topic_json = {
-        "id": 555,
-        "title": "URL Topic",
-        "slug": "url-topic",
-        "post_stream": {"stream": [1], "posts": [{"id": 1, "post_number": 1, "raw": "hi"}]},
-    }
-
-    class _MockClient(httpx.Client):
-        def get(self, url, params=None):
-            assert url == "https://discuss.python.org/t/555.json"
-
-            class _Resp:
-                def raise_for_status(self):
-                    pass
-
-                def json(self):
-                    return topic_json
-
-            return _Resp()
-
-    data = adapter.fetch_topic_from_url(
-        "https://discuss.python.org/t/url-topic/555", client=_MockClient()
-    )
-    thread = adapter.parse_payload(
-        data=data, project_context="python/cpython", base_url="https://discuss.python.org"
-    )
-    assert thread.external_thread_id == "topic_555"
-    assert len(thread.messages) == 1
 
 
 def test_github_native_rest_shapes():
@@ -1122,80 +750,6 @@ def test_github_legacy_comments_still_work():
     assert any(m.external_message_id == "comment_77" for m in thread.messages)
 
 
-def test_mbox_multi_conversation_partitioning():
-    """Interleaved two-conversation archive splits into separate threads."""
-    adapter = MboxAdapter()
-    mbox_bytes = (
-        b"From a@example.org Mon Jan 01 10:00:00 2020\n"
-        b"Message-ID: <conv-a-root@example.org>\n"
-        b"Subject: [Python-Dev] Conversation A\n"
-        b"From: Alice <alice@example.org>\n"
-        b"Date: Mon, 01 Jan 2020 10:00:00 +0000\n"
-        b"\n"
-        b"Root of conversation A\n"
-        b"\n"
-        b"From b@example.org Mon Jan 01 11:00:00 2020\n"
-        b"Message-ID: <conv-b-root@example.org>\n"
-        b"Subject: [Python-Dev] Conversation B\n"
-        b"From: Bob <bob@example.org>\n"
-        b"Date: Mon, 01 Jan 2020 11:00:00 +0000\n"
-        b"\n"
-        b"Root of conversation B\n"
-        b"\n"
-        b"From c@example.org Mon Jan 01 12:00:00 2020\n"
-        b"Message-ID: <conv-a-reply@example.org>\n"
-        b"In-Reply-To: <conv-a-root@example.org>\n"
-        b"Subject: Re: [Python-Dev] Conversation A\n"
-        b"From: Carol <carol@example.org>\n"
-        b"Date: Mon, 01 Jan 2020 12:00:00 +0000\n"
-        b"\n"
-        b"Reply in conversation A\n"
-    )
-    threads = adapter.parse_archive(mbox_bytes, "python/cpython")
-    assert len(threads) == 2
-
-    by_id = {t.external_thread_id: t for t in threads}
-    assert "conv-a-root@example.org" in by_id
-    assert "conv-b-root@example.org" in by_id
-    assert len(by_id["conv-a-root@example.org"].messages) == 2
-    assert len(by_id["conv-b-root@example.org"].messages) == 1
-
-
-def test_mbox_references_resolves_immediate_parent():
-    """Deep reply chains point at their direct parent, not the thread root."""
-    adapter = MboxAdapter()
-    mbox_bytes = (
-        b"From a@example.org Mon Jan 01 10:00:00 2020\n"
-        b"Message-ID: <r1@example.org>\n"
-        b"Subject: Chain\n"
-        b"From: Alice <alice@example.org>\n"
-        b"Date: Mon, 01 Jan 2020 10:00:00 +0000\n"
-        b"\n"
-        b"Root\n"
-        b"\n"
-        b"From b@example.org Mon Jan 01 11:00:00 2020\n"
-        b"Message-ID: <r2@example.org>\n"
-        b"In-Reply-To: <r1@example.org>\n"
-        b"Subject: Re: Chain\n"
-        b"From: Bob <bob@example.org>\n"
-        b"Date: Mon, 01 Jan 2020 11:00:00 +0000\n"
-        b"\n"
-        b"First reply\n"
-        b"\n"
-        b"From c@example.org Mon Jan 01 12:00:00 2020\n"
-        b"Message-ID: <r3@example.org>\n"
-        b"References: <r1@example.org>\n"
-        b" <r2@example.org>\n"
-        b"Subject: Re: Chain\n"
-        b"From: Carol <carol@example.org>\n"
-        b"Date: Mon, 01 Jan 2020 12:00:00 +0000\n"
-        b"\n"
-        b"Second reply (folded References)\n"
-    )
-    thread = adapter.parse_payload(mbox_bytes, "python/cpython")
-    by_id = {m.external_message_id: m for m in thread.messages}
-    # Folded multi-ID References: immediate parent is r2, not the root r1.
-    assert by_id["r3@example.org"].parent_message_id == "r2@example.org"
 
 
 def test_thread_metadata_refreshed_on_reingestion():

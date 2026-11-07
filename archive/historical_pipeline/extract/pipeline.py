@@ -157,23 +157,42 @@ class ExtractionPipeline:
         audit_writer: AuditWriter | None = None,
     ):
         self.client = client or LLMClient()
+
+        # Determine smart provider-aware defaults
+        is_openai_mode = getattr(self.client, "is_openai_compatible", False) or getattr(
+            self.client, "provider", ""
+        ) == "openai"
+        client_url = (getattr(self.client, "base_url", "") or "").lower()
+
+        if is_openai_mode:
+            if "groq.com" in client_url:
+                default_p1 = default_p3 = default_p4 = "llama-3.3-70b-versatile"
+            elif "anthropic.com" in client_url:
+                default_p1 = default_p3 = default_p4 = "claude-3-5-haiku-latest"
+            else:
+                default_p1 = default_p3 = default_p4 = "gpt-4o-mini"
+        else:
+            default_p1 = "llama3.2:3b"
+            default_p3 = "phi3.5"
+            default_p4 = "qwen2.5-coder:7b"
+
         p1 = (
             pass1_model
             or os.getenv("BISCUIT_PASS1_MODEL")
             or os.getenv("BISCUIT_LLM_MODEL")
-            or "llama3.2:3b"
+            or default_p1
         )
         p3 = (
             pass3_model
             or os.getenv("BISCUIT_PASS3_MODEL")
             or os.getenv("BISCUIT_LLM_MODEL")
-            or "phi3.5"
+            or default_p3
         )
         p4 = (
             pass4_model
             or os.getenv("BISCUIT_PASS4_MODEL")
             or os.getenv("BISCUIT_LLM_MODEL")
-            or "qwen2.5-coder:7b"
+            or default_p4
         )
         self.pass1 = Pass1ProposalDiscovery(self.client, model=p1)
         self.pass2 = Pass2DeliberationSlicing()

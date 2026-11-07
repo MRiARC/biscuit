@@ -5,10 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from biscuit.cli.scorecard import render_scorecard
-from biscuit.cli.storage import export_madr, import_decisions, ingest_discourse, list_decisions
-from biscuit.evaluate.aggregate import aggregate_outcomes
-from biscuit.evaluate.runner import run_benchmark
+from biscuit.cli.storage import export_madr, import_decisions, list_decisions
 
 try:
     import typer
@@ -26,15 +23,20 @@ def _resolve_db_url(db_url: str | None, local_db: Path | None = None) -> str | N
     """Resolve an authoritative database URL for the CLI commands that support it.
 
     Priority: explicit ``--db-url`` option, then ``DATABASE_URL``, then
-    ``BISCUIT_TEST_PG_DSN`` (the CI alias). When the user explicitly passes
-    ``--db`` (a local SQLite path), we honour that and return ``None`` so the
-    local cache is used — explicit user intent beats env-var defaults.
-    Returns ``None`` when no authoritative store is configured; the local
-    SQLite cache is then the documented fallback for offline use.
+    ``SWITCH_DATABASE_URL``, then ``BISCUIT_TEST_PG_DSN`` (the CI alias).
+    When the user explicitly passes ``--db`` (a local SQLite path), we honour
+    that and return ``None`` so the local cache is used — explicit user intent
+    beats env-var defaults. Returns ``None`` when no authoritative store is
+    configured; the local SQLite cache is then the documented fallback for offline use.
     """
     if local_db is not None:
         return None
-    return db_url or os.getenv("DATABASE_URL") or os.getenv("BISCUIT_TEST_PG_DSN")
+    return (
+        db_url
+        or os.getenv("DATABASE_URL")
+        or os.getenv("SWITCH_DATABASE_URL")
+        or os.getenv("BISCUIT_TEST_PG_DSN")
+    )
 
 
 def _list_decisions_from_store(db_url: str, status: str | None) -> list[dict]:
@@ -126,286 +128,23 @@ def _export_madr_from_store(db_url: str, output: Path) -> int:
 
 
 if typer is not None:
-    app = typer.Typer(help="Evidence-grounded decision recovery and offline evaluation.")
+    app = typer.Typer(help="Live decision intelligence compass and PR guardrail for Switch.")
     decisions_app = typer.Typer(help="List and import human-reviewed local decisions.")
     app.add_typer(decisions_app, name="decisions")
 
-    @app.command()
-    def evaluate(
-        benchmark: str = typer.Option("pep-505", "--benchmark"),
-        all_benchmarks: bool = typer.Option(False, "--all"),
-        simulate: bool = typer.Option(True, "--simulate/--no-simulate"),
-        stream3: bool = typer.Option(False, "--stream3"),
-        semantic_embeddings: bool = typer.Option(False, "--semantic-embeddings"),
-        profile_memory: bool = typer.Option(False, "--profile-memory"),
-        predictions: Path | None = typer.Option(None, "--predictions"),  # noqa: B008
-        fixtures_root: Path | None = typer.Option(None, "--fixtures-root"),  # noqa: B008
-        output: Path = typer.Option(Path("scorecard.json"), "--output"),  # noqa: B008
-        audit_db: Path | None = typer.Option(None, "--audit-db"),  # noqa: B008
-        output_format: str = typer.Option("rich", "--format"),
-        strict_offsets: bool = typer.Option(False, "--strict-offsets"),
-        verbose: bool = typer.Option(False, "--verbose"),
-        llm_base_url: str | None = typer.Option(
-            None, "--llm-base-url", help="Base URL for LLM provider"
-        ),
-        llm_api_key: str | None = typer.Option(
-            None, "--llm-api-key", help="API key for LLM provider"
-        ),
-        llm_model: str | None = typer.Option(
-            None, "--llm-model", help="Model name for extraction passes"
-        ),
-        llm_provider: str = typer.Option(
-            "auto", "--llm-provider", help="Provider: auto, openai, or ollama"
-        ),
-        embedding_base_url: str | None = typer.Option(
-            None, "--embedding-base-url", help="Base URL for embeddings"
-        ),
-        embedding_api_key: str | None = typer.Option(
-            None, "--embedding-api-key", help="API key for embeddings"
-        ),
-        embedding_model: str | None = typer.Option(
-            None, "--embedding-model", help="Model name for embeddings"
-        ),
-        embedding_provider: str = typer.Option(
-            "auto", "--embedding-provider", help="Provider for embeddings: auto, openai, or ollama"
-        ),
+    @app.command("serve")
+    def serve(
+        transport: str = typer.Option("stdio", "--transport", help="Transport mode: stdio or sse"),
+        port: int = typer.Option(8001, "--port", help="Port for SSE transport"),
     ) -> None:
-        """Evaluate offline predictions; do not expose hidden ground truth to predictors."""
-        import json
+        """Run Biscuit's FastMCP server providing live directional intelligence to Switch."""
+        from biscuit.switch.server import FastMCPServer
 
-        from biscuit.evaluate.fixtures import DEFAULT_FIXTURE_ROOT
-
-        if stream3 and predictions is not None:
-            typer.echo("--stream3 and --predictions are mutually exclusive", err=True)
-            raise typer.Exit(2)
-        predictor = None
-        if stream3:
-            try:
-                from biscuit.evaluate.stream3_adapter import stream3_predictor
-                from biscuit.extract.client import LLMClient
-                from biscuit.extract.pipeline import ExtractionPipeline
-
-                client = LLMClient(
-                    base_url=llm_base_url,
-                    api_key=llm_api_key,
-                    provider=llm_provider,
-                )
-                pipeline = ExtractionPipeline(
-                    client=client,
-                    pass1_model=llm_model,
-                    pass3_model=llm_model,
-                    pass4_model=llm_model,
-                )
-                predictor = stream3_predictor(pipeline)
-            except ImportError as exc:
-                typer.echo(
-                    "Stream 3 extraction is not installed; integrate PR #23 first: " + str(exc),
-                    err=True,
-                )
-                raise typer.Exit(1) from exc
-        embedder = None
-        if semantic_embeddings:
-            from biscuit.evaluate.embeddings import get_embedder
-
-            embedder = get_embedder(
-                model=embedding_model,
-                base_url=embedding_base_url,
-                api_key=embedding_api_key,
-                provider=embedding_provider,
-            )
-        root = fixtures_root or DEFAULT_FIXTURE_ROOT
-        if output_format not in {"rich", "json"}:
-            typer.echo("--format must be rich or json", err=True)
-            raise typer.Exit(2)
-        if all_benchmarks:
-            if predictions is not None and not predictions.is_dir():
-                typer.echo("--all requires a prediction directory", err=True)
-                raise typer.Exit(2)
-            names = sorted(
-                folder.name
-                for folder in root.iterdir()
-                if folder.is_dir() and (folder / "raw_thread.json").exists()
-            )
+        server = FastMCPServer()
+        if transport == "sse":
+            server.run(transport="sse", port=port)
         else:
-            names = [benchmark]
-        if not names:
-            typer.echo("No benchmark fixtures found", err=True)
-            raise typer.Exit(2)
-        try:
-            outcomes = [
-                run_benchmark(
-                    benchmark_id=name,
-                    predictions_path=(
-                        predictions / f"{name}.json"
-                        if all_benchmarks and predictions is not None
-                        else predictions
-                    ),
-                    fixtures_root=root,
-                    predictor=predictor,
-                    semantic_embedder=embedder,
-                    profile_host_memory=profile_memory and predictor is not None,
-                    audit_db=audit_db or _default_db(),
-                    recorded_replay=predictions is None and simulate and not stream3,
-                )
-                for name in names
-            ]
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            typer.echo(f"Evaluation failed: {exc}", err=True)
-            raise typer.Exit(1) from exc
-        payload = (
-            outcomes[0].to_dict()
-            if len(outcomes) == 1
-            else {
-                "schema_version": 1,
-                "benchmarks": [outcome.to_dict() for outcome in outcomes],
-                "aggregate": aggregate_outcomes(outcomes),
-                "verdict": (
-                    "FAILED"
-                    if any(x.verdict == "FAILED" for x in outcomes)
-                    else "INCOMPLETE"
-                    if any(x.verdict != "PASSED" for x in outcomes)
-                    else "PASSED"
-                ),
-            }
-        )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        if output_format == "json":
-            typer.echo(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
-        else:
-            for outcome in outcomes:
-                render_scorecard(outcome)
-                if verbose and "watchdog" in outcome.counts:
-                    for row in outcome.counts["watchdog"]["audit_rows"]:
-                        typer.echo(
-                            f"{row['case_id']}: {row['action']} "
-                            f"(truth={row['ground_truth_class']}, correct={row['correct']})"
-                        )
-            typer.echo(f"Saved: {output}")
-        if strict_offsets and any(
-            metric.name == "Evidence exact match rate" and metric.status != "PASSED"
-            for outcome in outcomes
-            for metric in outcome.metrics
-        ):
-            typer.echo("Strict offsets: unverified or absent evidence", err=True)
-            raise typer.Exit(1)
-        if any(outcome.verdict == "FAILED" for outcome in outcomes):
-            raise typer.Exit(1)
-        if any(outcome.verdict != "PASSED" for outcome in outcomes):
-            raise typer.Exit(2)
-
-    @app.command()
-    def extract(
-        input_file: Path = typer.Option(..., "--input", "-i", help="Path to raw thread JSON"),  # noqa: B008
-        output: Path = typer.Option(  # noqa: B008
-            Path("madr_extracted.json"), "--output", "-o", help="Path to write extracted MADR"
-        ),
-        topic: str | None = typer.Option(None, "--topic", help="Topic or title for deliberation"),
-        llm_base_url: str | None = typer.Option(
-            None, "--llm-base-url", help="Base URL for LLM provider"
-        ),
-        llm_api_key: str | None = typer.Option(
-            None, "--llm-api-key", help="API key for LLM provider"
-        ),
-        llm_model: str | None = typer.Option(
-            None, "--llm-model", help="Model name for extraction passes"
-        ),
-        llm_provider: str = typer.Option(
-            "auto", "--llm-provider", help="Provider: auto, openai, or ollama"
-        ),
-    ) -> None:
-        """Run the 4-pass deliberation extraction pipeline on a thread snapshot."""
-        import json
-
-        from biscuit.extract.client import LLMClient
-        from biscuit.extract.pipeline import ExtractionPipeline
-
-        if not input_file.is_file():
-            typer.echo(f"Input file not found: {input_file}", err=True)
-            raise typer.Exit(2)
-
-        try:
-            thread_data = json.loads(input_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            typer.echo(f"Failed to read input thread JSON: {exc}", err=True)
-            raise typer.Exit(1) from exc
-
-        thread_id = str(thread_data.get("thread_id", input_file.stem))
-        delib_topic = topic or str(
-            thread_data.get("topic") or thread_data.get("title") or thread_id
-        )
-        raw_messages = thread_data.get("messages", [])
-        messages = [
-            {
-                "message_id": str(m.get("message_id", idx)),
-                "author": str(m.get("author") or m.get("author_handle") or "contributor"),
-                "author_role": str(m.get("author_role") or "contributor"),
-                "content": str(m.get("content") or m.get("raw_text") or ""),
-                "raw_content": str(
-                    m.get("raw_content") or m.get("raw_text") or m.get("content") or ""
-                ),
-                **(
-                    {"source_message_version_id": m["source_message_version_id"]}
-                    if m.get("source_message_version_id")
-                    else {}
-                ),
-            }
-            for idx, m in enumerate(raw_messages)
-        ]
-
-        client = LLMClient(
-            base_url=llm_base_url,
-            api_key=llm_api_key,
-            provider=llm_provider,
-        )
-        pipeline = ExtractionPipeline(
-            client=client,
-            pass1_model=llm_model,
-            pass3_model=llm_model,
-            pass4_model=llm_model,
-        )
-
-        try:
-            result = pipeline.run(
-                thread_id=thread_id,
-                topic=delib_topic,
-                messages=messages,
-                edges=thread_data.get("edges"),
-            )
-        except Exception as exc:
-            typer.echo(f"Extraction failed: {exc}", err=True)
-            raise typer.Exit(1) from exc
-
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        typer.echo(
-            f"Extraction completed: {len(result.madr.considered_alternatives)} alternatives, "
-            f"status={result.madr.status}. Saved to {output}"
-        )
-
-    @app.command()
-    def ingest(
-        platform: str = typer.Option(..., "--platform"),
-        url: str = typer.Option(..., "--url"),
-        db: Path | None = typer.Option(None, "--db"),  # noqa: B008
-        output_thread: Path | None = typer.Option(None, "--output-thread"),  # noqa: B008
-    ) -> None:
-        """Ingest a complete Discourse topic snapshot into the local SQLite cache."""
-        if platform.lower() != "discourse":
-            typer.echo("Only Discourse ingestion is supported in this workstream", err=True)
-            raise typer.Exit(2)
-        try:
-            count = ingest_discourse(url, db or _default_db(), output_thread=output_thread)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            typer.echo(f"Ingestion failed: {exc}", err=True)
-            raise typer.Exit(1) from exc
-        typer.echo(f"Saved {count} messages. Decisions require separate verified extraction.")
+            server.run(transport="stdio")
 
     @decisions_app.command("list")
     def decisions_list(
@@ -625,8 +364,6 @@ if typer is not None:
             f"candidates={len(result.candidate_evaluations)} "
             f"authorized={len(result.authorized_alternative_ids)}"
         )
-        if result.verdict.value != "WARNING_AUTHORIZED":
-            raise typer.Exit(2)
 
 else:
     app = None

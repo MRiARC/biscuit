@@ -5,11 +5,9 @@ This is a developer cache, NOT a replacement for the separate PostgreSQL storage
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sqlite3
-from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -112,45 +110,6 @@ def _fetch_discourse(url: str) -> dict:
 
 
 
-def canonical_ingested_thread(record: dict) -> dict:
-    """Convert a complete Discourse snapshot into the evaluator's verifiable wire schema.
-
-    A hash authenticates the stored text bytes; it does NOT promote HTML-derived
-    text or unverified author roles into historical evidence.
-    """
-    from biscuit.evaluate.fixtures import thread_digest, verify_thread
-
-    messages = []
-    for item in record["messages"]:
-        raw = str(item["raw_text"])
-        messages.append({
-            "message_id": str(item["message_id"]),
-            "author_handle": str(item.get("author", "")),
-            "author_role": "UNVERIFIED",
-            "created_at": str(item["created_at"]),
-            "raw_text": raw,
-            "content_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
-            "content_source": item.get("content_source", "UNVERIFIED"),
-        })
-    snapshot = {
-        "thread_id": str(record["thread_id"]),
-        "source_platform": "DISCOURSE",
-        "external_url": str(record["url"]),
-        "expected_source_message_count": len(messages),
-        "canonicalization_version": 1,
-        "source_provenance": {
-            "license_identifier": "UNKNOWN_UNVERIFIED",
-            "terms_url": None,
-            "retrieval_date": datetime.now(UTC).date().isoformat(),
-            "source_text_fidelity": "RAW_OR_DERIVED_TEXT_WITH_PER_MESSAGE_FLAGS",
-        },
-        "messages": messages,
-    }
-    snapshot["thread_sha256"] = thread_digest(snapshot)
-    verify_thread(snapshot)
-    return snapshot
-
-
 def connect_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
@@ -171,28 +130,6 @@ def connect_db(path: Path) -> sqlite3.Connection:
     if "record_json" not in columns:
         conn.execute("ALTER TABLE decisions ADD COLUMN record_json TEXT NOT NULL DEFAULT '{}'")
     return conn
-
-
-def ingest_discourse(url: str, path: Path, output_thread: Path | None = None) -> int:
-    record = _fetch_discourse(url)
-    snapshot = canonical_ingested_thread(record)
-    record["canonical_thread"] = snapshot
-    with connect_db(path) as conn:
-        conn.execute(
-            """INSERT INTO threads (thread_id, source_url, title, raw_json)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(thread_id) DO UPDATE SET
-               source_url=excluded.source_url, title=excluded.title,
-               raw_json=excluded.raw_json""",
-            (record["thread_id"], record["url"], record["title"], json.dumps(record)),
-        )
-    if output_thread is not None:
-        output_thread.parent.mkdir(parents=True, exist_ok=True)
-        output_thread.write_text(
-            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    return len(record["messages"])
 
 
 VALID_STATES = {

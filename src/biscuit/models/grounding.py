@@ -1,5 +1,6 @@
 """Grounding and AST Lineage models: Code Anchors, Anchor Lineage, and PR Watchdog Audit Log."""
 
+import os
 import uuid
 from datetime import datetime
 from typing import Any
@@ -46,7 +47,9 @@ class CodeAnchor(UUIDModel, TimestampMixin, table=True):
         )
     )
     repository_url: str = Field(
-        default="https://github.com/python/cpython",
+        default_factory=lambda: os.getenv(
+            "BISCUIT_REPOSITORY_URL", "https://github.com/python/cpython"
+        ),
         sa_column=Column(Text, nullable=False),
     )
     language: str = Field(

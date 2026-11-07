@@ -13,11 +13,14 @@ modules owned by other workstreams.
 from __future__ import annotations
 
 import hashlib
+import os
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
+
+DEFAULT_PROJECT_CONTEXT = os.getenv("BISCUIT_PROJECT_CONTEXT", "python/cpython")
 
 
 def compute_sha256(text: str) -> str:
@@ -82,11 +85,15 @@ ACTIVE_ANCHOR_STATES = frozenset({AnchorState.CURRENT, AnchorState.MIGRATED})
 
 #: The only ruling authorities a human rejection may carry. Model inference
 #: (e.g. a ``MODEL_INFERRED`` label from Pass 3) is never authority.
-HUMAN_RULING_AUTHORITIES = frozenset({"BDFL", "CORE_MAINTAINER_CONSENSUS", "WORKING_GROUP"})
+HUMAN_RULING_AUTHORITIES = frozenset(
+    {"BDFL", "CORE_MAINTAINER_CONSENSUS", "WORKING_GROUP", "LEAD_MAINTAINER", "PROJECT_OWNER"}
+)
 
 #: Project roles that may sign off on rulings, per the lifecycle authority contract.
 BDFL_ROLE = "BDFL"
 CORE_MAINTAINER_ROLE = "Core Maintainer"
+LEAD_MAINTAINER_ROLE = "Lead Maintainer"
+PROJECT_OWNER_ROLE = "Project Owner"
 WG_CHAIR_ROLE = "Working Group Chair"
 WG_MEMBER_ROLE = "Working Group Member"
 
@@ -236,7 +243,7 @@ class DecisionAlternativeRecord:
     ruling_evidence_id: str | None = None
     ruling_authority: str | None = None
     ruling_actor_id: str | None = None
-    project_context: str = "python/cpython"
+    project_context: str = DEFAULT_PROJECT_CONTEXT
     ruling_signoffs: tuple[SignoffRecord, ...] = ()
     anchors: tuple[CodeAnchorRecord, ...] = ()
 
@@ -249,7 +256,7 @@ class DecisionRecord:
     title: str
     context_summary: str
     source_thread_url: str
-    project_context: str = "python/cpython"
+    project_context: str = DEFAULT_PROJECT_CONTEXT
 
 
 class DecisionStore(Protocol):

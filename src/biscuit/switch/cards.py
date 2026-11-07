@@ -125,6 +125,8 @@ class BlockKitBuilder:
         comment_body: str,
         switch_session_id: str | None = None,
         expires_at: datetime | None = None,
+        contradiction_analysis: str | None = None,
+        accepted_alternative: str | None = None,
     ) -> dict:
         """Card asking a maintainer to authorize or dismiss a PR warning.
 
@@ -148,6 +150,18 @@ class BlockKitBuilder:
             blocks.append(
                 self._section_mrkdwn(f"*Rejection reason:* {_truncate(rejection_summary)}")
             )
+        if contradiction_analysis:
+            blocks.append(
+                self._section_mrkdwn(
+                    f"*Contradiction analysis:*\n> {_truncate(contradiction_analysis, 500)}"
+                )
+            )
+        if accepted_alternative:
+            blocks.append(
+                self._section_mrkdwn(
+                    f"*Accepted alternative:*\n> {_truncate(accepted_alternative, 500)}"
+                )
+            )
         if ruling_quote:
             author_label = f" — {ruling_author}" if ruling_author else ""
             link = f" (<{ruling_permalink}|source>)" if ruling_permalink else ""
@@ -156,18 +170,29 @@ class BlockKitBuilder:
                     f"*Authoritative ruling:*\n> {_truncate(ruling_quote, 500)}{author_label}{link}"
                 )
             )
+
+        actions = [
+            {"id": "authorize_pr_comment", "label": "Post to PR", "style": "primary"},
+        ]
+        if accepted_alternative:
+            actions.append(
+                {
+                    "id": "apply_accepted_alternative",
+                    "label": "Have Agent Apply Accepted Solution",
+                    "style": "default",
+                }
+            )
+        actions.append(
+            {"id": "dismiss_pr_comment", "label": "Keep Silent", "style": "danger"},
+        )
+
         blocks.extend(
             (
                 self._section_mrkdwn(
                     f"*Approvable comment payload* (SHA-256 `{comment_sha}`):\n"
                     f"> {_truncate(comment_body, 700)}"
                 ),
-                self._actions(
-                    [
-                        {"id": "authorize_pr_comment", "label": "Post to PR", "style": "primary"},
-                        {"id": "dismiss_pr_comment", "label": "Keep Silent", "style": "danger"},
-                    ]
-                ),
+                self._actions(actions),
                 self._context(
                     f"Expires {expiry.isoformat()} • alternative "
                     f"`{alternative_id[:8]}…`"
