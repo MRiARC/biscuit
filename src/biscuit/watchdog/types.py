@@ -209,6 +209,7 @@ class CodeAnchorRecord:
     ast_structural_fingerprint: str | None = None
     lineage_resolved: bool = True
     mapping_confidence: float | None = None
+    repository_id: str | None = None
 
     @property
     def symbol_name(self) -> str:
@@ -223,6 +224,17 @@ class CodeAnchorRecord:
     def is_active(self) -> bool:
         """Active for authorization: CURRENT/MIGRATED with unambiguous lineage."""
         return self.anchor_state in ACTIVE_ANCHOR_STATES and self.lineage_resolved
+
+
+@dataclass(frozen=True)
+class DecisionScopeRecord:
+    """Scope binding between a decision and a repository or subsystem."""
+
+    repository_id: str
+    scope_type: str = "REPOSITORY_WIDE"
+    path_pattern: str | None = None
+    repository_url: str | None = None
+    repository_full_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -246,6 +258,7 @@ class DecisionAlternativeRecord:
     project_context: str = DEFAULT_PROJECT_CONTEXT
     ruling_signoffs: tuple[SignoffRecord, ...] = ()
     anchors: tuple[CodeAnchorRecord, ...] = ()
+    scopes: tuple[DecisionScopeRecord, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -257,6 +270,7 @@ class DecisionRecord:
     context_summary: str
     source_thread_url: str
     project_context: str = DEFAULT_PROJECT_CONTEXT
+    scopes: tuple[DecisionScopeRecord, ...] = ()
 
 
 class DecisionStore(Protocol):

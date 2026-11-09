@@ -24,6 +24,7 @@ from collections.abc import Callable
 from biscuit.watchdog.types import (
     CandidateMatch,
     CodeAnchorRecord,
+    DecisionScopeRecord,
     DecisionStore,
     PRDiff,
 )
@@ -80,6 +81,13 @@ class CandidateRetriever:
 
         matches: list[CandidateMatch] = []
         for alternative in self._store.all_alternatives():
+            # If the alternative carries explicit repository/subsystem scopes,
+            # enforce that the PR diff matches at least one scope.
+            if alternative.scopes and not any(
+                self._scope_matches_diff(scope, pr_diff) for scope in alternative.scopes
+            ):
+                continue
+
             similarity: float | None = None
             if diff_embedding is not None and alternative.embedding is not None:
                 similarity = cosine_similarity(diff_embedding, alternative.embedding)
@@ -124,6 +132,49 @@ class CandidateRetriever:
         if not text.strip():
             return None
         return self._embedder(text)
+
+    @classmethod
+    def _scope_matches_diff(cls, scope: DecisionScopeRecord, pr_diff: PRDiff) -> bool:
+        """Evaluate whether a DecisionScopeRecord covers an incoming PRDiff."""
+        if pr_diff.repository_url:
+            diff_url = pr_diff.repository_url.strip("/").lower()
+            scope_url = (scope.repository_url or "").strip("/").lower()
+            scope_name = (scope.repository_full_name or "").strip("/").lower()
+
+            repo_matches = (
+                bool(scope_url and (scope_url == diff_url or diff_url.endswith("/" + scope_name)))
+                or bool(scope_name and (scope_name == diff_url or diff_url.endswith("/" + scope_name)))
+                or (not scope_url and not scope_name)
+            )
+
+            if not repo_matches:
+                return False
+
+        scope_type = scope.scope_type.upper() if isinstance(scope.scope_type, str) else str(scope.scope_type).upper()
+        if scope_type == "SUBSYSTEM":
+            if not scope.path_pattern:
+                return False
+            return any(
+                cls._matches_path_pattern(path, scope.path_pattern)
+                for path in pr_diff.touched_paths
+            )
+
+        return True
+
+    @staticmethod
+    def _matches_path_pattern(path: str, pattern: str) -> bool:
+        import fnmatch
+
+        if not pattern:
+            return True
+        pattern = pattern.strip()
+        if pattern.endswith("/**"):
+            prefix = pattern[:-3].rstrip("/")
+            return path == prefix or path.startswith(prefix + "/")
+        if pattern.startswith("**/"):
+            suffix = pattern[3:].lstrip("/")
+            return path == suffix or path.endswith("/" + suffix) or fnmatch.fnmatch(path, f"*{suffix}")
+        return fnmatch.fnmatch(path, pattern)
 
     @staticmethod
     def _anchor_touched(

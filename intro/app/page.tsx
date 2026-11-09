@@ -160,6 +160,7 @@ export default function HomePage() {
             <span>BISCUIT<span className="brand-period">.</span></span>
           </Link>
           <nav className="desktop-nav" aria-label="Main navigation">
+            <Link href="/setup" style={{ color: "var(--red)", fontWeight: 700 }}>⚙️ System Setup</Link>
             <Link href="#why">The problem</Link>
             <Link href="#architecture">Architecture</Link>
             <Link href="#principles">Principles</Link>

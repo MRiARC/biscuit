@@ -1088,3 +1088,182 @@ def test_repository_and_channel_models(test_db_session: Session):
     test_db_session.commit()
     assert dec_repo.scope_type == DecisionScopeType.REPOSITORY_WIDE
 
+
+def test_decision_repository_scope_pattern_constraints(test_db_session):
+    """Test CHECK constraint requiring path_pattern only on SUBSYSTEM scopes."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import (
+        Decision,
+        DecisionRepository,
+        DecisionScopeType,
+        Repository,
+        SourceThread,
+    )
+
+    repo = Repository(
+        project_context="acme",
+        name="api",
+        full_name="acme/api",
+        canonical_url="https://github.com/acme/api",
+    )
+    test_db_session.add(repo)
+    thread = SourceThread(
+        source_platform="DISCORD",
+        project_context="acme",
+        external_thread_id="t-scope",
+        title="Scopes",
+        canonical_url="https://example.com/t-scope",
+    )
+    test_db_session.add(thread)
+    test_db_session.flush()
+
+    dec1 = Decision(source_thread_id=thread.id, title="Dec 1", context_summary="Ctx")
+    dec2 = Decision(source_thread_id=thread.id, title="Dec 2", context_summary="Ctx")
+    dec3 = Decision(source_thread_id=thread.id, title="Dec 3", context_summary="Ctx")
+    test_db_session.add_all([dec1, dec2, dec3])
+    test_db_session.flush()
+
+    # 1. SUBSYSTEM with non-empty pattern succeeds
+    subsystem_ok = DecisionRepository(
+        decision_id=dec1.id,
+        repository_id=repo.id,
+        scope_type=DecisionScopeType.SUBSYSTEM,
+        path_pattern="pkg/cache/**",
+    )
+    test_db_session.add(subsystem_ok)
+    test_db_session.commit()
+
+    # 2. SUBSYSTEM with null pattern fails
+    subsystem_bad = DecisionRepository(
+        decision_id=dec2.id,
+        repository_id=repo.id,
+        scope_type=DecisionScopeType.SUBSYSTEM,
+        path_pattern=None,
+    )
+    test_db_session.add(subsystem_bad)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+    # 3. REPOSITORY_WIDE with non-null pattern fails
+    repo_wide_bad = DecisionRepository(
+        decision_id=dec3.id,
+        repository_id=repo.id,
+        scope_type=DecisionScopeType.REPOSITORY_WIDE,
+        path_pattern="src/**",
+    )
+    test_db_session.add(repo_wide_bad)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_channel_repository_scoped_uniqueness(test_db_session):
+    """Test channel_repositories unique constraint includes platform_type and guild_id."""
+    from sqlalchemy.exc import IntegrityError
+
+    from biscuit.models import ChannelRepository, Repository
+
+    repo1 = Repository(
+        project_context="acme",
+        name="web",
+        full_name="acme/web",
+        canonical_url="https://github.com/acme/web",
+    )
+    repo2 = Repository(
+        project_context="acme",
+        name="api",
+        full_name="acme/api-svc",
+        canonical_url="https://github.com/acme/api-svc",
+    )
+    test_db_session.add_all([repo1, repo2])
+    test_db_session.flush()
+
+    # Channel ID reused across different platform/guild is permitted
+    c1 = ChannelRepository(
+        platform_type="DISCORD",
+        guild_id="guild-1",
+        channel_id="common-chan",
+        repository_id=repo1.id,
+        bound_by_user="alice",
+    )
+    c2 = ChannelRepository(
+        platform_type="SLACK",
+        guild_id="workspace-2",
+        channel_id="common-chan",
+        repository_id=repo1.id,
+        bound_by_user="bob",
+    )
+    test_db_session.add_all([c1, c2])
+    test_db_session.commit()
+
+    # Exact duplicate across (platform_type, guild_id, channel_id, repository_id) fails
+    c_dup = ChannelRepository(
+        platform_type="DISCORD",
+        guild_id="guild-1",
+        channel_id="common-chan",
+        repository_id=repo1.id,
+        bound_by_user="charlie",
+    )
+    test_db_session.add(c_dup)
+    with pytest.raises(IntegrityError):
+        test_db_session.commit()
+    test_db_session.rollback()
+
+
+def test_upsert_repository_updates_metadata_and_detects_conflict(test_db_session):
+    """Test upsert_repository updates changed fields and detects cross-repository conflicts."""
+    from biscuit.db.bootstrap import upsert_repository
+    from biscuit.models import Repository
+
+    # Initial insert
+    repo = upsert_repository(
+        test_db_session,
+        project_context="acme",
+        name="core",
+        full_name="acme/core",
+        canonical_url="https://github.com/acme/core",
+        primary_language="python",
+        default_branch="master",
+    )
+    test_db_session.commit()
+    assert repo.default_branch == "master"
+    assert repo.primary_language == "python"
+
+    # Subsequent call with updated branch and language modifies existing row
+    updated = upsert_repository(
+        test_db_session,
+        project_context="acme",
+        name="core",
+        full_name="acme/core",
+        canonical_url="https://github.com/acme/core",
+        primary_language="go",
+        default_branch="main",
+        switch_service_id="svc-core",
+    )
+    test_db_session.commit()
+    assert updated.id == repo.id
+    assert updated.default_branch == "main"
+    assert updated.primary_language == "go"
+    assert updated.switch_service_id == "svc-core"
+
+    # Conflicting insert: full_name matches one, canonical_url matches another
+    other = Repository(
+        project_context="acme",
+        name="other",
+        full_name="acme/other",
+        canonical_url="https://github.com/acme/other",
+    )
+    test_db_session.add(other)
+    test_db_session.commit()
+
+    with pytest.raises(ValueError, match="Conflict in upsert_repository"):
+        upsert_repository(
+            test_db_session,
+            project_context="acme",
+            name="conflict",
+            full_name="acme/core",
+            canonical_url="https://github.com/acme/other",
+        )
+

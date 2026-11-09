@@ -29,8 +29,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlmodel import select
 from sqlalchemy.orm import Session
+from sqlmodel import select
 
 from biscuit.models import (
     Contributor,
@@ -69,15 +69,38 @@ def upsert_repository(
     switch_service_id: str | None = None,
 ) -> Repository:
     """Insert or update a Repository by canonical_url or full_name."""
-    existing = session.exec(
-        select(Repository).where(
-            (Repository.full_name == full_name) | (Repository.canonical_url == canonical_url)
-        )
+    by_full_name = session.exec(
+        select(Repository).where(Repository.full_name == full_name)
     ).first()
-    if hasattr(existing, "_tuple") or isinstance(existing, tuple):
-        existing = existing[0]
+    if hasattr(by_full_name, "_tuple") or isinstance(by_full_name, tuple):
+        by_full_name = by_full_name[0]
+
+    by_url = session.exec(
+        select(Repository).where(Repository.canonical_url == canonical_url)
+    ).first()
+    if hasattr(by_url, "_tuple") or isinstance(by_url, tuple):
+        by_url = by_url[0]
+
+    if by_full_name is not None and by_url is not None and by_full_name.id != by_url.id:
+        raise ValueError(
+            f"Conflict in upsert_repository: full_name '{full_name}' matches repository {by_full_name.id} "
+            f"but canonical_url '{canonical_url}' matches distinct repository {by_url.id}"
+        )
+
+    existing = by_full_name or by_url
     if existing is not None:
+        existing.project_context = project_context
+        existing.name = name
+        existing.full_name = full_name
+        existing.canonical_url = canonical_url
+        existing.primary_language = primary_language
+        existing.default_branch = default_branch
+        if switch_service_id is not None:
+            existing.switch_service_id = switch_service_id
+        session.add(existing)
+        session.flush()
         return existing
+
     repo = Repository(
         project_context=project_context,
         name=name,

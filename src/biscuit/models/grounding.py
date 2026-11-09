@@ -53,6 +53,11 @@ class DecisionRepository(SQLModel, table=True):
 
     __tablename__ = "decision_repositories"
     __table_args__ = (
+        CheckConstraint(
+            "(scope_type = 'SUBSYSTEM' AND path_pattern IS NOT NULL AND length(trim(path_pattern)) > 0) "
+            "OR (scope_type IN ('REPOSITORY_WIDE', 'CROSS_REPOSITORY') AND path_pattern IS NULL)",
+            name="chk_decision_repo_scope_pattern",
+        ),
         Index("idx_decision_repos_repo", "repository_id"),
         Index("idx_decision_repos_decision", "decision_id"),
     )
@@ -80,8 +85,14 @@ class ChannelRepository(UUIDModel, table=True):
 
     __tablename__ = "channel_repositories"
     __table_args__ = (
-        UniqueConstraint("channel_id", "repository_id", name="uq_channel_repo"),
-        Index("idx_channel_repo_channel", "channel_id"),
+        UniqueConstraint(
+            "platform_type",
+            "guild_id",
+            "channel_id",
+            "repository_id",
+            name="uq_channel_repo",
+        ),
+        Index("idx_channel_repo_channel", "platform_type", "guild_id", "channel_id"),
     )
 
     platform_type: str = Field(default="DISCORD", sa_column=Column(Text, nullable=False))

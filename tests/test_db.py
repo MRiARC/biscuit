@@ -829,3 +829,85 @@ def test_sqlite_fk_emission_survives_postgres_bootstrap():
     decision_columns = {row[3] for row in decision_fks}
     assert "ruling_evidence_id" in decision_columns
     assert "source_thread_id" in decision_columns
+
+
+def test_forward_schema_migration_adds_repository_id():
+    """Verify forward schema migration upgrades existing pre-PR tables lacking repository_id."""
+    from sqlalchemy import inspect
+
+    from biscuit.db.session import get_engine, migrate_schema
+
+    engine = get_engine("sqlite:///:memory:")
+
+    # 1. Create pre-PR tables without repository_id
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE code_anchors ("
+                "id CHAR(32) PRIMARY KEY, "
+                "alternative_id CHAR(32) NOT NULL, "
+                "repository_url TEXT NOT NULL, "
+                "language TEXT NOT NULL, "
+                "symbol_type TEXT NOT NULL, "
+                "qualified_symbol_name TEXT NOT NULL, "
+                "source_locator_type TEXT NOT NULL, "
+                "parser_name TEXT NOT NULL, "
+                "parser_version TEXT NOT NULL, "
+                "grammar_version TEXT NOT NULL, "
+                "fingerprint_algorithm TEXT NOT NULL, "
+                "ast_normalization_version TEXT NOT NULL, "
+                "anchor_state TEXT NOT NULL, "
+                "historical_file_path TEXT NOT NULL, "
+                "historical_commit_sha TEXT NOT NULL, "
+                "created_at TIMESTAMP NOT NULL, "
+                "updated_at TIMESTAMP NOT NULL"
+                ");"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE pr_watchdog_audit_log ("
+                "id CHAR(32) PRIMARY KEY, "
+                "repository_url TEXT NOT NULL, "
+                "pr_number INTEGER NOT NULL, "
+                "commit_sha TEXT NOT NULL, "
+                "checked_at TIMESTAMP NOT NULL, "
+                "execution_mode TEXT NOT NULL, "
+                "candidate_alternative_ids JSON NOT NULL, "
+                "invariants_satisfied BOOLEAN NOT NULL, "
+                "authorization_verdict TEXT NOT NULL, "
+                "action_taken TEXT NOT NULL"
+                ");"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE repositories ("
+                "id CHAR(32) PRIMARY KEY, "
+                "project_context TEXT NOT NULL, "
+                "name TEXT NOT NULL, "
+                "full_name TEXT NOT NULL UNIQUE, "
+                "canonical_url TEXT NOT NULL UNIQUE, "
+                "primary_language TEXT NOT NULL, "
+                "default_branch TEXT NOT NULL, "
+                "is_active BOOLEAN NOT NULL, "
+                "created_at TIMESTAMP NOT NULL, "
+                "updated_at TIMESTAMP NOT NULL"
+                ");"
+            )
+        )
+
+        inspector = inspect(conn)
+        ca_cols_before = {c["name"] for c in inspector.get_columns("code_anchors")}
+        pr_cols_before = {c["name"] for c in inspector.get_columns("pr_watchdog_audit_log")}
+        assert "repository_id" not in ca_cols_before
+        assert "repository_id" not in pr_cols_before
+
+        # 2. Run migration
+        migrate_schema(conn)
+
+        inspector_after = inspect(conn)
+        ca_cols_after = {c["name"] for c in inspector_after.get_columns("code_anchors")}
+        pr_cols_after = {c["name"] for c in inspector_after.get_columns("pr_watchdog_audit_log")}
+        assert "repository_id" in ca_cols_after
+        assert "repository_id" in pr_cols_after
