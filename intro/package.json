@@ -16,10 +16,10 @@
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@types/node": "^22.16.0",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=20.9.0"
