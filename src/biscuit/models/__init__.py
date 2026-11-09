@@ -29,6 +29,7 @@ from biscuit.models.enums import (
     ContributorProjectRole,
     DecisionEventType,
     DecisionResolution,
+    DecisionScopeType,
     DiscussionEdgeType,
     EdgeProvenance,
     EvidenceRole,
@@ -53,9 +54,12 @@ from biscuit.models.enums import (
     VerificationStatus,
 )
 from biscuit.models.grounding import (
+    ChannelRepository,
     CodeAnchor,
     CodeAnchorLineage,
+    DecisionRepository,
     PrWatchdogAuditLog,
+    Repository,
 )
 from biscuit.models.provenance import (
     Contributor,
@@ -71,6 +75,7 @@ __all__ = [
     "AnchorState",
     "Argument",
     "BiscuitBaseModel",
+    "ChannelRepository",
     "CodeAnchor",
     "CodeAnchorLineage",
     "CodeSymbolType",
@@ -83,7 +88,9 @@ __all__ = [
     "DecisionAlternativeRulingSignoff",
     "DecisionEventLog",
     "DecisionEventType",
+    "DecisionRepository",
     "DecisionResolution",
+    "DecisionScopeType",
     "DiscussionEdge",
     "DiscussionEdgeType",
     "EdgeProvenance",
@@ -108,6 +115,7 @@ __all__ = [
     "ProposalLifecycle",
     "ProposalOccurrence",
     "RejectionCategory",
+    "Repository",
     "ResolutionType",
     "RulingAuthority",
     "RunStatus",

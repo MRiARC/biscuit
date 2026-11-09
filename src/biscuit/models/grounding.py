@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -14,17 +15,86 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlmodel import Field
+from sqlmodel import Field, SQLModel
 
 from biscuit.models.base import TimestampMixin, UUIDModel, utcnow
 from biscuit.models.enums import (
     AnchorState,
     CodeSymbolType,
+    DecisionScopeType,
     ExecutionMode,
     PrWatchdogAction,
     PrWatchdogVerdict,
     SourceLocatorType,
 )
+
+
+class Repository(UUIDModel, TimestampMixin, table=True):
+    """Source code repository tracked for decision grounding and PR Watchdog governance."""
+
+    __tablename__ = "repositories"
+    __table_args__ = (
+        Index("idx_repositories_project", "project_context"),
+        Index("idx_repositories_name", "name"),
+    )
+
+    project_context: str = Field(sa_column=Column(Text, nullable=False))
+    name: str = Field(sa_column=Column(Text, nullable=False))
+    full_name: str = Field(sa_column=Column(Text, nullable=False, unique=True))
+    canonical_url: str = Field(sa_column=Column(Text, nullable=False, unique=True))
+    primary_language: str = Field(default="unknown", sa_column=Column(Text, nullable=False))
+    default_branch: str = Field(default="main", sa_column=Column(Text, nullable=False))
+    switch_service_id: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    is_active: bool = Field(default=True, nullable=False)
+
+
+class DecisionRepository(SQLModel, table=True):
+    """M:N link between decisions and repositories, enabling repository-wide invariants."""
+
+    __tablename__ = "decision_repositories"
+    __table_args__ = (
+        Index("idx_decision_repos_repo", "repository_id"),
+        Index("idx_decision_repos_decision", "decision_id"),
+    )
+
+    decision_id: uuid.UUID = Field(
+        sa_column=Column(
+            ForeignKey("decisions.id", ondelete="CASCADE"), primary_key=True
+        )
+    )
+    repository_id: uuid.UUID = Field(
+        sa_column=Column(
+            ForeignKey("repositories.id", ondelete="RESTRICT"), primary_key=True
+        )
+    )
+    scope_type: DecisionScopeType = Field(
+        default=DecisionScopeType.REPOSITORY_WIDE,
+        sa_column=Column(Text, nullable=False),
+    )
+    path_pattern: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    created_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+class ChannelRepository(UUIDModel, table=True):
+    """Binds a communication platform channel (Discord, Slack) to a Repository."""
+
+    __tablename__ = "channel_repositories"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "repository_id", name="uq_channel_repo"),
+        Index("idx_channel_repo_channel", "channel_id"),
+    )
+
+    platform_type: str = Field(default="DISCORD", sa_column=Column(Text, nullable=False))
+    guild_id: str = Field(sa_column=Column(Text, nullable=False))
+    channel_id: str = Field(sa_column=Column(Text, nullable=False))
+    repository_id: uuid.UUID = Field(
+        sa_column=Column(
+            ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+        )
+    )
+    is_primary: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    bound_by_user: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(default_factory=utcnow, nullable=False)
 
 
 class CodeAnchor(UUIDModel, TimestampMixin, table=True):
@@ -45,6 +115,12 @@ class CodeAnchor(UUIDModel, TimestampMixin, table=True):
             ForeignKey("decision_alternatives.id", ondelete="RESTRICT"),
             nullable=False,
         )
+    )
+    repository_id: uuid.UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            ForeignKey("repositories.id", ondelete="RESTRICT"), nullable=True
+        ),
     )
     repository_url: str = Field(
         default_factory=lambda: os.getenv(
@@ -145,6 +221,12 @@ class PrWatchdogAuditLog(UUIDModel, table=True):
 
     __tablename__ = "pr_watchdog_audit_log"
 
+    repository_id: uuid.UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            ForeignKey("repositories.id", ondelete="RESTRICT"), nullable=True
+        ),
+    )
     repository_url: str = Field(sa_column=Column(Text, nullable=False))
     pr_number: int = Field(nullable=False)
     commit_sha: str = Field(sa_column=Column(Text, nullable=False))

@@ -209,3 +209,10 @@ class RunStatus(str, Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     PARTIAL = "PARTIAL"
+
+
+class DecisionScopeType(str, Enum):
+    REPOSITORY_WIDE = "REPOSITORY_WIDE"
+    SUBSYSTEM = "SUBSYSTEM"
+    CROSS_REPOSITORY = "CROSS_REPOSITORY"
+

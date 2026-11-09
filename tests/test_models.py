@@ -8,6 +8,7 @@ from sqlmodel import Session, create_engine
 
 from biscuit.db.session import init_db
 from biscuit.models import (
+    ChannelRepository,
     CodeAnchor,
     CodeAnchorLineage,
     CodeSymbolType,
@@ -17,6 +18,8 @@ from biscuit.models import (
     ContributorProjectRoleRevocation,
     Decision,
     DecisionAlternative,
+    DecisionRepository,
+    DecisionScopeType,
     EvidenceRole,
     EvidenceSpan,
     EvidenceStance,
@@ -26,6 +29,7 @@ from biscuit.models import (
     HitlRequestStatus,
     PlatformType,
     ProposalLifecycle,
+    Repository,
     SourceMessage,
     SourceMessageVersion,
     SourceThread,
@@ -1022,3 +1026,65 @@ def test_evidence_span_enum_and_hash_checks(test_db_session):
             test_db_session.execute(text(insert_sql), params)
             test_db_session.commit()
         test_db_session.rollback()
+
+
+def test_repository_and_channel_models(test_db_session: Session):
+    """Test Repository, DecisionRepository, and ChannelRepository creation and associations."""
+    # 1. Create Repository
+    repo = Repository(
+        project_context="MRIARC-08",
+        name="test",
+        full_name="MRIARC-08/test",
+        canonical_url="https://github.com/MRIARC-08/test",
+        primary_language="go",
+        default_branch="main",
+    )
+    test_db_session.add(repo)
+    test_db_session.commit()
+    test_db_session.refresh(repo)
+    assert repo.id is not None
+    assert repo.primary_language == "go"
+
+    # 2. Bind to a Discord channel via ChannelRepository
+    channel_bind = ChannelRepository(
+        platform_type="DISCORD",
+        guild_id="guild-123",
+        channel_id="channel-456",
+        repository_id=repo.id,
+        is_primary=True,
+        bound_by_user="Fate emperor",
+    )
+    test_db_session.add(channel_bind)
+    test_db_session.commit()
+    test_db_session.refresh(channel_bind)
+    assert channel_bind.id is not None
+    assert channel_bind.channel_id == "channel-456"
+
+    # 3. Create a Decision and link to Repository via DecisionRepository
+    thread = SourceThread(
+        source_platform="DISCORD",
+        project_context="MRIARC-08",
+        external_thread_id="discord-thread-1",
+        title="Architecture Discussion",
+        canonical_url="https://discord.com/channels/1/2",
+    )
+    test_db_session.add(thread)
+    test_db_session.commit()
+
+    dec = Decision(
+        source_thread_id=thread.id,
+        title="Standardize on Go for greenfield services",
+        context_summary="Team consensus",
+    )
+    test_db_session.add(dec)
+    test_db_session.commit()
+
+    dec_repo = DecisionRepository(
+        decision_id=dec.id,
+        repository_id=repo.id,
+        scope_type=DecisionScopeType.REPOSITORY_WIDE,
+    )
+    test_db_session.add(dec_repo)
+    test_db_session.commit()
+    assert dec_repo.scope_type == DecisionScopeType.REPOSITORY_WIDE
+
