@@ -5,7 +5,7 @@ import re
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -304,6 +304,74 @@ def _bootstrap_sqlite_schema(conn) -> None:
             conn.execute(CreateIndex(index, if_not_exists=True))
 
 
+def migrate_schema(conn) -> None:
+    """Apply forward schema migrations to existing databases.
+
+    SQLModel.metadata.create_all() does not alter existing tables.
+    This migration inspects existing tables and adds newly introduced columns
+    such as ``repository_id`` to ``code_anchors`` and ``pr_watchdog_audit_log``.
+    """
+    inspector = inspect(conn)
+    tables = inspector.get_table_names()
+    dialect = conn.dialect.name
+
+    if "code_anchors" in tables:
+        columns = {col["name"] for col in inspector.get_columns("code_anchors")}
+        if "repository_id" not in columns:
+            if dialect == "postgresql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE code_anchors ADD COLUMN IF NOT EXISTS repository_id UUID "
+                        "REFERENCES repositories(id) ON DELETE RESTRICT;"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_code_anchors_repo ON code_anchors(repository_id);"
+                    )
+                )
+            elif dialect == "sqlite":
+                conn.execute(
+                    text(
+                        "ALTER TABLE code_anchors ADD COLUMN repository_id CHAR(32) "
+                        "REFERENCES repositories(id) ON DELETE RESTRICT;"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_code_anchors_repo ON code_anchors(repository_id);"
+                    )
+                )
+
+    if "pr_watchdog_audit_log" in tables:
+        columns = {col["name"] for col in inspector.get_columns("pr_watchdog_audit_log")}
+        if "repository_id" not in columns:
+            if dialect == "postgresql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE pr_watchdog_audit_log ADD COLUMN IF NOT EXISTS repository_id UUID "
+                        "REFERENCES repositories(id) ON DELETE RESTRICT;"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_pr_audit_repo ON pr_watchdog_audit_log(repository_id);"
+                    )
+                )
+            elif dialect == "sqlite":
+                conn.execute(
+                    text(
+                        "ALTER TABLE pr_watchdog_audit_log ADD COLUMN repository_id CHAR(32) "
+                        "REFERENCES repositories(id) ON DELETE RESTRICT;"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_pr_audit_repo ON pr_watchdog_audit_log(repository_id);"
+                    )
+                )
+
+
 def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
     """Create all SQLModel tables in database and bootstrap triggers on PostgreSQL.
 
@@ -319,8 +387,11 @@ def init_db(engine=None, apply_postgres_triggers: bool = True) -> None:
     if target_engine.dialect.name == "sqlite":
         with target_engine.begin() as conn:
             _bootstrap_sqlite_schema(conn)
+            migrate_schema(conn)
     else:
         SQLModel.metadata.create_all(target_engine)
+        with target_engine.begin() as conn:
+            migrate_schema(conn)
 
     if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
         apply_triggers(target_engine)
@@ -346,6 +417,7 @@ async def init_async_db(
             await conn.run_sync(_bootstrap_sqlite_schema)
         else:
             await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(migrate_schema)
 
     if apply_postgres_triggers and target_engine.dialect.name == "postgresql":
         await apply_async_triggers(target_engine)

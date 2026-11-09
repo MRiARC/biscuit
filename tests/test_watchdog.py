@@ -30,6 +30,7 @@ from biscuit.watchdog import (
     CodeAnchorRecord,
     DecisionAlternativeRecord,
     DecisionRecord,
+    DecisionScopeRecord,
     EvidenceRole,
     EvidenceSpanRecord,
     ExecutionMode,
@@ -962,3 +963,154 @@ class TestWatchdogNegativeScenarios:
         assert payload["path"] == "Lib/builtins.py"
         assert payload["line"] == 10
         assert payload["side"] == "RIGHT"
+
+
+class TestRepositoryAndScopeRetrieval:
+    """Prove candidate retriever and store apply decisions according to repository and subsystem scopes."""
+
+    def test_repository_wide_scope_filtering(self):
+        """A REPOSITORY_WIDE scope applies to PR diffs on that repo and ignores other repos."""
+        anchor = CodeAnchorRecord(
+            id="anc-1",
+            alternative_id="alt-1",
+            repository_url="https://github.com/acme/service-a",
+            language="python",
+            symbol_type="function",
+            qualified_symbol_name="service_a.handle",
+            historical_file_path="pkg/handler.py",
+            anchor_state=AnchorState.CURRENT,
+        )
+        alt = DecisionAlternativeRecord(
+            id="alt-1",
+            decision_id="dec-1",
+            proposal_text="Use raw sockets",
+            lifecycle_status=ProposalLifecycle.REJECTED,
+            anchors=(anchor,),
+            scopes=(
+                DecisionScopeRecord(
+                    repository_id="repo-a",
+                    scope_type="REPOSITORY_WIDE",
+                    repository_url="https://github.com/acme/service-a",
+                    repository_full_name="acme/service-a",
+                ),
+            ),
+        )
+        store = InMemoryDecisionStore(alternatives=[alt])
+        retriever = CandidateRetriever(store)
+        inspector = PRDiffInspector()
+
+        diff_text = """diff --git a/pkg/handler.py b/pkg/handler.py
+--- a/pkg/handler.py
++++ b/pkg/handler.py
+@@ -1,2 +1,3 @@
++def handle():
++    pass
+"""
+        # 1. Matching repo URL retrieves candidate
+        diff_match = inspector.parse_and_analyze(diff_text, repository_url="https://github.com/acme/service-a")
+        candidates = retriever.retrieve(diff_match)
+        assert len(candidates) == 1
+        assert candidates[0].alternative_id == "alt-1"
+
+        # 2. Distinct repo URL is filtered out
+        diff_other = inspector.parse_and_analyze(diff_text, repository_url="https://github.com/acme/service-b")
+        assert len(retriever.retrieve(diff_other)) == 0
+
+    def test_subsystem_scope_path_pattern_filtering(self):
+        """A SUBSYSTEM scope only retrieves candidates when diff touches files matching path_pattern."""
+        anchor = CodeAnchorRecord(
+            id="anc-sub",
+            alternative_id="alt-sub",
+            repository_url="https://github.com/acme/mono",
+            language="python",
+            symbol_type="function",
+            qualified_symbol_name="mono.cache.get",
+            historical_file_path="pkg/cache/store.py",
+            anchor_state=AnchorState.CURRENT,
+        )
+        alt = DecisionAlternativeRecord(
+            id="alt-sub",
+            decision_id="dec-sub",
+            proposal_text="Global shared cache",
+            lifecycle_status=ProposalLifecycle.REJECTED,
+            anchors=(anchor,),
+            scopes=(
+                DecisionScopeRecord(
+                    repository_id="repo-mono",
+                    scope_type="SUBSYSTEM",
+                    path_pattern="pkg/cache/**",
+                    repository_url="https://github.com/acme/mono",
+                    repository_full_name="acme/mono",
+                ),
+            ),
+        )
+        store = InMemoryDecisionStore(alternatives=[alt])
+        retriever = CandidateRetriever(store)
+        inspector = PRDiffInspector()
+
+        # Diff touching file inside subsystem
+        diff_inside = inspector.parse_and_analyze(
+            """diff --git a/pkg/cache/store.py b/pkg/cache/store.py
+--- a/pkg/cache/store.py
++++ b/pkg/cache/store.py
+@@ -1,1 +1,2 @@
++def get(): pass
+""",
+            repository_url="https://github.com/acme/mono",
+        )
+        assert len(retriever.retrieve(diff_inside)) == 1
+
+        # Diff touching file outside subsystem
+        diff_outside = inspector.parse_and_analyze(
+            """diff --git a/cmd/server/main.py b/cmd/server/main.py
+--- a/cmd/server/main.py
++++ b/cmd/server/main.py
+@@ -1,1 +1,2 @@
++def run(): pass
+""",
+            repository_url="https://github.com/acme/mono",
+        )
+        assert len(retriever.retrieve(diff_outside)) == 0
+
+    def test_cross_repository_scope_matches_multiple_repos(self):
+        """A decision with CROSS_REPOSITORY scopes matches across all bound repositories."""
+        alt = DecisionAlternativeRecord(
+            id="alt-cross",
+            decision_id="dec-cross",
+            proposal_text="Shared proto definitions",
+            lifecycle_status=ProposalLifecycle.REJECTED,
+            scopes=(
+                DecisionScopeRecord(
+                    repository_id="repo-1",
+                    scope_type="CROSS_REPOSITORY",
+                    repository_url="https://github.com/acme/service-1",
+                ),
+                DecisionScopeRecord(
+                    repository_id="repo-2",
+                    scope_type="CROSS_REPOSITORY",
+                    repository_url="https://github.com/acme/service-2",
+                ),
+            ),
+        )
+        store = InMemoryDecisionStore(alternatives=[alt])
+        retriever = CandidateRetriever(store, threshold=0.1)
+        inspector = PRDiffInspector()
+
+        retriever._embedder = lambda t: (1.0, 0.0)
+        alt_with_emb = replace(alt, embedding=(1.0, 0.0))
+        store._alternatives[alt.id] = alt_with_emb
+
+        raw_patch = (
+            "diff --git a/proto.py b/proto.py\n"
+            "--- a/proto.py\n"
+            "+++ b/proto.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+x = 1\n"
+        )
+        diff1 = inspector.parse_and_analyze(raw_patch, repository_url="https://github.com/acme/service-1")
+        diff2 = inspector.parse_and_analyze(raw_patch, repository_url="https://github.com/acme/service-2")
+        diff3 = inspector.parse_and_analyze(raw_patch, repository_url="https://github.com/acme/service-3")
+
+        assert len(retriever.retrieve(diff1)) == 1
+        assert len(retriever.retrieve(diff2)) == 1
+        assert len(retriever.retrieve(diff3)) == 0

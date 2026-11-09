@@ -29,8 +29,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlmodel import select
 
 from biscuit.models import (
     Contributor,
@@ -40,18 +40,79 @@ from biscuit.models import (
     Decision,
     DecisionAlternative,
     DecisionAlternativeRulingSignoff,
+    DecisionRepository,
+    DecisionScopeType,
     EvidenceRole,
     EvidenceSpan,
     EvidenceStance,
     MessageEditState,
     PlatformType,
     ProposalLifecycle,
+    Repository,
     RulingAuthority,
     SourceMessage,
     SourceMessageVersion,
     SourceThread,
     VerificationStatus,
 )
+
+
+def upsert_repository(
+    session: Session,
+    *,
+    project_context: str,
+    name: str,
+    full_name: str,
+    canonical_url: str,
+    primary_language: str = "unknown",
+    default_branch: str = "main",
+    switch_service_id: str | None = None,
+) -> Repository:
+    """Insert or update a Repository by canonical_url or full_name."""
+    by_full_name = session.exec(
+        select(Repository).where(Repository.full_name == full_name)
+    ).first()
+    if hasattr(by_full_name, "_tuple") or isinstance(by_full_name, tuple):
+        by_full_name = by_full_name[0]
+
+    by_url = session.exec(
+        select(Repository).where(Repository.canonical_url == canonical_url)
+    ).first()
+    if hasattr(by_url, "_tuple") or isinstance(by_url, tuple):
+        by_url = by_url[0]
+
+    if by_full_name is not None and by_url is not None and by_full_name.id != by_url.id:
+        raise ValueError(
+            f"Conflict in upsert_repository: full_name '{full_name}' matches repository {by_full_name.id} "
+            f"but canonical_url '{canonical_url}' matches distinct repository {by_url.id}"
+        )
+
+    existing = by_full_name or by_url
+    if existing is not None:
+        existing.project_context = project_context
+        existing.name = name
+        existing.full_name = full_name
+        existing.canonical_url = canonical_url
+        existing.primary_language = primary_language
+        existing.default_branch = default_branch
+        if switch_service_id is not None:
+            existing.switch_service_id = switch_service_id
+        session.add(existing)
+        session.flush()
+        return existing
+
+    repo = Repository(
+        project_context=project_context,
+        name=name,
+        full_name=full_name,
+        canonical_url=canonical_url,
+        primary_language=primary_language,
+        default_branch=default_branch,
+        switch_service_id=switch_service_id,
+    )
+    session.add(repo)
+    session.flush()
+    return repo
 
 
 def upsert_contributor(
@@ -159,6 +220,8 @@ def import_provenanced_decision(
     ruling_actor_grant: ContributorProjectRoleGrant,
     signoffs: list[tuple[Contributor, ContributorProjectRoleGrant, dict[str, Any]]],
     bootstrap_actors: dict[str, Contributor] | None = None,
+    repository: Repository | None = None,
+    decision_scope: DecisionScopeType = DecisionScopeType.REPOSITORY_WIDE,
 ) -> tuple[Decision, DecisionAlternative, EvidenceSpan]:
     """Import one fully-provenanced rejected decision in a single transaction.
 
@@ -243,6 +306,15 @@ def import_provenanced_decision(
     )
     session.add(decision_obj)
     session.flush()
+
+    if repository is not None:
+        dec_repo = DecisionRepository(
+            decision_id=decision_obj.id,
+            repository_id=repository.id,
+            scope_type=decision_scope,
+        )
+        session.add(dec_repo)
+        session.flush()
 
     authority_str = alternative.get("ruling_authority", "CORE_MAINTAINER_CONSENSUS")
     if isinstance(authority_str, RulingAuthority):

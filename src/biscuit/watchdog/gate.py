@@ -37,6 +37,7 @@ import hashlib
 from datetime import UTC, datetime
 
 from biscuit.watchdog.formatter import PRCommentFormatter
+from biscuit.watchdog.retriever import CandidateRetriever
 from biscuit.watchdog.types import (
     ACTIVE_ANCHOR_STATES,
     BDFL_ROLE,
@@ -488,6 +489,10 @@ class WarningAuthorizationGate:
         for alternative in self._store.all_alternatives():
             if alternative.id in exclude_ids:
                 continue
+            if alternative.scopes and not any(
+                CandidateRetriever._scope_matches_diff(s, pr_diff) for s in alternative.scopes
+            ):
+                continue
             for anchor in alternative.anchors:
                 if (
                     anchor.repository_url
@@ -536,6 +541,10 @@ class WarningAuthorizationGate:
     def _touched_anchors(
         self, pr_diff: PRDiff, alternative: DecisionAlternativeRecord
     ) -> list[CodeAnchorRecord]:
+        if alternative.scopes and not any(
+            CandidateRetriever._scope_matches_diff(s, pr_diff) for s in alternative.scopes
+        ):
+            return []
         touched_paths = pr_diff.touched_paths
         diff_symbols = pr_diff.all_symbols
         return [

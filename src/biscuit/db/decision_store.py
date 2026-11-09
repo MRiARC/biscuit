@@ -36,6 +36,7 @@ from biscuit.models import (
     Decision,
     DecisionAlternative,
     DecisionAlternativeRulingSignoff,
+    DecisionRepository,
     EvidenceRole,
     EvidenceSpan,
     ExecutionMode,
@@ -43,6 +44,7 @@ from biscuit.models import (
     PrWatchdogAction,
     PrWatchdogAuditLog,
     PrWatchdogVerdict,
+    Repository,
     SourceMessage,
     SourceMessageVersion,
     SourceThread,
@@ -53,6 +55,7 @@ from biscuit.watchdog.types import (
     CodeAnchorRecord,
     DecisionAlternativeRecord,
     DecisionRecord,
+    DecisionScopeRecord,
     DecisionStore,
     EvidenceSpanRecord,
     SignoffRecord,
@@ -118,6 +121,7 @@ def _to_anchor_record(
     return CodeAnchorRecord(
         id=str(anchor.id),
         alternative_id=str(anchor.alternative_id),
+        repository_id=str(anchor.repository_id) if anchor.repository_id else None,
         repository_url=anchor.repository_url,
         language=anchor.language,
         symbol_type=str(anchor.symbol_type) if not isinstance(anchor.symbol_type, str) else anchor.symbol_type,
@@ -169,6 +173,7 @@ def _to_alternative_record(
     signoffs: list[DecisionAlternativeRulingSignoff],
     grant_by_id: dict[uuid.UUID, ContributorProjectRoleGrant],
     revoked_grant_ids: frozenset[uuid.UUID],
+    scopes: tuple[DecisionScopeRecord, ...] = (),
 ) -> DecisionAlternativeRecord:
     lifecycle_str = (
         alt.lifecycle_status
@@ -206,16 +211,22 @@ def _to_alternative_record(
         project_context=thread.project_context,
         ruling_signoffs=signoff_records,
         anchors=anchor_records,
+        scopes=scopes,
     )
 
 
-def _to_decision_record(decision: Decision, thread: SourceThread) -> DecisionRecord:
+def _to_decision_record(
+    decision: Decision,
+    thread: SourceThread,
+    scopes: tuple[DecisionScopeRecord, ...] = (),
+) -> DecisionRecord:
     return DecisionRecord(
         id=str(decision.id),
         title=decision.title,
         context_summary=decision.context_summary,
         source_thread_url=thread.canonical_url,
         project_context=thread.project_context,
+        scopes=scopes,
     )
 
 
@@ -258,7 +269,8 @@ class DatabaseDecisionStore:
         thread = self._session.get(SourceThread, decision.source_thread_id)
         if thread is None:
             return None
-        return _to_decision_record(decision, thread)
+        scopes = self._load_decision_scopes(decision.id)
+        return _to_decision_record(decision, thread, scopes=scopes)
 
     def get_evidence_span(self, span_id: str) -> EvidenceSpanRecord | None:
         try:
@@ -366,7 +378,31 @@ class DatabaseDecisionStore:
             signoffs=signoffs,
             grant_by_id=grant_by_id,
             revoked_grant_ids=revoked_grant_ids,
+            scopes=self._load_decision_scopes(decision.id),
         )
+
+    def _load_decision_scopes(self, decision_id: uuid.UUID) -> tuple[DecisionScopeRecord, ...]:
+        decision_repos = list(
+            self._session.scalars(
+                select(DecisionRepository).where(DecisionRepository.decision_id == decision_id)
+            ).all()
+        )
+        scopes: list[DecisionScopeRecord] = []
+        for dr in decision_repos:
+            repo = self._session.get(Repository, dr.repository_id)
+            scope_type_val = (
+                dr.scope_type.value if hasattr(dr.scope_type, "value") else str(dr.scope_type)
+            )
+            scopes.append(
+                DecisionScopeRecord(
+                    repository_id=str(dr.repository_id),
+                    scope_type=scope_type_val,
+                    path_pattern=dr.path_pattern,
+                    repository_url=repo.canonical_url if repo else None,
+                    repository_full_name=repo.full_name if repo else None,
+                )
+            )
+        return tuple(scopes)
 
     def _load_evidence_context(
         self, span: EvidenceSpan
@@ -427,7 +463,17 @@ def persist_watchdog_audit_log(
         if isinstance(entry.execution_mode, str)
         else entry.execution_mode.value
     )
+    repo = None
+    if entry.repository_url:
+        repo = session.scalars(
+            select(Repository).where(
+                (Repository.canonical_url == entry.repository_url)
+                | (Repository.full_name == entry.repository_url)
+            )
+        ).first()
+
     row = PrWatchdogAuditLog(
+        repository_id=repo.id if repo else None,
         repository_url=entry.repository_url,
         pr_number=entry.pr_number,
         commit_sha=entry.commit_sha,
